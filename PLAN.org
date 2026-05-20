@@ -2444,22 +2444,22 @@ cluster). Everything else belongs in Layer 1.
 ** Layer 1 topology
 
 #+begin_example
-┌─ host machine ──────────────────────────────────────────┐
-│                                                         │
-│  IntelliJ ─► auth-manager (mvn spring-boot:run)         │
-│              port 8080, talks to compose services       │
-│                                                         │
-│  npm run dev ─► admin-ui (Vite HMR) on port 5173        │
-│                  Vite proxy /api → localhost:8080       │
-│                                                         │
-│  Docker Compose (dev/compose.yaml):                     │
-│    ├─ postgres:16        :5432                          │
-│    ├─ redis:7            :6379                          │
-│    ├─ keycloak:26.6.1    :8180  (realm pre-imported)    │
-│    ├─ openresty          :8090  (lua + redis lookup)    │
-│    └─ mailhog            :8025  (optional, email flows) │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌─ host machine ───────────────────────────────────────────────┐
+│                                                              │
+│  IntelliJ ─► auth-manager (mvn spring-boot:run)              │
+│              port 8080, talks to compose services            │
+│                                                              │
+│  npm run dev ─► admin-ui (Vite HMR) on port 5173             │
+│                  Vite proxy /api → localhost:8080            │
+│                                                              │
+│  Docker Compose (dev/compose.yaml):                          │
+│    ├─ postgres:16        :15432 (host) → :5432 (in-network)  │
+│    ├─ redis:7            :16379 (host) → :6379 (in-network)  │
+│    ├─ keycloak:26.6.1    :8180  (realm pre-imported)         │
+│    ├─ openresty          :8090  (lua + redis lookup)         │
+│    └─ mailhog            :8025  (optional, email flows)      │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
 #+end_example
 
 Spring DevTools restarts the app on classpath change (sub-second). Vite HMR
@@ -2467,6 +2467,11 @@ pushes UI changes through the browser without losing component state. The
 debugger attaches to the JVM natively; no =JAVA_TOOL_OPTIONS=-agentlib...=
 dance. =docker compose down -v= resets the entire dependency layer in 3
 seconds.
+
+~NOTE:~ Host-side ports use the =15432=/=16379= range to avoid the very
+common conflict with developers' system Postgres/Redis or other compose
+stacks holding the default ports. Container-internal traffic still uses
+=5432=/=6379=, so service-to-service URLs inside compose stay unchanged.
 
 ** =dev/= directory layout
 
@@ -2498,7 +2503,7 @@ services:
     volumes:
       - ./seed/postgres-init.sh:/docker-entrypoint-initdb.d/01-create-dbs.sh:ro
       - pgdata:/var/lib/postgresql/data
-    ports: ["5432:5432"]
+    ports: ["15432:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
@@ -2506,7 +2511,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["16379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -2586,12 +2591,12 @@ re-export. Don't hand-edit the JSON.
 =apps/auth-manager/src/main/resources/application-local.properties=:
 
 #+begin_src properties
-spring.datasource.url=jdbc:postgresql://localhost:5432/authmanager
+spring.datasource.url=jdbc:postgresql://localhost:15432/authmanager
 spring.datasource.username=postgres
 spring.datasource.password=dev
 
 spring.data.redis.host=localhost
-spring.data.redis.port=6379
+spring.data.redis.port=16379
 
 keycloak.url=http://localhost:8180
 keycloak.realm=master
@@ -2674,8 +2679,8 @@ in Redis, then =curl -H 'Host: bank1.local' http://localhost:8090=.
 # Bring up the Layer-1 dependency stack
 dev:
 	docker compose -f dev/compose.yaml up -d
-	@echo "Postgres:  localhost:5432  (postgres / dev)"
-	@echo "Redis:     localhost:6379"
+	@echo "Postgres:  localhost:15432  (postgres / dev)"
+	@echo "Redis:     localhost:16379"
 	@echo "Keycloak:  http://localhost:8180  (admin / admin)"
 	@echo "OpenResty: http://localhost:8090"
 	@echo "MailHog:   http://localhost:8025"

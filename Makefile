@@ -9,8 +9,8 @@ help: ## Show this help
 dev: ## Layer 1: bring up Postgres+Redis+Keycloak+OpenResty+MailHog
 	$(COMPOSE) up -d
 	@echo
-	@echo "Postgres:  localhost:5432  (postgres / dev)"
-	@echo "Redis:     localhost:6379"
+	@echo "Postgres:  localhost:15432  (postgres / dev)"
+	@echo "Redis:     localhost:16379"
 	@echo "Keycloak:  http://localhost:8180  (admin / admin)"
 	@echo "OpenResty: http://localhost:8090  (try: curl -H 'Host: bank1.local' http://localhost:8090)"
 	@echo "MailHog:   http://localhost:8025"
