@@ -47,6 +47,7 @@
 
     <modules>
         <module>apps/auth-manager</module>
+        <module>libs/auth-lib</module>
     </modules>
 
     <dependencyManagement>

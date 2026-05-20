@@ -1,0 +1,31 @@
+{
+  "properties": [
+    {
+      "name": "auth-lib.issuer-uri",
+      "type": "java.lang.String",
+      "description": "Keycloak issuer URI, e.g. https://kc.example.com/realms/tenant1."
+    },
+    {
+      "name": "auth-lib.client-id",
+      "type": "java.lang.String",
+      "description": "OIDC client_id for this app in the configured realm."
+    },
+    {
+      "name": "auth-lib.client-secret",
+      "type": "java.lang.String",
+      "description": "OIDC client secret for the confidential client."
+    },
+    {
+      "name": "auth-lib.cache.enabled",
+      "type": "java.lang.Boolean",
+      "defaultValue": true,
+      "description": "Whether to cache permission lookups in Redis (if a StringRedisTemplate bean is available)."
+    },
+    {
+      "name": "auth-lib.cache.ttl",
+      "type": "java.time.Duration",
+      "defaultValue": "5m",
+      "description": "How long to cache permission lookups."
+    }
+  ]
+}
