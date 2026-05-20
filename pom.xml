@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.0.6</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.mcpmesh.auth</groupId>
+    <artifactId>auth-platform-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>auth-platform-parent</name>
+    <description>Parent POM for io.mcpmesh.auth platform modules</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Pinned per PLAN.org Version pinning policy. Server is 26.6.1; the
+             admin client artifact on Maven Central lags significantly. -->
+        <keycloak.version>26.0.5</keycloak.version>
+
+        <!-- Library pins; bump deliberately, not by accident. -->
+        <mapstruct.version>1.6.3</mapstruct.version>
+        <archunit.version>1.4.0</archunit.version>
+        <testcontainers.version>1.20.4</testcontainers.version>
+    </properties>
+
+    <!--
+      Modules will be added here as each child gets its own pom.xml.
+      Currently scaffolded as .gitkeep placeholders:
+        apps/auth-manager           (Phase 1)
+        libs/auth-lib               (Phase 2)
+        apps/tenant-operator        (Phase 4)
+        apps/keycloak-event-spi     (Phase 5)
+    -->
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Keycloak Admin Client. Talks to a Keycloak 26.x server (we pin
+                 server image at 26.6.1; this client lags but is compatible). -->
+            <dependency>
+                <groupId>org.keycloak</groupId>
+                <artifactId>keycloak-admin-client</artifactId>
+                <version>${keycloak.version}</version>
+            </dependency>
+
+            <!-- MapStruct: DTO <-> entity mapping. -->
+            <dependency>
+                <groupId>org.mapstruct</groupId>
+                <artifactId>mapstruct</artifactId>
+                <version>${mapstruct.version}</version>
+            </dependency>
+
+            <!-- ArchUnit: enforce package boundaries and the io.mcpmesh.* rule
+                 (no imports from ai.gentek.*) per PLAN.org Naming & Code Conventions. -->
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit-junit5</artifactId>
+                <version>${archunit.version}</version>
+                <scope>test</scope>
+            </dependency>
+
+            <!-- Testcontainers BOM. Use the BOM import so child modules just
+                 declare the testcontainers modules they need without versions. -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <configuration>
+                        <release>${java.version}</release>
+                        <!-- -parameters is required for Spring + MapStruct to
+                             reflect on parameter names. -->
+                        <parameters>true</parameters>
+                        <annotationProcessorPaths>
+                            <path>
+                                <groupId>org.mapstruct</groupId>
+                                <artifactId>mapstruct-processor</artifactId>
+                                <version>${mapstruct.version}</version>
+                            </path>
+                        </annotationProcessorPaths>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <includes>
+                            <include>**/*Test.java</include>
+                        </includes>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <configuration>
+                        <includes>
+                            <include>**/*IT.java</include>
+                        </includes>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>integration-test</goal>
+                                <goal>verify</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <executions>
+                        <execution>
+                            <id>enforce</id>
+                            <goals><goal>enforce</goal></goals>
+                            <configuration>
+                                <rules>
+                                    <requireJavaVersion>
+                                        <version>[21,)</version>
+                                    </requireJavaVersion>
+                                    <requireMavenVersion>
+                                        <version>[3.9.0,)</version>
+                                    </requireMavenVersion>
+                                    <bannedDependencies>
+                                        <excludes>
+                                            <!-- Deprecated since KC 25; use
+                                                 spring-security-oauth2-resource-server directly.
+                                                 See PLAN.org Version pinning policy. -->
+                                            <exclude>org.keycloak:keycloak-spring-boot-starter</exclude>
+                                            <!-- Springfox is dead; use springdoc-openapi instead. -->
+                                            <exclude>io.springfox:*</exclude>
+                                        </excludes>
+                                    </bannedDependencies>
+                                </rules>
+                                <fail>true</fail>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
+        <!-- Actively run the enforcer plugin in the parent build itself
+             (child modules inherit the execution). -->
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
