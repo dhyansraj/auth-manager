@@ -3,12 +3,25 @@ package io.mcpmesh.auth.manager.keycloak;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.Response;
 import org.keycloak.admin.client.Keycloak;
+import org.keycloak.admin.client.resource.AuthorizationResource;
+import org.keycloak.admin.client.resource.ClientResource;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
+import org.keycloak.representations.idm.RoleRepresentation;
+import org.keycloak.representations.idm.authorization.DecisionStrategy;
+import org.keycloak.representations.idm.authorization.Logic;
+import org.keycloak.representations.idm.authorization.ResourceRepresentation;
+import org.keycloak.representations.idm.authorization.RolePolicyRepresentation;
+import org.keycloak.representations.idm.authorization.ScopePermissionRepresentation;
+import org.keycloak.representations.idm.authorization.ScopeRepresentation;
 import org.keycloak.representations.info.ServerInfoRepresentation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Read-only Keycloak admin operations used by health checks and discovery.
@@ -17,6 +30,8 @@ import java.util.List;
  */
 @Service
 public class KeycloakAdminService {
+
+    private static final Logger log = LoggerFactory.getLogger(KeycloakAdminService.class);
 
     private final Keycloak admin;
 
@@ -130,5 +145,145 @@ public class KeycloakAdminService {
     public java.util.Optional<String> findClientUuid(String realmName, String clientId) {
         var matches = admin.realm(realmName).clients().findByClientId(clientId);
         return matches.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(matches.get(0).getId());
+    }
+
+    // -----------------------------------------------------------------------
+    // Authorization model mutations (client-scoped, idempotent).
+    //
+    // All methods below check existence first and skip if the target already
+    // exists. This lets ManifestService re-apply after a partial failure
+    // without erroring on already-created resources.
+    // -----------------------------------------------------------------------
+
+    /** Enables Authorization Services on the client (no-op if already enabled). */
+    public void enableAuthz(String realmName, String clientUuid) {
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        ClientRepresentation rep = clientResource.toRepresentation();
+        if (Boolean.TRUE.equals(rep.getAuthorizationServicesEnabled())) {
+            return;
+        }
+        rep.setAuthorizationServicesEnabled(Boolean.TRUE);
+        // Confidential clients are required for authz services.
+        rep.setServiceAccountsEnabled(Boolean.TRUE);
+        rep.setPublicClient(Boolean.FALSE);
+        clientResource.update(rep);
+    }
+
+    /** Creates a client-scoped role; no-op if one already exists with that name. */
+    public void createClientRole(String realmName, String clientUuid, String roleName) {
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        try {
+            clientResource.roles().get(roleName).toRepresentation();
+            return; // already exists
+        } catch (NotFoundException ignored) {
+            // create below
+        }
+        RoleRepresentation role = new RoleRepresentation();
+        role.setName(roleName);
+        clientResource.roles().create(role);
+    }
+
+    /** Creates a top-level authz scope on the client; no-op if it exists. */
+    public void createAuthzScope(String realmName, String clientUuid, String scopeName) {
+        AuthorizationResource authz = admin.realm(realmName).clients().get(clientUuid).authorization();
+        ScopeRepresentation existing = authz.scopes().findByName(scopeName);
+        if (existing != null) {
+            return;
+        }
+        try (Response response = authz.scopes().create(new ScopeRepresentation(scopeName))) {
+            requireSuccess(response, "create authz scope " + scopeName);
+        }
+    }
+
+    /**
+     * Creates an authz resource bound to the given scopes; no-op if the
+     * resource already exists (scopes are NOT diffed in v1).
+     */
+    public void createAuthzResource(String realmName, String clientUuid,
+                                    String resourceName, Set<String> scopeNames) {
+        AuthorizationResource authz = admin.realm(realmName).clients().get(clientUuid).authorization();
+        List<ResourceRepresentation> matches = authz.resources().findByName(resourceName);
+        if (matches != null && !matches.isEmpty()) {
+            return;
+        }
+        Set<ScopeRepresentation> scopes = new HashSet<>();
+        for (String s : scopeNames) {
+            scopes.add(new ScopeRepresentation(s));
+        }
+        ResourceRepresentation rr = new ResourceRepresentation();
+        rr.setName(resourceName);
+        rr.setScopes(scopes);
+        try (Response response = authz.resources().create(rr)) {
+            requireSuccess(response, "create authz resource " + resourceName);
+        }
+    }
+
+    /**
+     * Creates a role-based policy that grants the given client role. Returns
+     * the policy ID. If a policy with this name already exists, returns its
+     * existing ID.
+     *
+     * <p>{@code clientUuid} is the KC internal id (used for the path).
+     * {@code oidcClientId} is the OAuth2 client_id (used in the role binding).
+     * Keycloak's {@link RolePolicyRepresentation#addClientRole(String, String)}
+     * expects the OIDC client_id string, NOT the internal UUID -- passing the
+     * UUID causes HTTP 500 from the server.
+     */
+    public String createRolePolicy(String realmName, String clientUuid,
+                                   String oidcClientId,
+                                   String policyName, String roleName) {
+        AuthorizationResource authz = admin.realm(realmName).clients().get(clientUuid).authorization();
+        RolePolicyRepresentation existing = authz.policies().role().findByName(policyName);
+        if (existing != null) {
+            return existing.getId();
+        }
+        RolePolicyRepresentation rp = new RolePolicyRepresentation();
+        rp.setName(policyName);
+        rp.setLogic(Logic.POSITIVE);
+        rp.setDecisionStrategy(DecisionStrategy.UNANIMOUS);
+        // Bind to the client's role. addClientRole expects the OIDC client_id
+        // (e.g. "orders"), NOT Keycloak's internal client UUID.
+        rp.addClientRole(oidcClientId, roleName);
+        try (Response response = authz.policies().role().create(rp)) {
+            requireSuccess(response, "create role policy " + policyName);
+        }
+        RolePolicyRepresentation created = authz.policies().role().findByName(policyName);
+        if (created == null) {
+            throw new IllegalStateException("Role policy " + policyName + " not found after create");
+        }
+        return created.getId();
+    }
+
+    /**
+     * Creates a scope-based permission binding the given resource + scopes to
+     * the given policy IDs. No-op if a permission with this name already exists.
+     */
+    public void createScopePermission(String realmName, String clientUuid,
+                                      String permissionName, String resourceName,
+                                      Set<String> scopeNames, Set<String> policyIds) {
+        AuthorizationResource authz = admin.realm(realmName).clients().get(clientUuid).authorization();
+        ScopePermissionRepresentation existing = authz.permissions().scope().findByName(permissionName);
+        if (existing != null) {
+            return;
+        }
+        ScopePermissionRepresentation spr = new ScopePermissionRepresentation();
+        spr.setName(permissionName);
+        spr.setResources(new HashSet<>(Set.of(resourceName)));
+        spr.setScopes(new HashSet<>(scopeNames));
+        spr.setPolicies(new HashSet<>(policyIds));
+        spr.setLogic(Logic.POSITIVE);
+        spr.setDecisionStrategy(DecisionStrategy.UNANIMOUS);
+        try (Response response = authz.permissions().scope().create(spr)) {
+            requireSuccess(response, "create scope permission " + permissionName);
+        }
+    }
+
+    private void requireSuccess(Response response, String op) {
+        int status = response.getStatus();
+        if (status < 200 || status >= 300) {
+            String reason = response.getStatusInfo().getReasonPhrase();
+            log.error("Keycloak {} failed: HTTP {} {}", op, status, reason);
+            throw new RuntimeException("Keycloak " + op + " failed: HTTP " + status + " " + reason);
+        }
     }
 }

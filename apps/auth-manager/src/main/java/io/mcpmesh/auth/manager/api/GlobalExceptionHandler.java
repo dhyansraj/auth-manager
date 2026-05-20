@@ -47,6 +47,13 @@ public class GlobalExceptionHandler {
         return pd;
     }
 
+    @ExceptionHandler(UnsupportedOperationException.class)
+    public ProblemDetail handleUnsupported(UnsupportedOperationException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_IMPLEMENTED, ex.getMessage());
+        pd.setTitle("Not implemented");
+        return pd;
+    }
+
     // MethodArgumentNotValidException is handled by Spring's built-in
     // ResponseEntityExceptionHandler (which already returns ProblemDetail);
     // no override needed for now.
