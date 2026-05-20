@@ -1,7 +1,10 @@
 package io.mcpmesh.auth.manager.api;
 
+import io.mcpmesh.auth.manager.api.dto.AuditEventResponse;
 import io.mcpmesh.auth.manager.api.dto.CreateTenantRequest;
+import io.mcpmesh.auth.manager.api.dto.PageResponse;
 import io.mcpmesh.auth.manager.api.dto.TenantResponse;
+import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -11,6 +14,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -23,9 +27,11 @@ import java.util.UUID;
 public class TenantController {
 
     private final TenantService service;
+    private final AuditEventRepository auditRepo;
 
-    public TenantController(TenantService service) {
+    public TenantController(TenantService service, AuditEventRepository auditRepo) {
         this.service = service;
+        this.auditRepo = auditRepo;
     }
 
     @PostMapping
@@ -72,5 +78,20 @@ public class TenantController {
         // TODO(security): replace "system" with the authenticated principal.
         var t = service.retryProvisioning(id, "system");
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
+    }
+
+    @GetMapping("/{id}/audit")
+    public PageResponse<AuditEventResponse> audit(
+        @PathVariable UUID id,
+        @RequestParam(defaultValue = "0")  int page,
+        @RequestParam(defaultValue = "50") int size
+    ) {
+        // Trigger 404 if tenant doesn't exist (or was soft-deleted).
+        service.get(id);
+        int safeSize = Math.min(Math.max(size, 1), 200);
+        return PageResponse.from(
+            auditRepo.findByTenantIdOrderByOccurredAtDesc(id,
+                org.springframework.data.domain.PageRequest.of(page, safeSize)),
+            AuditEventResponse::from);
     }
 }
