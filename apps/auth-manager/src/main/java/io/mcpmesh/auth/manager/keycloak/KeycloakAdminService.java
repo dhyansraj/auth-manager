@@ -155,18 +155,32 @@ public class KeycloakAdminService {
     // without erroring on already-created resources.
     // -----------------------------------------------------------------------
 
-    /** Enables Authorization Services on the client (no-op if already enabled). */
+    /**
+     * Enables Authorization Services on the client (no-op if already enabled).
+     *
+     * <p>Resource-server decisionStrategy is AFFIRMATIVE so role-inclusion
+     * semantics work (ADMIN-only user is allowed on ORDER:VIEW even though
+     * VIEWER also has a permission for ORDER:VIEW).
+     */
     public void enableAuthz(String realmName, String clientUuid) {
         ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
         ClientRepresentation rep = clientResource.toRepresentation();
-        if (Boolean.TRUE.equals(rep.getAuthorizationServicesEnabled())) {
-            return;
+        if (!Boolean.TRUE.equals(rep.getAuthorizationServicesEnabled())) {
+            rep.setAuthorizationServicesEnabled(Boolean.TRUE);
+            // Confidential clients are required for authz services.
+            rep.setServiceAccountsEnabled(Boolean.TRUE);
+            rep.setPublicClient(Boolean.FALSE);
+            clientResource.update(rep);
         }
-        rep.setAuthorizationServicesEnabled(Boolean.TRUE);
-        // Confidential clients are required for authz services.
-        rep.setServiceAccountsEnabled(Boolean.TRUE);
-        rep.setPublicClient(Boolean.FALSE);
-        clientResource.update(rep);
+
+        // Assert decisionStrategy unconditionally so re-runs (and legacy
+        // realms created before this setting was applied) get repaired.
+        AuthorizationResource authz = clientResource.authorization();
+        var settings = authz.getSettings();
+        if (settings.getDecisionStrategy() != DecisionStrategy.AFFIRMATIVE) {
+            settings.setDecisionStrategy(DecisionStrategy.AFFIRMATIVE);
+            authz.update(settings);
+        }
     }
 
     /** Creates a client-scoped role; no-op if one already exists with that name. */
