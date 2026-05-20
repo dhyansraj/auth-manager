@@ -24,6 +24,13 @@ public class GlobalExceptionHandler {
         return pd;
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ProblemDetail handleIllegalState(IllegalStateException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        pd.setTitle("Invalid state transition");
+        return pd;
+    }
+
     // MethodArgumentNotValidException is handled by Spring's built-in
     // ResponseEntityExceptionHandler (which already returns ProblemDetail);
     // no override needed for now.

@@ -61,4 +61,10 @@ public class TenantController {
     public void delete(@PathVariable UUID id) {
         service.softDelete(id, "system");  // TODO(security): real actor
     }
+
+    @PostMapping("/{id}/retry")
+    public TenantResponse retry(@PathVariable UUID id) {
+        // TODO(security): replace "system" with the authenticated principal.
+        return TenantResponse.from(service.retryProvisioning(id, "system"));
+    }
 }

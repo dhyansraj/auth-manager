@@ -2,6 +2,7 @@ package io.mcpmesh.auth.manager.tenant;
 
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
+import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -19,6 +21,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest(properties = {
     "spring.autoconfigure.exclude=" +
@@ -38,20 +42,25 @@ class TenantServiceIT {
     @Autowired
     TenantRepository repo;
 
+    @MockitoBean
+    KeycloakAdminService keycloakAdmin;
+
     @BeforeEach
-    void clean() {
+    void setUp() {
         repo.deleteAll();
+        when(keycloakAdmin.realmExists(anyString())).thenReturn(false);
+        when(keycloakAdmin.createRealm(anyString(), anyString())).thenAnswer(inv -> inv.getArgument(0));
     }
 
     @Test
-    void create_persists_tenant_in_pending_status() {
+    void create_persists_tenant_and_marks_active() {
         Tenant t = service.create("bank1", "Bank 1", Map.of("region", "us-east-1"), "tester");
 
         assertThat(t.getId()).isNotNull();
         assertThat(t.getSlug()).isEqualTo("bank1");
         assertThat(t.getDisplayName()).isEqualTo("Bank 1");
-        assertThat(t.getStatus()).isEqualTo(TenantStatus.PENDING);
-        assertThat(t.getRealmName()).isNull();
+        assertThat(t.getStatus()).isEqualTo(TenantStatus.ACTIVE);
+        assertThat(t.getRealmName()).isEqualTo("t-bank1");
         assertThat(t.getSettings()).containsEntry("region", "us-east-1");
         assertThat(t.getCreatedAt()).isNotNull();
         assertThat(t.getCreatedBy()).isEqualTo("tester");
