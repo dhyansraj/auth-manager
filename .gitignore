@@ -1,0 +1,98 @@
+# ─── JVM / Maven / Gradle ────────────────────────────────────────────────
+target/
+build/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+.mvn/wrapper/maven-wrapper.jar
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ─── Node / Vite / React ─────────────────────────────────────────────────
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── IDEs ────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.project
+.classpath
+.settings/
+.factorypath
+bin/
+.nbproject/
+nbactions.xml
+nb-configuration.xml
+.apt_generated/
+.apt_generated_test/
+
+# ─── OS junk ─────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ─── Docker / Compose local state ───────────────────────────────────────
+dev/.local/
+dev/data/
+*.pid
+
+# ─── Kubernetes / Helm ──────────────────────────────────────────────────
+deploy/helm/*/charts/
+deploy/helm/*/Chart.lock
+deploy/helm/*/.helmignore.bak
+kubeconfig
+kubeconfig.*
+
+# ─── Secrets / environment ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+secrets/
+!secrets/.gitkeep
+
+# ─── Logs / runtime ─────────────────────────────────────────────────────
+*.log
+logs/
+tmp/
+.cache/
+
+# ─── Test / coverage ────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+jacoco.exec
+*.exec
+surefire-reports/
+failsafe-reports/
+
+# ─── Claude / agent tooling ─────────────────────────────────────────────
+# Per-machine local settings (Claude Code convention: .local.json is git-ignored,
+# settings.json without .local can be committed for team-shared config).
+.claude/settings.local.json
+.claude/local/

@@ -1,0 +1,3524 @@
+#+TITLE: auth-manager: Multi-Tenant Authentication & Authorization Platform
+#+AUTHOR: Dhyan Raj
+#+DATE: 2026-05-18
+#+OPTIONS: toc:3 num:t
+#+PROPERTY: header-args :results none
+#+STARTUP: overview
+#+TODO: TODO IN-PROGRESS BLOCKED | DONE CANCELLED
+
+* Preface
+
+This document is the canonical planning artifact for the =auth-manager= project. It
+is intentionally opinionated: it is meant to *teach the correct way to build a
+multi-tenant IAM control plane on top of Keycloak* given the constraints and
+prior art already in place. Where a design call has been made, you will find a
+short =Why:= paragraph next to it explaining the rationale and the alternative
+that was considered and rejected.
+
+** How to read this doc
+
+- Top-level headings (one =*=) are major chapters; subsections drill down.
+- TODO keywords (=TODO=, =IN-PROGRESS=, =BLOCKED=, =DONE=, =CANCELLED=) are used
+  in the Phased Roadmap chapter to track real execution state. Treat any item
+  not marked =DONE= as not done.
+- Code blocks are *real* (not pseudocode) unless explicitly labelled "skeleton".
+  You should be able to copy-paste any =yaml=, =sql=, =lua=, =java=, or =tsx=
+  block into the relevant file and have it compile or apply with minimal edits.
+- Cross references use full section titles ("see [[*Security Model][Security Model]]") rather
+  than numbered references, so the doc stays correct if sections are reordered.
+- Inline emphasis markers used as admonitions: ~CAUTION:~, ~BLOCKER:~,
+  ~NOTE:~, ~WHY:~.
+
+** Conventions
+
+| Symbol           | Meaning                                                  |
+|------------------+----------------------------------------------------------|
+| =tenant=         | An isolated customer/organization in the platform        |
+| =realm=          | A Keycloak realm; in this design, 1:1 with a tenant      |
+| =client=         | A Keycloak OAuth2 client (an "app" inside a realm)       |
+| =resource=       | A protected entity (e.g., =order=, =invoice=)            |
+| =scope=          | An action verb (e.g., =view=, =edit=, =delete=)          |
+| =permission=     | A Keycloak authz permission: resource + scope + policy   |
+| =RPT=            | Requesting Party Token: a JWT augmented with UMA perms   |
+| =JWKS=           | JSON Web Key Set: realm's public keys used to verify JWTs|
+| =CRD=            | Kubernetes Custom Resource Definition                    |
+| =operator=       | A controller that reconciles CRDs to real-world state    |
+| =SPI=            | Keycloak Service Provider Interface (extension hooks)    |
+| =UMA=            | User-Managed Access protocol (OAuth2 profile)            |
+
+** Glossary
+
+See [[*Appendix C: Glossary][Appendix C: Glossary]] for the full term list. The terms above are sufficient
+to read the Vision and Architecture chapters.
+
+* Vision & Goals
+
+** Problem statement
+
+We need a *control plane* that lets a platform team onboard new customer
+tenants, provision their apps (Keycloak clients), define their RBAC model, and
+route incoming traffic to the correct tenant backend --- all without writing
+ad-hoc scripts each time. Keycloak alone is not enough: it does not give us
+declarative onboarding, an opinionated multi-tenant model, host-based routing,
+audit, or a polished operator UI. =auth-manager= is the glue.
+
+** Goals
+
+1. *One-click tenant onboarding*: a single YAML manifest (or one UI form, or
+   one =kubectl apply= against a Tenant CRD) provisions a new realm, a default
+   set of clients, default groups, and registers the tenant's hostnames in the
+   edge router.
+2. *Idempotent declarative apps*: applying the same =AppManifest= twice is a
+   no-op; mutating it produces a controlled diff and a version-tracked update.
+3. *Source-of-truth split*: Keycloak owns identity; Postgres owns operational
+   state (manifests, audit, jobs, routing intentions); Redis owns derived
+   runtime state (host->tenant routing table, permission cache, JWKS cache).
+4. *Verified JWTs everywhere*: every backend in the platform validates JWT
+   signatures via JWKS (no exceptions; the legacy lib's signature-skip bug is
+   fixed in =auth-lib v2=).
+5. *Per-tenant isolation*: a security incident in tenant A must not be able to
+   read tenant B's data, sessions, or tokens.
+6. *Hybrid onboarding*: REST API for humans/UI, and a Kubernetes operator for
+   GitOps-driven environments. Same backend code path.
+7. *Local-first developer experience*: =make up= on a laptop yields a working
+   end-to-end platform on k3d with trusted local TLS in under five minutes.
+
+** Success criteria
+
+- A new tenant with three apps and ten users can be created in < 60 seconds
+  end-to-end via the UI.
+- A login on tenant A's portal results in a JWT signed by tenant A's realm,
+  verified by the backend using JWKS, with permissions cached in Redis on
+  first call and served from cache for subsequent calls within token TTL.
+- All onboarding actions appear in the audit log with =who=, =what=, =when=,
+  =manifest_version=, =result=.
+- Helm chart installs cleanly on k3d *and* on a managed Kubernetes cluster
+  (EKS/GKE/AKS) without code changes --- only values overrides.
+
+** Non-goals (explicit)
+
+- *Not* a Keycloak replacement. We delegate all identity primitives to Keycloak.
+- *Not* multi-region in v1. Single region, single Keycloak cluster, single
+  Postgres primary. Geo-replication is a v2 concern.
+- *Not* a billing/subscription system. Tenant metering belongs upstream.
+- *Not* an identity provider broker UI in v1. Per-tenant SAML/OIDC federation
+  can be configured in Keycloak directly; we expose it through the API later.
+- *Not* a workflow engine. Onboarding jobs are linear and synchronous-ish;
+  long-running approval workflows are out of scope.
+
+* Existing Assets Recap
+
+Three repositories already exist and inform the design. The table below
+summarizes their roles and fate.
+
+| Repo                        | Role                              | Current stack                  | Target stack                                              | Status              | What carries forward                        | What gets fixed/replaced                                                     |
+|-----------------------------+-----------------------------------+--------------------------------+-----------------------------------------------------------+---------------------+---------------------------------------------+------------------------------------------------------------------------------|
+| =oidc-keycloak= (legacy)    | App onboarding REST endpoint      | SB 3.3.2 / Java 17 / KC 25.0.2 | *No upgrade*; absorbed into =auth-manager= and archived  | Historical          | =AppRequest= YAML schema, Keycloak admin    | Absorbed wholesale into =auth-manager=; repo archived after Phase 1          |
+|                             |                                   |                                |                                                           |                     | client wiring, role+resource+scope creation | Master admin creds move to External Secrets; realm+user creation added       |
+| =auth-lib= (was =gentek-auth-lib=) | Reusable resource-server library | SB 3.3.2 / Java 21 / KC 25.0.3 | SB 4.0.6 / Java 21 / KC admin client 26.0.5 (v2)         | *In production use* | =KeycloakPermissionService= shape,          | *JWT signature verification bug (v2)*; Redis permission cache; SB 4          |
+|                             | (legacy package root → =io.mcpmesh.auth.lib.*=; see [[*Naming & Code Conventions][Naming & Code Conventions]]) |        |                                                           | --- needs v2        | =SecurityConfig= structure                  | auto-configuration; externalized config; remove =@ComponentScan= requirement |
+| =auth-client-sample= (was =auth-client=) | Demo consumer of the lib | SB 3.3.2 / Java 21             | SB 4.0.6 / Java 21 (lockstep with lib)                   | Reference only      | =SampleController= patterns,                | Migrate to lib v2; becomes the integration-test target in this repo's CI     |
+|                             |                                   |                                |                                                           |                     | =@Secured("PERMISSION_*")= usage            |                                                                              |
+
+#+begin_quote
+~BLOCKER:~ The legacy lib ships a custom =JwtDecoder= that *does not verify
+JWT signatures*. Every service consuming it today is vulnerable to
+token forgery: an attacker who knows the realm and a valid =sub= can mint a
+JWT signed with any key (or none) and have it accepted. *This must be fixed
+before any of this hits a real deployment.* See [[*auth-lib v2 (formerly gentek-auth-lib)][auth-lib v2]] for the fix
+and [[*Security Model][Security Model]] for the rationale.
+#+end_quote
+
+** Inspiration: the JPM "PICO" pattern
+
+The architectural shape (per-tenant realm + edge router + Redis routing table +
+central onboarding control plane) is lifted from a prior platform that proved
+itself at scale. The main delta in =auth-manager= is:
+
+- *Cloudflare Tunnel* replaces the corporate ingress, routed by hostname
+  (~Host~ header) rather than ~Referer~ --- ~Referer~ is unreliable,
+  not always present, and trivially spoofable.
+- *Helm-packaged* end to end so the same artifacts work on a laptop k3d and a
+  production EKS cluster.
+- *CRD + operator* alongside the REST API for GitOps workflows.
+
+* Naming & Code Conventions
+
+This section is the single source of truth for naming. Every new file in this
+platform, and every renamed file during the migration, follows these rules.
+
+** Java package root: =io.mcpmesh.auth.*=
+
+All custom Java code uses the package root =io.mcpmesh.auth=. This is the
+reverse of the =mcpmesh.io= domain, scoped to the =auth= subdomain to leave
+room for sibling concerns later (e.g., =io.mcpmesh.mesh.*=, =io.mcpmesh.obs.*=).
+
+~WHY:~ The existing repos use =ai.gentek.*= --- a holdover from an earlier
+branding. Standardizing on =io.mcpmesh.*= now (before Phase 2) prevents the
+mixed-namespace mess that comes from renaming half a codebase later. The cost
+is a one-time IntelliJ "Refactor → Rename Package" per module, which is
+mechanical and safe.
+
+** Sub-package layout
+
+| Module                  | Package root                                | Maven =groupId:artifactId=            |
+|-------------------------+---------------------------------------------+---------------------------------------|
+| Consumer library (v2)   | =io.mcpmesh.auth.lib.*=                     | =io.mcpmesh.auth:auth-lib=            |
+| auth-manager backend    | =io.mcpmesh.auth.manager.*=                 | =io.mcpmesh.auth:auth-manager=        |
+| tenant-operator         | =io.mcpmesh.auth.operator.*=                | =io.mcpmesh.auth:tenant-operator=     |
+| Keycloak event SPI      | =io.mcpmesh.auth.spi.*=                     | =io.mcpmesh.auth:keycloak-event-spi=  |
+| Sample consumer app     | =io.mcpmesh.auth.client.sample.*=           | =io.mcpmesh.auth:auth-client-sample=  |
+
+Within a module, prefer flat sub-packages by concern, not by layer. Example
+for =auth-manager=:
+
+#+begin_example
+io.mcpmesh.auth.manager
+├── api          (controllers)
+├── domain       (entities, value objects)
+├── service      (use cases)
+├── keycloak     (admin-client adapters)
+├── routing      (Redis writer)
+├── persistence  (JPA repos, Flyway hooks)
+├── security     (SecurityConfig)
+├── audit        (event publisher, log writers)
+└── config       (Spring @Configuration)
+#+end_example
+
+~NOTE:~ A flat, concern-based layout reads better than the deep
+=controllers/services/repositories/dtos/mappers/= hierarchy. If a file's
+package doesn't tell you what it does, the package is wrong --- not the file.
+
+** Class naming
+
+- *Drop org prefixes from class names.* The package already qualifies them.
+  Auto-configuration classes are simply =SecurityAutoConfiguration= --- the
+  fully qualified name =io.mcpmesh.auth.lib.security.SecurityAutoConfiguration=
+  is unambiguous, and a =McpMesh= prefix would be noise.
+- Spring =@Configuration= classes named =FooConfig= or =FooConfiguration=,
+  consistent within a module (don't mix).
+- Auto-configuration classes end in =AutoConfiguration= (Spring convention,
+  picked up by detection in some tools).
+- Test classes mirror the SUT name + suffix =Test= (unit) or =IT= (integration,
+  Testcontainers-backed). Failsafe runs =*IT=, Surefire runs =*Test=.
+
+** Maven coordinates
+
+#+begin_src xml
+<groupId>io.mcpmesh.auth</groupId>
+<artifactId>auth-lib</artifactId>
+<version>2.0.0</version>
+#+end_src
+
+- =groupId= is =io.mcpmesh.auth= for every module in this platform.
+- =artifactId= is the short kebab-case module name (no =io.mcpmesh.auth-=
+  prefix --- that's what =groupId= is for).
+- =version= follows semver. New modules start at =0.1.0=. =auth-lib= starts
+  at =2.0.0= --- the major bump signals breaking changes in *both* the
+  package rename and the behavioral changes (JWT signature verification,
+  permission caching, auto-config). See [[*auth-lib v2 (formerly gentek-auth-lib)][auth-lib v2]].
+
+** Migration mapping (legacy → target)
+
+| Legacy package / class                                   | Target                                                |
+|----------------------------------------------------------+-------------------------------------------------------|
+| =ai.gentek.oidc.common.SecurityConfig=                   | =io.mcpmesh.auth.lib.security.SecurityConfig=         |
+| =ai.gentek.oidc.common.KeycloakPermissionService=        | =io.mcpmesh.auth.lib.security.PermissionService=      |
+| =ai.gentek.oidc.common.RestTemplateConfig=               | =io.mcpmesh.auth.lib.config.RestTemplateConfig=       |
+| =ai.gentek.oidc.common.Resource=                         | =io.mcpmesh.auth.lib.security.dto.Resource=           |
+| =ai.gentek.oidc.keycloak.*= (admin app)                  | Absorbed into =io.mcpmesh.auth.manager.keycloak.*=    |
+| =ai.gentek.authmanager= (logback logger name, ad-hoc)    | =io.mcpmesh.auth.manager=                             |
+
+The legacy class =KeycloakPermissionService= drops the =Keycloak= prefix in
+v2 (=PermissionService=) --- it's in =security/= so the source of permissions
+is already implied; if we ever swap Keycloak for something else, no rename.
+
+** Repo names (out of scope, but noted)
+
+The existing GitHub repos at their current =gentek/*= paths get renamed to
+=mcpmesh/*= when convenient. This doc tracks package and Maven coordinates
+only --- the URL of the git remote is a separate concern that doesn't break
+builds.
+
+** Enforcement
+
+Add to =auth-lib= and =auth-manager= POMs:
+
+#+begin_src xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-enforcer-plugin</artifactId>
+  <executions>
+    <execution>
+      <id>enforce-naming</id>
+      <goals><goal>enforce</goal></goals>
+      <configuration>
+        <rules>
+          <bannedDependencies>
+            <excludes>
+              <exclude>org.keycloak:keycloak-spring-boot-starter</exclude>
+            </excludes>
+          </bannedDependencies>
+        </rules>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
+#+end_src
+
+A simple Checkstyle or ArchUnit rule can enforce "no class under
+=io.mcpmesh.auth.*= imports from =ai.gentek.*=" once Phase 2 begins. ArchUnit
+is the recommended choice --- it lives as a JUnit test, runs in CI, and the
+rule reads as plain English.
+
+* Target Architecture
+
+#+begin_src diagram
+                              Internet
+                                 |
+                          (DNS: *.your-org.com)
+                                 |
+                       +---------v---------+
+                       | Cloudflare Tunnel |  (preserves Host header,
+                       |   (cloudflared)   |   adds CF-Connecting-IP)
+                       +---------+---------+
+                                 |
+                       Cluster ingress (LoadBalancer 443)
+                                 |
+                       +---------v----------+
+                       |     OpenResty      |
+                       |  (Lua + Redis I/O) |
+                       |  ----------------  |
+                       |  1. read Host hdr  |
+                       |  2. GET host:<h>   |  <----+
+                       |  3. inject         |       |
+                       |     X-Tenant-Id    |       |  Redis
+                       |  4. proxy_pass     |       |  (host->tenant
+                       +----+-----------+---+       |   routing table)
+                            |           |           |
+              (/auth/*)     |           |  (/portal, /api, ...)
+                            |           |
+                    +-------v---+  +----v------------------+
+                    | Keycloak  |  | Tenant Backend(s)     |
+                    | (realm    |  | (Spring Boot apps     |
+                    |  per      |  |  built with           |
+                    |  tenant)  |  |  auth-lib v2)         |
+                    +-----+-----+  +----+------------------+
+                          |             |
+                          |             | (1) verify JWT via JWKS
+                          |             | (2) lookup perms in Redis cache
+                          |             | (3) on miss, UMA call to Keycloak
+                          |             | (4) cache result keyed by jti
+                          |             |
+                          |    +--------v---------+
+                          |    | auth-lib v2      |
+                          |    | NimbusJwtDecoder |---> JWKS fetch
+                          |    | RedisPermService |---> Redis  (perm cache)
+                          |    +------------------+
+                          |
+                  +-------v-------+
+                  |   Postgres    |  (Keycloak schema + auth_manager schema)
+                  +---------------+
+
+   ----- Admin / control plane (side channel) -------------------------------
+
+         Admin UI (React SPA, served as static assets from auth-manager)
+                              |
+                              v
+                  +---------------------+        +-----------------+
+                  |  auth-manager API   |<-----> |    Keycloak     |
+                  |  (Spring Boot 4.0.6,|        |  admin REST API |
+                  |   Java 21, JPA,     |        |  (server 26.6.1)|
+                  |   Redis, Flyway)    |        +-----------------+
+                  |                     |<-----> Postgres (auth_manager schema)
+                  |                     |<-----> Redis (writes host:<h> entries)
+                  +----------^----------+
+                             |
+                             | (calls same REST API)
+                             |
+                  +----------+----------+
+                  | tenant-operator     |
+                  | (java-operator-sdk, |
+                  |  watches Tenant/App |
+                  |  CRDs, reconciles)  |
+                  +---------------------+
+#+end_src
+
+~NOTE:~ The dashed boundary on the right (Admin UI / operator / auth-manager
+API) is the *control plane*. The boundary on the left (Tunnel / OpenResty /
+Keycloak / tenant backends) is the *data plane*. Operators and admins write
+to the control plane; end users only ever touch the data plane.
+
+~WHY: edge router instead of per-tenant Ingress objects.~ With one Ingress per
+tenant, host->backend mapping lives in many YAML files and requires a
+re-rollout to add a tenant. With OpenResty + Redis, adding a tenant is a single
+=SET host:bank1.your-org.com '{"tenant":"bank1","realm":"bank1","backend":"http://bank1-portal:8080"}'=
+issued by =auth-manager= --- zero ingress churn, instant routing.
+
+* Multi-Tenant Model & Keycloak Mapping
+
+** Concept mapping
+
+| Our concept                  | Keycloak primitive                                                | Notes                                                                                 |
+|------------------------------+-------------------------------------------------------------------+---------------------------------------------------------------------------------------|
+| Tenant                       | Realm                                                             | 1:1; deleting a tenant = deleting the realm + cascade in Postgres                     |
+| App (a deployable service)   | Client (confidential, with =authorization-services-enabled=true=) | One client per app; ID = =<tenant>-<app>-client= for traceability                     |
+| Role                         | Client role                                                       | Realm roles avoided --- keeps roles scoped to the app that owns them                  |
+| Resource                     | Client resource (under authz settings)                            | Named like =order=, =invoice=                                                         |
+| Scope                        | Client scope (under authz)                                        | Verb: =view=, =edit=, =delete=, =approve=                                             |
+| Permission                   | Client resource-based permission                                  | Binds (resource, scope) -> role-policy. Emitted as authority =PERMISSION_ORDER_VIEW=  |
+| User                         | Realm user                                                        | Created in the tenant's realm, never in =master=                                      |
+| Group                        | Realm group                                                       | Used to bulk-assign client roles across apps within a tenant                          |
+| Identity Provider (optional) | Realm IdP                                                         | Per-tenant SAML/OIDC federation; tenant brings their own corporate IdP                |
+| Tenant admin                 | Realm role =realm-admin= in the tenant's realm                    | Distinct from platform admin which lives in =master=                                  |
+| Platform admin               | Realm role in =master= realm                                      | Only this principal can call =/api/v1/tenants= (create/delete tenant)                 |
+
+~WHY: realm-per-tenant rather than single-realm-with-groups.~ Three reasons
+that override the "fewer realms = simpler ops" argument:
+
+1. *Isolation.* A single misconfigured policy in a shared realm leaks across
+   tenants. With realm-per-tenant, the blast radius of a misconfigured
+   permission is one tenant.
+2. *Independent identity providers.* Tenant A wants Okta, tenant B wants
+   Azure AD, tenant C wants username/password. In a single realm you stack
+   IdPs and rely on home-realm-discovery hacks. With realm-per-tenant, each
+   realm trivially has its own IdP set.
+3. *Clean deletion.* "Delete tenant" becomes "delete realm" + "delete schema
+   rows tagged with tenant_id" --- both straightforward. In single-realm you
+   must query-and-delete users by group membership, then re-evaluate policies,
+   risking orphaned resources.
+
+The cost: Keycloak does have a per-realm overhead. Empirically Keycloak 26
+handles ~500 small realms on a 2-pod cluster comfortably; we will revisit if
+we cross that.
+
+** Diagram: one tenant's realm contents
+
+#+begin_src diagram
+   Realm: bank1
+   |
+   +-- Clients
+   |     +-- bank1-portal-client    (the user-facing web app)
+   |     |     +-- Roles:      USER, MANAGER, ADMIN
+   |     |     +-- Resources:  account, transaction, statement
+   |     |     +-- Scopes:     view, edit, transfer, approve
+   |     |     +-- Permissions:
+   |     |          - "View Account"  : (account, view)  <- role-policy(USER, MANAGER, ADMIN)
+   |     |          - "Edit Account"  : (account, edit)  <- role-policy(MANAGER, ADMIN)
+   |     |          - "Transfer"      : (transaction, transfer) <- role-policy(USER, MANAGER, ADMIN)
+   |     |          - "Approve"       : (transaction, approve)  <- role-policy(MANAGER, ADMIN)
+   |     +-- bank1-admin-client     (internal back-office app)
+   |     +-- account (built-in)
+   |     +-- security-admin-console (built-in)
+   |
+   +-- Realm roles: (avoided; we use client roles)
+   |
+   +-- Groups
+   |     +-- /tellers      (auto-assigns USER on portal-client)
+   |     +-- /managers     (auto-assigns MANAGER on portal-client + USER on admin-client)
+   |     +-- /administrators (auto-assigns ADMIN on both clients)
+   |
+   +-- Users
+   |     +-- alice (member of /tellers)
+   |     +-- bob   (member of /managers)
+   |
+   +-- Identity Providers (optional)
+   |     +-- bank1-okta (SAML)
+   |
+   +-- Event Listeners
+         +-- jboss-logging (default)
+         +-- auth-manager-event-publisher  (custom SPI; pushes to Kafka or HTTP)
+#+end_src
+
+* Component Designs
+
+** Cloudflare Tunnel + DNS
+
+External traffic enters the platform exclusively through Cloudflare Tunnel
+(=cloudflared=). A wildcard DNS record =*.your-org.com= is proxied through
+Cloudflare and routed via Tunnel to the in-cluster OpenResty service.
+
+*** DNS pattern
+
+- =admin.your-org.com= --- Admin UI (served by =auth-manager=)
+- =auth-<tenant>.your-org.com= --- Keycloak realm endpoint for that tenant
+  (proxied through OpenResty so we can rate-limit and audit)
+- =<app>.<tenant>.your-org.com= --- the tenant's app
+  (e.g., =portal.bank1.your-org.com=)
+
+*** Wildcard TLS
+
+In production: a Cloudflare-managed wildcard cert is fine; Tunnel terminates
+TLS at Cloudflare and re-establishes TLS to the origin if configured.
+
+Locally we use =mkcert= to mint a wildcard for =*.local.test= (see
+[[*Local Kubernetes Setup (k3d)][Local Kubernetes Setup]]).
+
+*** Tunnel ingress config
+
+#+begin_src yaml
+# ~/.cloudflared/config.yml on the bastion / or as a k8s ConfigMap
+# mounted by the cloudflared deployment
+tunnel: 8b1c8e1f-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+credentials-file: /etc/cloudflared/creds.json
+
+ingress:
+  # Send everything matching our domain to the cluster's openresty service
+  - hostname: "*.your-org.com"
+    service: https://openresty.auth-platform.svc.cluster.local:443
+    originRequest:
+      noTLSVerify: true   # internal cert; tighten in prod with originCAPool
+      httpHostHeader: ""  # preserve original Host
+      connectTimeout: 5s
+  # Catch-all
+  - service: http_status:404
+#+end_src
+
+*** Preventing tunnel bypass
+
+~CAUTION:~ Anyone who learns the cluster's external IP could try to hit
+OpenResty directly, bypassing Cloudflare's WAF and rate limits. Two defenses:
+
+1. Restrict the cluster ingress LoadBalancer to Cloudflare's published IP
+   ranges (https://www.cloudflare.com/ips/) via a cloud security group / k8s
+   =LoadBalancerSourceRanges=.
+2. In OpenResty, require =CF-Connecting-IP= header *and* validate the request
+   originated from the Cloudflare IP set via =realip_module=.
+
+** OpenResty edge router
+
+OpenResty is nginx + LuaJIT + lua-resty-* libraries. We use it for one job:
+look up the incoming =Host= in Redis, find the tenant + backend, and proxy.
+
+*** Full annotated =nginx.conf=
+
+#+begin_src nginx
+# /etc/nginx/nginx.conf  (rendered from a ConfigMap; see Helm chapter)
+worker_processes auto;
+error_log /var/log/nginx/error.log notice;
+
+events { worker_connections 4096; }
+
+http {
+    # ---- realip: trust Cloudflare so $remote_addr is the real client ------
+    # Populated at startup by an init-container that curls
+    # https://www.cloudflare.com/ips-v4 and renders this file.
+    include /etc/nginx/cloudflare-realip.conf;
+    real_ip_header CF-Connecting-IP;
+    real_ip_recursive on;
+
+    # ---- shared dict to cache Redis lookups (per-worker) -----------------
+    lua_shared_dict tenant_cache 16m;
+    lua_shared_dict locks 1m;
+
+    # ---- Redis connection settings via env -------------------------------
+    env REDIS_HOST;
+    env REDIS_PORT;
+    env REDIS_PASSWORD;
+
+    # ---- structured access log in JSON for easy ingestion ----------------
+    log_format json_combined escape=json
+      '{"ts":"$time_iso8601","remote":"$remote_addr","host":"$host",'
+      '"method":"$request_method","uri":"$request_uri","status":$status,'
+      '"upstream":"$upstream_addr","rt":$request_time,"tenant":"$sent_http_x_tenant_id"}';
+    access_log /var/log/nginx/access.log json_combined;
+
+    # ---- rate limiting (per-IP, 50 r/s with 100 burst) -------------------
+    limit_req_zone $binary_remote_addr zone=perip:10m rate=50r/s;
+
+    # ---- the only server block --------------------------------------------
+    server {
+        listen 443 ssl http2;
+        listen 80;
+        server_name _;
+
+        ssl_certificate     /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
+
+        # Reject anything not from Cloudflare (production only)
+        # set $cf_ok 0;
+        # if ($http_cf_connecting_ip != "") { set $cf_ok 1; }
+        # if ($cf_ok = 0) { return 403; }
+
+        limit_req zone=perip burst=100 nodelay;
+
+        # JWKS proxy: cache realm public keys at the edge so backends can
+        # fetch them locally without each one hammering Keycloak.
+        location ~ ^/realms/(?<realm>[^/]+)/protocol/openid-connect/certs$ {
+            proxy_pass http://keycloak.auth-platform.svc.cluster.local:8080;
+            proxy_cache jwks_cache;
+            proxy_cache_valid 200 5m;
+            proxy_cache_key "$host$uri";
+        }
+
+        # Main routing block
+        location / {
+            access_by_lua_file /etc/nginx/lua/route.lua;
+
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Tenant-Id       $tenant_id;
+            proxy_set_header X-Realm           $tenant_realm;
+
+            # $tenant_backend is set by the Lua handler
+            proxy_pass $tenant_backend;
+
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_read_timeout 60s;
+        }
+    }
+
+    proxy_cache_path /var/cache/nginx/jwks levels=1:2 keys_zone=jwks_cache:10m
+                     max_size=100m inactive=30m;
+}
+#+end_src
+
+*** Lua: =route.lua=
+
+#+begin_src lua
+-- /etc/nginx/lua/route.lua
+local redis = require "resty.redis"
+local cjson = require "cjson.safe"
+
+local host = ngx.var.host
+local cache = ngx.shared.tenant_cache
+
+-- 1. try per-worker cache first (fast path: ~1us)
+local cached = cache:get(host)
+if cached then
+    local rec = cjson.decode(cached)
+    ngx.var.tenant_id      = rec.tenant_id
+    ngx.var.tenant_realm   = rec.realm
+    ngx.var.tenant_backend = rec.backend
+    return
+end
+
+-- 2. miss: hit Redis
+local red = redis:new()
+red:set_timeouts(200, 200, 200) -- connect, send, read (ms)
+local ok, err = red:connect(os.getenv("REDIS_HOST"), tonumber(os.getenv("REDIS_PORT")))
+if not ok then
+    ngx.log(ngx.ERR, "redis connect failed: ", err)
+    return ngx.exit(502)
+end
+
+local pw = os.getenv("REDIS_PASSWORD")
+if pw and pw ~= "" then red:auth(pw) end
+
+local raw, err = red:get("host:" .. host)
+if not raw or raw == ngx.null then
+    ngx.log(ngx.WARN, "no routing entry for host: ", host)
+    return ngx.exit(404)
+end
+
+red:set_keepalive(10000, 100)
+
+local rec = cjson.decode(raw)
+if not rec or not rec.backend then
+    ngx.log(ngx.ERR, "malformed routing entry for ", host, ": ", raw)
+    return ngx.exit(500)
+end
+
+-- 3. fill nginx vars + populate per-worker cache (30s)
+ngx.var.tenant_id      = rec.tenant_id
+ngx.var.tenant_realm   = rec.realm
+ngx.var.tenant_backend = rec.backend
+cache:set(host, raw, 30)
+#+end_src
+
+The =auth-manager= service publishes a Redis pub/sub event =routing.invalidate=
+on tenant updates; OpenResty's =init_worker_by_lua= subscribes and proactively
+flushes its per-worker cache. (Not shown above for brevity; included in
+=routing-invalidator.lua=.)
+
+~WHY: per-worker shared-dict cache.~ Each nginx worker keeps a 30-second
+copy of the routing record. This caps Redis traffic at =workers * unique_hosts
+/ 30s= regardless of QPS. Without it, every request would hit Redis.
+
+** Keycloak
+
+*** Version & deployment
+
+- *Server*: =quay.io/keycloak/keycloak:26.6.1= (released 2026-04-15).
+- *Admin Client (Java)*: =org.keycloak:keycloak-admin-client:26.0.5= --- note the
+  admin client artifact lags the server release line significantly (server is on
+  26.6.x while the admin client artifact published to Maven Central is on
+  26.0.x). They are cross-compatible within the 26.x major.
+- *Bitnami Helm chart =bitnami/keycloak=*: typically lags upstream by 1--3
+  weeks. Pin =image.tag: "26.6.1"= explicitly in values.yaml rather than
+  relying on the chart's bundled =appVersion=.
+- *Database*: PostgreSQL 16 (KC 26.x supports 13+, we standardize on 16 for the
+  whole platform --- see [[*Postgres][Postgres]]).
+- *JVM*: Bitnami chart's bundled OpenJDK 21 is fine; do not override.
+- *Replicas*: =2= for production, =1= for local. Postgres HA is the actual
+  availability anchor --- KC nodes are stateless once cache is in DB.
+
+*** Version pinning policy
+
+Three rules. Violating any of these has cost us time on prior projects.
+
+1. *Pin the patch version, not =:latest= or =:26=.* Keycloak has shipped
+   ~weekly patches throughout the 26.x line in 2026, including two
+   backward-incompatible admin-API changes (event listener SPI argument
+   shapes, authz resource representation). Random rebuilds against =:latest=
+   silently move you across these. Bump deliberately, with a changelog read.
+
+2. *Server version and admin client version move independently.* The =org.keycloak:keycloak-admin-client= Maven artifact lags the server.
+   Pin both explicitly in =pom.xml= and =values.yaml=. Don't assume bumping
+   one implies the other.
+
+3. *Drop =org.keycloak:keycloak-spring-boot-starter= --- it is deprecated.*
+   Keycloak's official guidance since v25 is "use Spring Security's
+   =spring-boot-starter-oauth2-resource-server= directly." The deprecated
+   starter still resolves in Maven Central but receives no security fixes
+   and pulls a stale Spring transitive tree. =auth-lib v2= drops it
+   --- see [[*auth-lib v2 (formerly gentek-auth-lib)][auth-lib v2]]. If a copied =pom.xml=
+   snippet brings it back, fail the build with a Maven enforcer rule.
+
+*Bump cadence*: review for upgrade once per quarter. Read the release notes
+for every minor between your current pin and the target before bumping; KC
+release notes are short and high-signal.
+
+~CAUTION:~ Never =:latest=. There is no LTS in community Keycloak --- each
+minor is supported for ~6 months. If you need vendor LTS, use Red Hat Build
+of Keycloak (RHBK) which ships ~6--9 months behind community.
+
+*** Master realm bootstrap
+
+The =master= realm holds:
+- The platform admin user (=admin=).
+- A *single* confidential client =auth-manager-admin-client= with
+  service-account enabled and =realm-management= roles, used by =auth-manager=
+  to provision per-tenant realms.
+
+Credentials live in External Secrets, never in chart values.
+
+*** Per-tenant realm template
+
+When =auth-manager= creates a tenant, it imports a realm definition with these
+defaults:
+
+- =sslRequired= = =external=
+- =loginTheme= = =auth-manager= (custom theme, optional)
+- =eventsEnabled= = =true=, =eventsListeners= = [=jboss-logging=,
+  =auth-manager-event-publisher=]
+- =adminEventsEnabled= = =true=
+- =bruteForceProtected= = =true=
+- Token settings: =accessTokenLifespan= = 5m, =ssoSessionIdleTimeout= = 30m,
+  =refreshTokenMaxReuse= = 0
+
+Each app onboarded under the tenant adds a client + resources + scopes +
+permissions, reusing the existing =oidc-keycloak= code paths.
+
+*** Custom event listener SPI
+
+A small Keycloak SPI ships in =auth-manager/keycloak-spi/= that publishes
+=LOGIN=, =LOGIN_ERROR=, =LOGOUT=, =USER_INFO_REQUEST=, and admin events to
+=auth-manager='s =/internal/events= endpoint over an mTLS channel. The
+backend writes those into =audit_events=.
+
+** Postgres
+
+*** One DB, two schemas
+
+A single Postgres database, two logical schemas:
+- =keycloak= --- owned by the =keycloak= role; used by the Keycloak pods.
+- =auth_manager= --- owned by the =auth_manager= role; used by the backend.
+
+~WHY: not separate databases.~ Backups, point-in-time-recovery, and connection
+pooling get simpler with one DB; schema separation gives us the isolation we
+actually want. We can split databases later if write contention forces it.
+
+*** Connection pooling
+
+PgBouncer in =transaction= pooling mode, deployed as a subchart. The
+=auth-manager= backend uses HikariCP -> PgBouncer -> Postgres.
+
+*** Migrations
+
+Flyway, baseline at =V1__init.sql=. Migrations run as an init-container before
+the =auth-manager= pod starts. Never run migrations from CI to prod; the
+init-container handles it idempotently. See [[*Data Model][Data Model]] for the DDL.
+
+** Redis
+
+Single Redis (Bitnami subchart, with replica for HA). One Redis instance, four
+logical key namespaces partitioned by prefix (since we are not yet at the
+scale where separate clusters are warranted):
+
+| Key pattern        | Value (JSON)                                              | TTL                  | Written by         | Read by              |
+|--------------------+-----------------------------------------------------------+----------------------+--------------------+----------------------|
+| =host:<hostname>=  | ={tenant_id, realm, backend}=                             | none (manual evict)  | =auth-manager=     | OpenResty            |
+| =perm:<jti>=       | ={authorities:[...], exp}=                                | = token =exp= -now   | =auth-lib=         | =auth-lib=           |
+| =jwks:<realm>=     | raw JWKS JSON                                             | 10 min               | =auth-lib=         | =auth-lib=           |
+| =lock:<resource>=  | UUID token (=SET NX EX=)                                  | 30 sec               | =auth-manager=     | =auth-manager=       |
+| =session:<sid>=    | RPT cache                                                 | session idle timeout | =auth-manager=     | =auth-manager=       |
+
+*** Eviction & memory policy
+
+=maxmemory-policy allkeys-lru=, with =maxmemory= sized at 2x expected hot
+working set. The =host:*= keys carry =KEEPTTL= flag effectively by never being
+written with EX; the LRU policy can evict them but they will be rehydrated on
+the next request because OpenResty falls back to a 502 + a Postgres-driven
+reconciliation alarm.
+
+** auth-manager backend
+
+*** Module structure
+
+#+begin_src text
+auth-manager/
+  pom.xml
+  src/main/java/io/mcpmesh/auth/manager/
+    AuthManagerApplication.java
+    api/                <- @RestController classes (thin)
+      TenantController.java
+      AppController.java
+      UserController.java
+      ManifestController.java
+      AuditController.java
+      InternalEventsController.java
+    domain/             <- domain entities and value objects (no JPA)
+      Tenant.java
+      App.java
+      Manifest.java
+      AuditEvent.java
+    service/            <- orchestration; transactional boundary
+      TenantService.java
+      AppOnboardingService.java
+      ManifestApplyService.java
+      AuditService.java
+    keycloak/           <- adapter over keycloak-admin-client
+      KeycloakAdminClientFactory.java
+      RealmProvisioner.java
+      ClientProvisioner.java
+      UserProvisioner.java
+      EventPublisher.java
+    routing/            <- writes to Redis host:* table
+      RoutingTableWriter.java
+    persistence/        <- Spring Data JPA repositories + entities
+      entity/
+      repo/
+    security/           <- our own JWT config; we're a resource server too
+      AdminSecurityConfig.java
+      PlatformAdminRoleConverter.java
+    config/
+      RedisConfig.java
+      OpenApiConfig.java
+      Resilience4jKeycloakConfig.java
+  src/main/resources/
+    application.yml
+    db/migration/V1__init.sql
+    static/             <- React build output goes here
+  src/test/...
+#+end_src
+
+*** REST endpoint outline
+
+| Method | Path                                       | Body / Query              | Purpose                                                                  |
+|--------+--------------------------------------------+---------------------------+--------------------------------------------------------------------------|
+| POST   | =/api/v1/tenants=                          | TenantCreateRequest       | Create realm + default groups + Redis routing entries; emit audit        |
+| GET    | =/api/v1/tenants=                          | ?status, ?page            | Paged list of tenants                                                    |
+| GET    | =/api/v1/tenants/{id}=                     | --                        | Tenant detail                                                            |
+| PATCH  | =/api/v1/tenants/{id}=                     | TenantPatchRequest        | Update display name, settings, suspend/resume                            |
+| DELETE | =/api/v1/tenants/{id}=                     | ?cascade=true             | Delete realm + cascade Postgres + clear Redis                            |
+| POST   | =/api/v1/tenants/{id}/apps=                | AppManifest (YAML or JSON)| Onboard an app (reuses =oidc-keycloak= logic)                            |
+| GET    | =/api/v1/tenants/{id}/apps=                | --                        | List apps                                                                |
+| POST   | =/api/v1/tenants/{id}/users=               | UserCreateRequest         | Create a user in the tenant's realm                                      |
+| POST   | =/api/v1/tenants/{id}/users/{uid}/groups=  | {group_path}              | Assign user to a group                                                   |
+| POST   | =/api/v1/tenants/{id}/manifests:apply=     | full TenantManifest YAML  | Idempotent apply of entire tenant spec; computes diff vs previous hash   |
+| GET    | =/api/v1/tenants/{id}/manifests=           | --                        | History of applied manifests for the tenant                              |
+| GET    | =/api/v1/audit=                            | ?tenant&from&to&actor     | Filtered audit log                                                       |
+| GET    | =/api/v1/health=                           | --                        | Aggregated readiness; checks Keycloak, Postgres, Redis                   |
+| POST   | =/internal/events=                         | KeycloakEvent             | Receives events from Keycloak SPI; mTLS-only                             |
+
+OpenAPI/Swagger UI is exposed at =/swagger-ui/index.html= and the spec at
+=/v3/api-docs=. Both are gated behind platform-admin auth in prod.
+
+*** Sample controller signatures
+
+#+begin_src java
+@RestController
+@RequestMapping("/api/v1/tenants")
+@PreAuthorize("hasRole('PLATFORM_ADMIN')")
+public class TenantController {
+
+    private final TenantService tenants;
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public TenantResponse create(@Valid @RequestBody TenantCreateRequest req,
+                                 @AuthenticationPrincipal Jwt actor) {
+        return tenants.create(req, actor.getSubject());
+    }
+
+    @GetMapping("/{id}")
+    public TenantResponse get(@PathVariable UUID id) {
+        return tenants.findById(id).orElseThrow(TenantNotFoundException::new);
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable UUID id,
+                       @RequestParam(defaultValue = "false") boolean cascade,
+                       @AuthenticationPrincipal Jwt actor) {
+        tenants.delete(id, cascade, actor.getSubject());
+    }
+}
+#+end_src
+
+*** Service flow: =TenantService.create=
+
+#+begin_src java
+@Service
+@RequiredArgsConstructor
+public class TenantService {
+
+    private final TenantRepository repo;
+    private final RealmProvisioner realmProvisioner;
+    private final RoutingTableWriter routing;
+    private final AuditService audit;
+    private final TransactionTemplate tx;
+
+    public TenantResponse create(TenantCreateRequest req, String actor) {
+        // 1. claim the tenant slug uniquely in Postgres (advisory lock + insert)
+        TenantEntity entity = tx.execute(status -> {
+            repo.advisoryLock(req.slug().hashCode());
+            if (repo.existsBySlug(req.slug())) {
+                throw new TenantAlreadyExistsException(req.slug());
+            }
+            return repo.save(TenantEntity.newPending(req));
+        });
+
+        try {
+            // 2. provision the realm in Keycloak (idempotent w/ retry via resilience4j)
+            String realmName = realmProvisioner.provision(req);
+
+            // 3. write routing entries for each hostname
+            req.hostnames().forEach(h ->
+                routing.put(h, entity.getId(), realmName, req.defaultBackend()));
+
+            // 4. mark active + audit
+            tx.executeWithoutResult(s -> {
+                entity.markActive(realmName);
+                audit.record(actor, "tenant.create", entity.getId(), req);
+            });
+            return TenantResponse.from(entity);
+
+        } catch (Exception e) {
+            tx.executeWithoutResult(s -> {
+                entity.markFailed(e.getMessage());
+                audit.record(actor, "tenant.create.failed", entity.getId(), req);
+            });
+            throw e;
+        }
+    }
+}
+#+end_src
+
+~WHY: claim-then-provision pattern.~ We commit a =PENDING= row first so two
+concurrent =POST /tenants= for the same slug cannot both call Keycloak.
+If Keycloak provisioning fails, the row stays as =FAILED= and is visible in
+audit; a retry or manual cleanup is a single API call.
+
+** admin-ui
+
+*** Stack
+
+| Layer            | Choice                  | Why                                                        |
+|------------------+-------------------------+------------------------------------------------------------|
+| Framework        | React 18                | Mature, ecosystem, hireable                                |
+| Build            | Vite                    | Fastest dev loop, no webpack pain                          |
+| Language         | TypeScript (strict)     | Catch bugs in CI not prod                                  |
+| Component lib    | shadcn/ui + Tailwind    | Owned components (no semver of a UI lib breaking us)       |
+| Server state     | TanStack Query          | Cache, retries, mutations, suspense; not Redux for HTTP    |
+| Client state     | Zustand                 | 1 kB, no boilerplate; for UI-only state (sidebar, modals)  |
+| Routing          | React Router 6          | De facto standard                                          |
+| Forms            | react-hook-form + zod   | Schema validation that mirrors backend DTOs                |
+| YAML editor      | monaco-editor + js-yaml | Same editor as VS Code; round-trip parse for diff preview  |
+| Diff             | monaco-diff             | Pretty visual diffs on manifest apply                      |
+| Tests            | Vitest + Testing Library| Fast, ESM-native                                           |
+
+*** Directory layout
+
+#+begin_src text
+admin-ui/
+  package.json
+  vite.config.ts
+  tailwind.config.ts
+  tsconfig.json
+  src/
+    main.tsx
+    App.tsx
+    routes.tsx
+    api/
+      client.ts          <- axios instance + interceptors
+      tenants.ts         <- typed wrappers
+      apps.ts
+      audit.ts
+      manifests.ts
+    components/
+      ui/                <- shadcn-generated components
+      layout/
+        Sidebar.tsx
+        Topbar.tsx
+      tenants/
+        TenantCard.tsx
+        TenantForm.tsx
+      manifests/
+        ManifestEditor.tsx
+        ManifestDiff.tsx
+    hooks/
+      useTenants.ts      <- TanStack Query hooks
+      useAuth.ts
+    lib/
+      auth.ts            <- token handling; uses oidc-client-ts
+      yaml.ts            <- safe-load + diff utilities
+    pages/
+      DashboardPage.tsx
+      TenantsListPage.tsx
+      TenantDetailPage.tsx     (tabs: Apps, Users, Manifests, Audit)
+      AuditPage.tsx
+      SettingsPage.tsx
+    store/
+      uiStore.ts         <- Zustand
+#+end_src
+
+*** Example: TanStack Query hook
+
+#+begin_src typescript
+// src/hooks/useTenants.ts
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { TenantsApi, TenantCreateRequest } from "@/api/tenants";
+
+export const tenantsKey = (filters?: Record<string, string>) =>
+  ["tenants", filters ?? {}] as const;
+
+export function useTenants(filters?: Record<string, string>) {
+  return useQuery({
+    queryKey: tenantsKey(filters),
+    queryFn: () => TenantsApi.list(filters),
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: TenantCreateRequest) => TenantsApi.create(req),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tenants"] }),
+  });
+}
+#+end_src
+
+*** Example: shadcn/ui card for a tenant
+
+#+begin_src tsx
+// src/components/tenants/TenantCard.tsx
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Link } from "react-router-dom";
+import type { Tenant } from "@/api/tenants";
+
+export function TenantCard({ tenant }: { tenant: Tenant }) {
+  return (
+    <Link to={`/tenants/${tenant.id}`}>
+      <Card className="hover:shadow-md transition">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>{tenant.displayName}</CardTitle>
+          <Badge variant={tenant.status === "ACTIVE" ? "default" : "secondary"}>
+            {tenant.status}
+          </Badge>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          <div>slug: {tenant.slug}</div>
+          <div>apps: {tenant.appCount}</div>
+          <div>created: {new Date(tenant.createdAt).toLocaleDateString()}</div>
+        </CardContent>
+      </Card>
+    </Link>
+  );
+}
+#+end_src
+
+The build output is copied into =auth-manager/src/main/resources/static/= so
+the SPA is served from the same origin as the API (no CORS).
+
+** auth-lib v2 (formerly gentek-auth-lib)
+
+This section specifies =auth-lib v2= (the port of the legacy =gentek-auth-lib=).
+This is the *most security-critical* change in the entire project.
+
+*** What's wrong in v1
+
+#+begin_quote
+~BLOCKER:~ v1 ships a =JwtDecoder= that returns a =Jwt= built from the raw
+unverified token. *Any signature is accepted; even tokens with =alg: none= are
+accepted.* This was almost certainly added during local development to bypass
+JWKS connectivity issues and never removed.
+#+end_quote
+
+The v2 decoder must:
+
+1. Fetch JWKS from =$\{keycloak.url\}/realms/$\{keycloak.realm\}/protocol/openid-connect/certs=.
+2. Verify signature with the matching =kid=.
+3. Refresh JWKS on key rotation (cache-control or 5-minute TTL, whichever is shorter).
+4. Reject =alg: none= explicitly.
+5. Validate =iss=, =exp=, =nbf=, and (for clients that pass it) =aud=.
+
+*** =SecurityConfig= (v2)
+
+#+begin_src java
+package io.mcpmesh.auth.lib.security;
+
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.web.SecurityFilterChain;
+
+import java.time.Duration;
+
+@Configuration
+@EnableMethodSecurity
+public class SecurityConfig {
+
+    private final AuthProperties props;
+
+    public SecurityConfig(AuthProperties props) {
+        this.props = props;
+    }
+
+    @Bean
+    public JwtDecoder jwtDecoder() {
+        String jwks = props.url() + "/realms/" + props.realm()
+                    + "/protocol/openid-connect/certs";
+        NimbusJwtDecoder decoder = NimbusJwtDecoder
+                .withJwkSetUri(jwks)
+                .cache(Duration.ofMinutes(5))      // local JWKS cache
+                .build();
+        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(
+                props.url() + "/realms/" + props.realm()));
+        return decoder;
+    }
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http,
+                                           JwtAuthenticationConverter conv) throws Exception {
+        http
+            .csrf(csrf -> csrf.disable())
+            .authorizeHttpRequests(a -> a
+                .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+                .anyRequest().authenticated())
+            .oauth2ResourceServer(o -> o.jwt(j -> j.jwtAuthenticationConverter(conv)));
+        return http.build();
+    }
+
+    @Bean
+    public JwtAuthenticationConverter authoritiesConverter(
+            PermissionService perms) {
+        JwtAuthenticationConverter c = new JwtAuthenticationConverter();
+        c.setJwtGrantedAuthoritiesConverter(perms::authoritiesFor);
+        return c;
+    }
+}
+#+end_src
+
+*** Redis-cached =PermissionService=
+
+#+begin_src java
+package io.mcpmesh.auth.lib.security;
+
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.client.RestTemplate;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+
+public class PermissionService {
+
+    private final StringRedisTemplate redis;
+    private final RestTemplate http;
+    private final AuthProperties props;
+    private final ObjectMapper json = new ObjectMapper();
+
+    public PermissionService(StringRedisTemplate redis,
+                             RestTemplate http,
+                             AuthProperties props) {
+        this.redis = redis;
+        this.http = http;
+        this.props = props;
+    }
+
+    public Collection<GrantedAuthority> authoritiesFor(Jwt jwt) {
+        String jti = jwt.getId();
+        String cached = redis.opsForValue().get("perm:" + jti);
+        if (cached != null) {
+            return decode(cached);
+        }
+
+        // UMA ticket exchange: ask Keycloak for the RPT for this token
+        String tokenEndpoint = props.url() + "/realms/" + props.realm()
+                             + "/protocol/openid-connect/token";
+
+        var headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+        headers.setBearerAuth(jwt.getTokenValue());
+
+        var form = new LinkedMultiValueMap<String, String>();
+        form.add("grant_type", "urn:ietf:params:oauth:grant-type:uma-ticket");
+        form.add("audience", props.clientId());
+        form.add("response_mode", "permissions");
+
+        var resp = http.exchange(tokenEndpoint, HttpMethod.POST,
+                                 new HttpEntity<>(form, headers),
+                                 new ParameterizedTypeReference<List<UmaPermission>>() {});
+        List<GrantedAuthority> auths = resp.getBody().stream()
+            .flatMap(p -> p.scopes().stream()
+                          .map(s -> "PERMISSION_" + p.rsname().toUpperCase()
+                                  + "_" + s.toUpperCase()))
+            .distinct()
+            .map(SimpleGrantedAuthority::new)
+            .collect(Collectors.toUnmodifiableList());
+
+        long ttl = Math.max(1, jwt.getExpiresAt().getEpochSecond() - Instant.now().getEpochSecond());
+        redis.opsForValue().set("perm:" + jti, encode(auths), Duration.ofSeconds(ttl));
+        return auths;
+    }
+    // encode/decode helpers omitted for brevity
+}
+#+end_src
+
+*** Auto-configuration
+
+Create =META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports=:
+
+#+begin_src text
+io.mcpmesh.auth.lib.security.SecurityAutoConfiguration
+io.mcpmesh.auth.lib.security.PermissionAutoConfiguration
+io.mcpmesh.auth.lib.config.RestTemplateAutoConfiguration
+#+end_src
+
+Each auto-config is =@AutoConfiguration= + =@ConditionalOnProperty(prefix="keycloak", name="enabled", havingValue="true", matchIfMissing=true)= so consumers can disable selectively.
+
+*** Properties
+
+#+begin_src yaml
+# application.yml in consumer apps
+keycloak:
+  url: ${KEYCLOAK_URL:http://keycloak:8080}
+  realm: ${KEYCLOAK_REALM:bank1}
+  client-id: ${KEYCLOAK_CLIENT_ID:bank1-portal-client}
+  client-secret: ${KEYCLOAK_CLIENT_SECRET}   # from External Secrets
+  permission-cache:
+    enabled: true
+    ttl: 300s    # cap; real TTL = min(this, token exp - now)
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+#+end_src
+
+** tenant-operator
+
+*** Stack
+
+=java-operator-sdk= (JOSDK) v5.x on Quarkus or Spring Boot. We pick Spring Boot
+for stack consistency with the rest of the platform.
+
+~WHY: java-operator-sdk over kubebuilder.~ Two reasons:
+1. Stack uniformity --- one language, one build system, one IDE config.
+2. We can reuse the =auth-manager= REST client classes (DTOs, retry policy)
+   directly in the operator.
+
+The trade-off is fatter container images (~250 MB vs ~30 MB for a Go operator).
+Acceptable for a control-plane component.
+
+*** Tenant CRD
+
+#+begin_src yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tenants.auth.mcpmesh.io
+spec:
+  group: auth.mcpmesh.io
+  scope: Cluster
+  names:
+    plural: tenants
+    singular: tenant
+    kind: Tenant
+    shortNames: [tn]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [slug, displayName, hostnames]
+              properties:
+                slug:        { type: string, pattern: '^[a-z][a-z0-9-]{1,30}$' }
+                displayName: { type: string }
+                hostnames:
+                  type: array
+                  items: { type: string }
+                defaultBackend: { type: string }
+                identityProviders:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      alias: { type: string }
+                      kind:  { type: string, enum: [oidc, saml] }
+                      config: { type: object, x-kubernetes-preserve-unknown-fields: true }
+                suspended: { type: boolean, default: false }
+            status:
+              type: object
+              properties:
+                phase: { type: string, enum: [Pending, Provisioning, Ready, Failed] }
+                realm: { type: string }
+                lastReconciledHash: { type: string }
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:    { type: string }
+                      status:  { type: string }
+                      reason:  { type: string }
+                      message: { type: string }
+                      lastTransitionTime: { type: string, format: date-time }
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Phase, type: string, jsonPath: .status.phase }
+        - { name: Realm, type: string, jsonPath: .status.realm }
+        - { name: Age,   type: date,   jsonPath: .metadata.creationTimestamp }
+#+end_src
+
+*** Reconciler skeleton
+
+#+begin_src java
+@ControllerConfiguration
+public class TenantReconciler implements Reconciler<Tenant>, ErrorStatusHandler<Tenant> {
+
+    private final AuthManagerClient api; // calls /api/v1/tenants*
+
+    public TenantReconciler(AuthManagerClient api) { this.api = api; }
+
+    @Override
+    public UpdateControl<Tenant> reconcile(Tenant resource, Context<Tenant> ctx) {
+        var spec = resource.getSpec();
+        String hash = ManifestHasher.sha256(spec);
+        var status = resource.getStatus() == null ? new TenantStatus() : resource.getStatus();
+
+        if (hash.equals(status.getLastReconciledHash()) && "Ready".equals(status.getPhase())) {
+            return UpdateControl.noUpdate(); // converged
+        }
+
+        status.setPhase("Provisioning");
+        UpdateControl<Tenant> intermediate = UpdateControl.patchStatus(resource);
+
+        var apiResp = api.applyTenant(spec);  // POST /api/v1/tenants:apply
+        status.setRealm(apiResp.realm());
+        status.setLastReconciledHash(hash);
+        status.setPhase("Ready");
+        return UpdateControl.patchStatus(resource);
+    }
+
+    @Override
+    public ErrorStatusUpdateControl<Tenant> updateErrorStatus(Tenant r, Context<Tenant> c, Exception e) {
+        var s = r.getStatus() == null ? new TenantStatus() : r.getStatus();
+        s.setPhase("Failed");
+        s.addCondition("Reconciled", "False", "ApplyFailed", e.getMessage());
+        return ErrorStatusUpdateControl.patchStatus(r);
+    }
+}
+#+end_src
+
+*** App CRD
+
+Analogous shape (=auth.mcpmesh.io/v1alpha1=, =kind: App=), namespaced, with
+=spec.tenantRef.name=. Same reconciler pattern, hits =POST /api/v1/tenants/{id}/apps=.
+
+* End-to-end Flows
+
+** Tenant onboarding (UI / YAML / CRD)
+
+Sequence (all three input paths converge at step 2):
+
+1. *Input*:
+   - UI: admin fills the "Create Tenant" form -> =POST /api/v1/tenants=.
+   - CLI: =curl -d @tenant.yaml ... /api/v1/tenants:apply=.
+   - GitOps: =kubectl apply -f tenant.yaml= (CRD) -> operator -> same REST API.
+2. =auth-manager= authenticates the caller (platform admin role required).
+3. =TenantService.create= claims slug with an advisory lock + inserts a
+   =PENDING= row in =tenants=.
+4. =RealmProvisioner= calls Keycloak admin REST: create realm, apply realm
+   template, create default groups, install event listeners.
+5. =RoutingTableWriter= writes =host:<hostname>= entries in Redis for each
+   tenant hostname.
+6. Postgres row flipped to =ACTIVE=; audit event recorded.
+7. Pub/sub: =auth-manager= publishes =routing.invalidate= so OpenResty drops
+   its per-worker cache.
+8. Response returned (UI shows success; operator updates =.status.phase=Ready=).
+
+** App onboarding within a tenant
+
+1. Admin posts =AppManifest= YAML to =POST /api/v1/tenants/{id}/apps=.
+2. =AppOnboardingService= computes a content hash, checks for an existing
+   =app_manifests= row with the same hash + tenant + app slug --- if equal,
+   returns =200 OK= with =changed=false= (true idempotency).
+3. Otherwise: calls the (ported) =oidc-keycloak= code path:
+   create client, roles, resources, scopes, role-based authz policies.
+4. Inserts a new =app_manifests= row with version = max(version)+1 and the
+   new hash + raw YAML.
+5. Audit event recorded.
+
+** User onboarding & group assignment
+
+1. =POST /api/v1/tenants/{id}/users= with =\{username, email, temporaryPassword\}=.
+2. =UserProvisioner= creates the user in the tenant's realm, sets a temporary
+   password with =requiredActions=[UPDATE_PASSWORD]=.
+3. Optional: =POST /api/v1/tenants/{id}/users/{uid}/groups= adds the user to
+   groups, which through Keycloak's group-role mappings grants client roles.
+4. =user_cache= row in Postgres updated for fast filtering in the audit UI.
+
+** Runtime auth: bank1 portal login
+
+1. Browser hits =https://portal.bank1.your-org.com/=.
+2. Cloudflare Tunnel forwards to OpenResty, preserving =Host: portal.bank1.your-org.com=.
+3. OpenResty Lua: =GET host:portal.bank1.your-org.com= from Redis -> finds
+   ={tenant_id: ..., realm: "bank1", backend: "http://bank1-portal:8080"}=.
+4. OpenResty injects =X-Tenant-Id= + =X-Realm= and =proxy_pass='es.
+5. The portal Spring Boot app (built with =auth-lib v2=) sees no JWT,
+   redirects the browser to
+   =https://auth-bank1.your-org.com/realms/bank1/protocol/openid-connect/auth?...=.
+6. Cloudflare/OpenResty routes that to Keycloak. User logs in. Keycloak issues
+   an authorization code; the portal exchanges it for an access token.
+7. Subsequent request carries =Authorization: Bearer <jwt>=.
+8. =NimbusJwtDecoder=:
+   - Fetches JWKS for =bank1= (cached for 5 minutes, served from OpenResty's
+     JWKS proxy cache for 5 minutes on top of that).
+   - Verifies signature with matching =kid=.
+   - Validates =iss= = =https://auth-bank1.your-org.com/realms/bank1=.
+9. =KeycloakPermissionService= looks up =perm:<jti>= in Redis. Miss -> UMA
+   request to Keycloak; hit -> sub-ms response.
+10. Authorities (e.g., =PERMISSION_ACCOUNT_VIEW=) attached to the Authentication.
+11. =@Secured("PERMISSION_ACCOUNT_VIEW")= on the controller enforces access.
+
+** Tenant suspension & deletion
+
+Suspension (reversible):
+- =PATCH /api/v1/tenants/{id}= with =\{"suspended": true\}=.
+- Keycloak realm =enabled=false= (immediately rejects logins and token refresh).
+- Redis =host:<h>= entries' =backend= updated to a "service unavailable" stub
+  (or removed; with removal, OpenResty returns 404).
+- Postgres status -> =SUSPENDED=.
+- Audit event recorded.
+
+Deletion (destructive, requires =?cascade=true=):
+- Realm deleted in Keycloak.
+- All =host:*= entries for the tenant cleared from Redis; =perm:*= for tokens
+  issued by that realm naturally expire.
+- Postgres rows soft-deleted (tombstone) *except* =audit_events= which retains
+  forever for compliance.
+- Audit event recorded.
+
+* Security Model
+
+** JWT signature verification
+
+~BLOCKER REMEDIATION:~ =auth-lib v2= uses
+=NimbusJwtDecoder.withJwkSetUri(...)= which:
+- Fetches the realm's JWKS via HTTPS.
+- Caches it locally (5 minutes by default; honors =Cache-Control= if shorter).
+- Selects the verification key by =kid= header.
+- Rejects =alg: none= unconditionally.
+- Rejects unknown =kid= (forcing a JWKS refresh first; if still unknown -> 401).
+
+JWKS rotation cadence: Keycloak rotates RSA signing keys quarterly by default.
+A 5-minute JWKS cache means worst case 5 minutes of 401s after rotation if a
+backend was holding the old key; in practice the NimbusJwtDecoder triggers a
+refresh on unknown =kid=, so the user-visible failure window is one request.
+
+** Permission cache invalidation
+
+Cache key: =perm:<jti>=. TTL: =min(configured cap, token.exp - now)=. We never
+cache past the token's own expiration.
+
+For role changes: a Keycloak admin who changes a user's roles forces re-login
+in v1 (token still carries old permissions until expiry). In v2 we can add a
+Keycloak event listener that publishes =USER_GROUP_MEMBERSHIP= /
+=ROLE_ASSIGNMENT= events and invalidates =perm:*= for active tokens owned by
+that user. See Open Questions for the trade-off.
+
+** Secrets management
+
+- No secrets in Git, ever. Helm values reference =existingSecret= or use
+  External Secrets refs.
+- *External Secrets Operator* with the =Fake= provider locally (file-backed) and
+  AWS Secrets Manager / Vault in higher environments.
+- k8s Secrets are =Opaque= unless we need =kubernetes.io/dockerconfigjson=.
+- Keycloak master admin password is referenced as
+  =existingSecret: keycloak-admin= --- never inlined.
+
+#+begin_src yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: keycloak-admin
+  namespace: auth-platform
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: local-fake
+    kind: ClusterSecretStore
+  target:
+    name: keycloak-admin
+    creationPolicy: Owner
+  data:
+    - secretKey: admin-password
+      remoteRef: { key: keycloak/master/admin-password }
+#+end_src
+
+** Per-tenant isolation
+
+- Realm-per-tenant (see [[*Multi-Tenant Model & Keycloak Mapping][Multi-Tenant Model & Keycloak Mapping]]).
+- =tenant_id= is a column on every operational table; all queries from the
+  =auth-manager= API filter by it. We add a Hibernate filter
+  =@Filter(name="tenantFilter")= activated by an interceptor for safety.
+- Tenant backends are deployed in their own k8s namespaces
+  (=tenant-<slug>=). =NetworkPolicy=:
+  - ingress only from =auth-platform= namespace (OpenResty) and same-namespace.
+  - egress only to =auth-platform/keycloak= and =auth-platform/redis=.
+- Redis cache keys are tagged with realm/tenant where ambiguous (=perm:<jti>=
+  is implicitly tenant-scoped because the JTI is unique across realms).
+
+** Audit logging
+
+Two sources:
+1. =auth-manager= writes every state-changing API call to =audit_events=
+   (action, actor, target, request payload hash, status, timestamp).
+2. Keycloak's custom event listener SPI posts to =/internal/events= for
+   identity events (LOGIN, LOGIN_ERROR, LOGOUT, REGISTER, UPDATE_PASSWORD,
+   admin events).
+
+Retention: 1 year hot in Postgres, archival to object storage after that
+(s3-csi-driver-style export job; not in v1).
+
+** CSRF / CORS for admin UI
+
+Because the SPA is served from the same origin as the API, CORS is not needed
+in production. For local dev where Vite runs on 5173 and the API on 9090, we
+enable CORS for =http://localhost:5173= only and behind an
+=app.env=local= property.
+
+CSRF: APIs are stateless and authenticated by bearer token, so Spring's
+default CSRF protection is disabled. For *future* form-based admin endpoints
+we would re-enable it with a synchronizer token.
+
+** Rate limiting at OpenResty
+
+- Per-IP: 50 r/s, burst 100 (already in =nginx.conf= example above).
+- Per-tenant token endpoint: 10 r/s/IP on =/realms/*/protocol/openid-connect/token=
+  to slow brute-force.
+- Admin API: 20 r/s/IP on =admin.your-org.com=.
+
+For prod we add a Cloudflare WAF rule above this for L7 DDoS.
+
+* IdP Brokering Strategy
+
+** Terminology: brokering vs federation
+
+Keycloak's documentation uses two terms that are easy to conflate:
+
+- *Identity Brokering* --- Keycloak delegates the authentication step to an
+  external OIDC or SAML IdP (Google, Microsoft Entra ID, GitHub, another
+  Keycloak). The external IdP returns an assertion; Keycloak validates it,
+  provisions or looks up a local user, and mints its *own* token. This is
+  what we want.
+- *User Federation* --- Keycloak reads the user store itself from an
+  external system (LDAP, Kerberos, custom SPI). Passwords may be verified
+  against the remote store; the user record itself lives elsewhere. This is
+  a different mechanism with different operational characteristics.
+
+~NOTE:~ The industry routinely uses "federation" to mean either. This
+document uses *brokering* throughout when we mean the OIDC-delegation
+pattern; *federation* is reserved for the user-store integration pattern,
+which we do not use in v1.
+
+** Current state (the seven Google OAuth clients problem)
+
+The brownfield reality today: every app authenticates users by being its
+own OIDC client of Google. Each app owns a distinct Google Cloud OAuth
+client ID/secret and its own redirect URI registration.
+
+| App        | Auth front                    | Google OAuth client |
+|------------+-------------------------------+---------------------|
+| ai-debate  | dedicated nginx oauth2_proxy  | client #1           |
+| aicareers  | dedicated nginx oauth2_proxy  | client #2           |
+| dropwatch  | dedicated nginx oauth2_proxy  | client #3           |
+| happyfeet  | =auth-gateway= (custom)       | client #4           |
+| maya       | dedicated nginx oauth2_proxy  | client #5           |
+| skybot     | dedicated nginx oauth2_proxy  | client #6           |
+| wisefolio  | dedicated nginx oauth2_proxy  | client #7           |
+
+Problems this creates:
+- Seven OAuth clients to rotate when a secret leaks.
+- Seven sets of redirect URIs to maintain in Google Cloud Console.
+- No SSO across apps --- logging into ai-debate does nothing for skybot.
+- Per-app session cookies; logging out of one app does not log out of any
+  other.
+- No centralized view of who the users are, what they have permission to
+  do, or when they last signed in.
+- No way to swap Google for another IdP (Microsoft, GitHub, a corporate
+  SAML) without touching every app's code and config.
+
+** Target state
+
+#+begin_example
+   User                  app1                Keycloak              Google
+    |                     |                     |                    |
+    |---GET /protected--->|                     |                    |
+    |<--302 /authorize----|                     |                    |
+    |                                                                |
+    |---GET kc.dhyanraj.dev/realms/tenant1/.../auth ---------------->|
+    |                                           |                    |
+    |<--login page (local + "Sign in with Google" + GitHub + MS)-----|
+    |---picks Google ------------------------>--|                    |
+    |                                           |---302 to Google--->|
+    |---Google auth & consent ----------------------------------->-->|
+    |<--302 /broker/google/endpoint?code=...-------------------------|
+    |                                           |                    |
+    |                                           |---code exchange-->-|
+    |                                           |<--ID token --------|
+    |                                           |
+    |                                           | first-login flow:
+    |                                           |   verify email_verified=true
+    |                                           |   create or link local user
+    |                                           |
+    |                                           | mint Keycloak JWT
+    |                                           | (signed by realm key)
+    |                                           |
+    |<--302 app1/cb?code=KC_CODE----------------|
+    |---code exchange-->--|                     |
+    |<--Keycloak JWT------|                     |
+    |                     | validates via       |
+    |                     | auth-lib v2         |
+    |                     | using KC JWKS       |
+#+end_example
+
+What this buys us:
+- *ONE* Google OAuth client (the one Keycloak owns). Six fewer secrets to
+  rotate, six fewer redirect URI registrations.
+- True SSO across all apps in the same realm.
+- IdPs become per-realm configuration data. Adding GitHub login for one
+  tenant is a manifest change, not a code change in any app.
+- Per-tenant domain restriction (Google Workspace =hostedDomain=, Entra ID
+  tenant pinning).
+- Local Keycloak users and brokered users coexist in the same realm ---
+  useful for break-glass admins and contractors without corp accounts.
+- Permissions evaluated once, in Keycloak, regardless of how the user
+  authenticated.
+
+~WHY:~ We chose brokering over keeping per-app OIDC because (a) it
+collapses the Google Cloud Console sprawl to a single client, (b) it
+delivers SSO with no app-side work, (c) it decouples app code from any
+specific IdP --- the apps only ever know Keycloak --- and (d) per-realm
+IdP configuration lets tenant A authenticate against Google Workspace
+=bank1.com= while tenant B uses Microsoft Entra ID, with neither app
+caring. Alternative considered: keep per-app Google OAuth and just
+standardize the client configuration via a shared Terraform module ---
+rejected because it doesn't deliver SSO and still leaves seven secrets
+to rotate.
+
+** Per-tenant IdP configuration
+
+Each Keycloak realm is one tenant and owns its own IdP configuration set.
+Realm =bank1= can broker to Google Workspace =bank1.com=; realm =bank2=
+can broker to Microsoft Entra ID; realm =coop1= can broker to both plus
+local password login. Apps never see any of this --- they redirect to
+their realm's =/auth= endpoint and consume whatever Keycloak gives back.
+
+The =auth-manager= tenant manifest extends with an =identityProviders=
+block, which the operator turns into Keycloak Admin API calls:
+
+#+begin_src yaml
+tenant:
+  id: bank1
+  hostname: bank1.example.com
+realm:
+  displayName: "Bank 1"
+identityProviders:
+  - alias: google
+    providerId: google
+    enabled: true
+    config:
+      clientId: ${BANK1_GOOGLE_CLIENT_ID}
+      clientSecret: ${BANK1_GOOGLE_CLIENT_SECRET}
+      hostedDomain: bank1.com      # CRITICAL: restricts to this Google Workspace
+      defaultScope: "openid email profile"
+      syncMode: FORCE              # always update user profile from Google
+  - alias: microsoft
+    providerId: oidc
+    enabled: true
+    config:
+      authorizationUrl: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize
+      tokenUrl: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
+      clientId: ${BANK1_MS_CLIENT_ID}
+      clientSecret: ${BANK1_MS_CLIENT_SECRET}
+#+end_src
+
+~CAUTION:~ Always set =hostedDomain= for Google IdPs in B2B realms.
+Without it, *any* Google account can attempt the login --- Keycloak will
+ultimately reject on user-not-found (or auto-create, depending on policy),
+but you have already advertised that your IdP exists and accepts arbitrary
+Google identities. That is a phishing signal you do not want to emit.
+
+** First Login Flow --- the email-verification trap
+
+Keycloak's First Login Flow decides what happens the first time a brokered
+identity appears in a realm. The three practical policies:
+
+1. *Auto-create* (default): create a fresh local user from the IdP claims.
+   Safe so long as the IdP attests =email_verified=true=.
+2. *Auto-link by email*: if a local user with the same email already
+   exists, transparently link the new IdP identity to that user.
+   Convenient and *dangerous when =email_verified=false=*: an attacker
+   registers a Google consumer account claiming the victim's email
+   (unverified by Google), logs in via Keycloak, and gets attached to the
+   victim's real account. Account takeover.
+3. *Review profile* / *Require admin approval*: human-in-the-loop
+   confirmation. Slow but auditable; appropriate for high-assurance
+   environments.
+
+~BLOCKER:~ Whichever policy you pick, configure the IdP definition to
+*require* =email_verified=true= from the upstream token. On the IdP's
+"Advanced" tab in the Keycloak admin console, set *Trust Email* only if
+the upstream IdP guarantees verification:
+- Google Workspace: yes.
+- Google consumer accounts: mixed --- the field is populated but not
+  always meaningful for accounts created with arbitrary email addresses.
+- Microsoft Entra ID (work accounts): yes.
+- Microsoft consumer accounts: no.
+
+When in doubt, leave *Trust Email* off and let Keycloak's own email
+verification flow run.
+
+~WHY:~ The default this project picks is *auto-create + require
+=email_verified=true= + do not auto-link by email*. If a user already has
+a local account and later wants to use Google, they must explicitly use
+the "Link account" action from their Keycloak account console ---
+preventing the silent-takeover vector entirely.
+
+** Token format change (the actual migration work)
+
+Before migration, apps validate Google ID tokens:
+- =iss = https://accounts.google.com=
+- =aud = <that-app's-Google-OAuth-client-id>=
+- JWKS from =https://www.googleapis.com/oauth2/v3/certs=
+
+After migration, apps validate Keycloak-issued tokens:
+- =iss = https://kc.dhyanraj.dev/realms/<tenant-id>=
+- =aud = <keycloak-client-id-for-this-app>=
+- JWKS from =https://kc.dhyanraj.dev/realms/<tenant-id>/protocol/openid-connect/certs=
+
+For Spring Boot apps using =auth-lib v2= this is a configuration
+change, not a code change:
+
+#+begin_src properties
+keycloak.url=https://kc.dhyanraj.dev
+keycloak.realm=tenant1
+keycloak.client-id=app1
+#+end_src
+
+The =NimbusJwtDecoder.withJwkSetUri(...)= machinery (see
+[[*JWT signature verification][JWT signature verification]]) does the rest --- JWKS fetch, kid-based key
+selection, cache, refresh-on-unknown-kid.
+
+For nginx apps still fronted by =oauth2_proxy=, the equivalent config
+swap:
+
+#+begin_src conf
+provider = "oidc"
+oidc_issuer_url = "https://kc.dhyanraj.dev/realms/tenant1"
+client_id = "app1"
+client_secret = "${APP1_CLIENT_SECRET}"
+email_domains = ["*"]   # let Keycloak enforce, not oauth2_proxy
+#+end_src
+
+~NOTE:~ =oauth2_proxy= at the edge becomes optional once OpenResty +
+tenant-scoped routing is in place --- see [[*OpenResty edge router][OpenResty edge router]] for the
+recommended "auth check via OpenResty Lua + introspection" alternative
+that lets us delete =oauth2_proxy= from the per-app pods entirely.
+
+** Logout, SSO, and session management
+
+With brokering, Keycloak owns the user session; the apps do not. The
+behavioural consequences:
+
+- *Single Sign-On*: user logs into app1 --- the browser receives a
+  Keycloak session cookie scoped to =kc.dhyanraj.dev=. When the same
+  browser visits app2 and gets redirected to Keycloak, Keycloak sees the
+  existing session and immediately redirects back with a fresh token. No
+  second password prompt, no second Google round-trip.
+- *Single Logout (SLO)*: hitting
+  =/realms/<tenant>/protocol/openid-connect/logout= ends the Keycloak
+  session and triggers back-channel logout notifications to every app the
+  user is currently logged into (each app having registered a
+  =backchannel_logout_uri= as part of its client config).
+- *Token lifetime tuning*: short access-token TTL (5--15 min), longer
+  refresh-token TTL (hours to days), refresh-token rotation on. Apps
+  either use refresh tokens themselves or simply re-redirect to Keycloak
+  on access-token expiry --- the Keycloak session cookie makes the
+  redirect silent.
+- *IdP-initiated logout*: if Google revokes a user's session out-of-band,
+  Keycloak does *not* learn this automatically. The upper bound on a
+  stale-session window is the access-token TTL. If your threat model
+  requires faster propagation, enable Google Admin SDK push notifications
+  and consume them in a Keycloak Event Listener SPI; otherwise rely on
+  the TTL.
+
+** =kcadm.sh= recipe: add Google IdP to a realm
+
+The bootstrap escape hatch, and the reference implementation for what
+=auth-manager= generates when a tenant manifest declares an IdP:
+
+~NOTE:~ Commands below assume the =kcadm.sh= shipped with Keycloak =26.6.1=.
+Pre-26.x builds had different flag spellings for several options (e.g.,
+=--config= was renamed in 26.x); copy-pasting from older runbooks will fail
+with unhelpful argument errors.
+
+#+begin_src bash
+# Login to master realm as admin
+kcadm.sh config credentials \
+  --server https://kc.dhyanraj.dev \
+  --realm master --user admin --password "$KC_ADMIN_PASSWORD"
+
+# Add Google IdP to realm "bank1"
+kcadm.sh create identity-provider/instances -r bank1 -f - <<EOF
+{
+  "alias": "google",
+  "providerId": "google",
+  "enabled": true,
+  "trustEmail": false,
+  "storeToken": false,
+  "addReadTokenRoleOnCreate": false,
+  "firstBrokerLoginFlowAlias": "first broker login",
+  "config": {
+    "clientId": "$BANK1_GOOGLE_CLIENT_ID",
+    "clientSecret": "$BANK1_GOOGLE_CLIENT_SECRET",
+    "hostedDomain": "bank1.com",
+    "defaultScope": "openid email profile",
+    "syncMode": "FORCE",
+    "useJwksUrl": "true"
+  }
+}
+EOF
+#+end_src
+
+~NOTE:~ =auth-manager= automates exactly this call when a tenant manifest
+declares an IdP. Keep the recipe handy for the disaster-recovery case
+where the operator itself is unavailable and a realm needs an IdP added
+by hand.
+
+** Trust and failure modes
+
+When *Google* is down:
+- New logins via Google fail. Existing Keycloak access tokens remain valid
+  until their =exp=.
+- Mitigation: keep at least one local Keycloak admin user per realm (no
+  IdP attached) for break-glass.
+
+When *Keycloak* is down:
+- New logins fail entirely. JWKS fetches fail --- but apps with cached
+  JWKS keep validating existing tokens until cache expiry (recommended
+  cache: 10 min). Apps that re-fetch JWKS on every request (an
+  anti-pattern, do not do this) fail immediately.
+- Mitigation: run Keycloak with at least two replicas behind Postgres HA.
+  =auth-lib v2='s JWKS cache absorbs short outages.
+
+When a *tenant's IdP is misconfigured* (e.g., wrong client secret rotated
+into Google):
+- Only that realm's logins fail; other realms are unaffected. This is the
+  strong-isolation argument for realm-per-tenant --- see
+  [[*Multi-Tenant Model & Keycloak Mapping][Multi-Tenant Model & Keycloak Mapping]].
+
+** Migration ordering (per-app)
+
+For each existing app, the per-app cutover sequence is:
+
+1. Create an OIDC client in the target tenant's realm. Set *Valid Redirect
+   URIs* to the app's hostname(s).
+2. Add the Google IdP to the realm (one-time per realm; idempotent on
+   re-runs of the operator).
+3. In the app, either upgrade to =auth-lib v2= (Java apps) or
+   repoint =oauth2_proxy= (nginx apps) --- see
+   [[*Token format change (the actual migration work)][Token format change (the actual migration work)]].
+4. Deploy the migrated app side-by-side with the current Google-OAuth
+   version on a parallel hostname (e.g., =skybot-kc.dhyanraj.dev=).
+5. Validate: login works, permission claims are correct, logout works,
+   token refresh works.
+6. Cut DNS / Cloudflare Tunnel ingress over from the old hostname to the
+   new.
+7. Delete the app's old OAuth client in Google Cloud Console.
+8. Repeat for the next app.
+
+Per-app cutover effort: *roughly half a day* for a typical Spring Boot
+app (config change + redeploy + smoke test), *roughly one day* for nginx
++ custom-auth apps like =happyfeet='s =auth-gateway= (which is being
+retired wholesale rather than reconfigured).
+
+* Data Model
+
+The DDL below lives in =src/main/resources/db/migration/V1__init.sql=.
+
+#+begin_src sql
+-- ============================================================================
+-- auth_manager schema
+-- ============================================================================
+CREATE SCHEMA IF NOT EXISTS auth_manager;
+SET search_path = auth_manager, public;
+
+-- ---------- tenants ---------------------------------------------------------
+CREATE TABLE tenants (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug            TEXT NOT NULL UNIQUE,
+    display_name    TEXT NOT NULL,
+    realm_name      TEXT,                              -- null until Keycloak provisioned
+    status          TEXT NOT NULL CHECK (status IN
+                      ('PENDING','ACTIVE','SUSPENDED','FAILED','DELETED')),
+    settings        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by      TEXT NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at      TIMESTAMPTZ
+);
+CREATE INDEX idx_tenants_status ON tenants(status) WHERE deleted_at IS NULL;
+
+-- ---------- tenant hostnames (host -> tenant routing intent) ----------------
+CREATE TABLE tenant_hostnames (
+    hostname        TEXT PRIMARY KEY,
+    tenant_id       UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    backend_url     TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_hostnames_tenant ON tenant_hostnames(tenant_id);
+
+-- ---------- apps ------------------------------------------------------------
+CREATE TABLE apps (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    slug            TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    client_id       TEXT NOT NULL,                    -- Keycloak client id
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, slug)
+);
+
+-- ---------- app manifests (idempotency + versioning) ------------------------
+CREATE TABLE app_manifests (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    app_id          UUID NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+    version         INTEGER NOT NULL,
+    manifest_yaml   TEXT NOT NULL,
+    manifest_json   JSONB NOT NULL,
+    hash            CHAR(64) NOT NULL,                -- sha256 of canonicalized manifest
+    applied_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    applied_by      TEXT NOT NULL,
+    UNIQUE (app_id, version),
+    UNIQUE (app_id, hash)                              -- idempotency: same hash never re-applied
+);
+
+-- ---------- onboarding jobs (long-running state) ----------------------------
+CREATE TABLE onboarding_jobs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID REFERENCES tenants(id),
+    app_id          UUID REFERENCES apps(id),
+    kind            TEXT NOT NULL CHECK (kind IN ('TENANT_CREATE','TENANT_DELETE','APP_APPLY')),
+    state           TEXT NOT NULL CHECK (state IN ('QUEUED','RUNNING','SUCCEEDED','FAILED')),
+    payload         JSONB NOT NULL,
+    result          JSONB,
+    error           TEXT,
+    started_at      TIMESTAMPTZ,
+    finished_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_jobs_state ON onboarding_jobs(state) WHERE state IN ('QUEUED','RUNNING');
+
+-- ---------- audit events ----------------------------------------------------
+CREATE TABLE audit_events (
+    id              BIGSERIAL PRIMARY KEY,
+    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor           TEXT NOT NULL,            -- sub of caller, or "system", or "keycloak"
+    actor_kind      TEXT NOT NULL CHECK (actor_kind IN ('USER','SERVICE','SYSTEM','IDP_EVENT')),
+    tenant_id       UUID REFERENCES tenants(id),
+    action          TEXT NOT NULL,            -- e.g. 'tenant.create', 'app.apply', 'LOGIN'
+    target_kind     TEXT,                     -- 'tenant','app','user',...
+    target_id       TEXT,
+    request_hash    CHAR(64),                 -- sha256 of payload (for replay correlation)
+    result          TEXT NOT NULL CHECK (result IN ('SUCCESS','FAILURE')),
+    details         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ip              INET,
+    user_agent      TEXT
+);
+CREATE INDEX idx_audit_tenant_time ON audit_events(tenant_id, occurred_at DESC);
+CREATE INDEX idx_audit_actor_time  ON audit_events(actor, occurred_at DESC);
+CREATE INDEX idx_audit_action_time ON audit_events(action, occurred_at DESC);
+
+-- ---------- user cache (for fast list/search in UI) -------------------------
+CREATE TABLE user_cache (
+    tenant_id       UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    keycloak_user_id UUID NOT NULL,
+    username        TEXT NOT NULL,
+    email           TEXT,
+    enabled         BOOLEAN NOT NULL DEFAULT true,
+    last_login_at   TIMESTAMPTZ,
+    refreshed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, keycloak_user_id)
+);
+CREATE INDEX idx_user_cache_username ON user_cache(tenant_id, lower(username));
+CREATE INDEX idx_user_cache_email    ON user_cache(tenant_id, lower(email));
+#+end_src
+
+* REST API Design
+
+The full list of v1 endpoints. All require =Authorization: Bearer <jwt>= signed
+by the =master= realm with role =PLATFORM_ADMIN= unless noted.
+
+| Method | Path                                          | Body                          | Response                  | Auth                      |
+|--------+-----------------------------------------------+-------------------------------+---------------------------+---------------------------|
+| POST   | =/api/v1/tenants=                             | TenantCreateRequest           | TenantResponse (201)      | PLATFORM_ADMIN            |
+| GET    | =/api/v1/tenants=                             | --                            | Page<TenantResponse>      | PLATFORM_ADMIN            |
+| GET    | =/api/v1/tenants/{id}=                        | --                            | TenantResponse            | PLATFORM_ADMIN            |
+| PATCH  | =/api/v1/tenants/{id}=                        | TenantPatchRequest            | TenantResponse            | PLATFORM_ADMIN            |
+| DELETE | =/api/v1/tenants/{id}?cascade=true=           | --                            | 204                       | PLATFORM_ADMIN            |
+| POST   | =/api/v1/tenants/{id}/apps=                   | AppManifest                   | AppResponse (201)         | PLATFORM_ADMIN or T_ADMIN |
+| GET    | =/api/v1/tenants/{id}/apps=                   | --                            | List<AppResponse>         | T_ADMIN                   |
+| POST   | =/api/v1/tenants/{id}/users=                  | UserCreateRequest             | UserResponse (201)        | T_ADMIN                   |
+| GET    | =/api/v1/tenants/{id}/users?q=&page=&size==   | --                            | Page<UserResponse>        | T_ADMIN                   |
+| POST   | =/api/v1/tenants/{id}/users/{uid}/groups=     | { groupPath: string }         | 204                       | T_ADMIN                   |
+| POST   | =/api/v1/tenants/{id}/manifests:apply=        | TenantManifest (YAML or JSON) | ApplyResponse(diff,result)| PLATFORM_ADMIN            |
+| GET    | =/api/v1/tenants/{id}/manifests=              | --                            | List<ManifestVersion>     | PLATFORM_ADMIN            |
+| GET    | =/api/v1/audit?tenant=&from=&to=&actor=&page= | --                            | Page<AuditEvent>          | PLATFORM_ADMIN or T_ADMIN |
+| GET    | =/api/v1/health=                              | --                            | HealthAggregate           | anonymous                 |
+| POST   | =/internal/events=                            | KeycloakEvent                 | 202                       | mTLS only                 |
+
+OpenAPI/Swagger UI is at =/swagger-ui/index.html=, spec at =/v3/api-docs=. Both
+are =@PreAuthorize=PLATFORM_ADMIN= gated in non-local profiles.
+
+* UI Design
+
+** Information architecture
+
+#+begin_src text
+Sidebar:
+  - Dashboard          (counts, recent activity)
+  - Tenants            (list -> detail)
+  - Audit              (global cross-tenant filter)
+  - Settings           (platform settings, current user, sign out)
+Topbar:
+  - Search (cmd-k palette)
+  - Current user menu
+#+end_src
+
+** Wireframes (ASCII)
+
+*** Dashboard
+
+#+begin_src text
++---------------------------------------------------------------+
+|  Sidebar  |  Dashboard                                        |
+|           |                                                   |
+|  Home     |  +--------+ +--------+ +--------+ +--------+      |
+|  Tenants  |  | Tenants| | Apps   | | Users  | | Errors |      |
+|  Audit    |  |   42   | |  173   | | 12,341 | |   3    |      |
+|  Settings |  +--------+ +--------+ +--------+ +--------+      |
+|           |                                                   |
+|           |  Recent Activity                                  |
+|           |  +-------------------------------------------+    |
+|           |  | tenant.create  acme  alice  10:42  OK    |    |
+|           |  | app.apply      acme  bob    10:41  OK    |    |
+|           |  | LOGIN_ERROR    bank1 ---    10:40  FAIL  |    |
+|           |  +-------------------------------------------+    |
++---------------------------------------------------------------+
+#+end_src
+
+*** Tenants list
+
+#+begin_src text
++---------------------------------------------------------------+
+| Tenants                          [ + New Tenant ]    [ filter ]|
+|---------------------------------------------------------------|
+|  +--- Tenant card ---+  +--- Tenant card ---+  +-------------+ |
+|  | acme              |  | bank1             |  | demo        | |
+|  | ACTIVE            |  | ACTIVE            |  | SUSPENDED   | |
+|  | apps: 5  users:88 |  | apps: 3  users:42 |  | apps: 0     | |
+|  +-------------------+  +-------------------+  +-------------+ |
++---------------------------------------------------------------+
+#+end_src
+
+*** Tenant detail (tabs)
+
+#+begin_src text
++---------------------------------------------------------------+
+| Tenant: acme            [ Suspend ] [ Delete ] [ Edit ]       |
+|---------------------------------------------------------------|
+| [ Overview ] [ Apps ] [ Users ] [ Manifests ] [ Audit ]       |
+|---------------------------------------------------------------|
+| Apps                                              [ + Add App ]|
+|  +----------------------------------+                          |
+|  | portal      v3  ACTIVE  edit ->  |                          |
+|  | admin       v1  ACTIVE  edit ->  |                          |
+|  | reporting   v2  ACTIVE  edit ->  |                          |
+|  +----------------------------------+                          |
++---------------------------------------------------------------+
+#+end_src
+
+*** Manifest editor (Monaco)
+
+#+begin_src text
++---------------------------------------------------------------+
+| Manifests / portal              [ Apply ]  [ View Diff ]      |
+|---------------------------------------------------------------|
+|  +--------------------- editor ---------------------------+    |
+|  | 1  apiVersion: auth.mcpmesh.io/v1alpha1                 |   |
+|  | 2  kind: App                                            |   |
+|  | 3  metadata:                                            |   |
+|  | 4    name: portal                                       |   |
+|  | 5  spec:                                                |   |
+|  | 6    clientId: acme-portal-client                       |   |
+|  | 7    roles: [USER, MANAGER, ADMIN]                      |   |
+|  | 8    resources:                                         |   |
+|  | 9      - name: account                                  |   |
+|  | 10       scopes: [view, edit]                           |   |
+|  +---------------------------------------------------------+   |
+|  Below: diff vs current applied version (monaco-diff)         |
++---------------------------------------------------------------+
+#+end_src
+
+** Tech notes
+
+- *TanStack Query* for all server state. Mutations call =queryClient.invalidateQueries=.
+- *Zustand* for UI-only state: sidebar collapsed, command palette open, etc.
+- *react-hook-form + zod* for forms; zod schemas are co-located with API DTOs.
+- *Monaco* loaded lazily (=React.lazy=) because it's ~2 MB.
+- *Auth* via =oidc-client-ts=; redirect to the =master= realm for login, store
+  the access token in memory only (refresh token in httpOnly cookie issued by
+  the backend after the auth-code callback).
+
+* Helm Chart Layout
+
+** Directory tree
+
+#+begin_src text
+deploy/helm/auth-platform/
+  Chart.yaml
+  Chart.lock
+  values.yaml
+  values-local.yaml
+  values-prod.yaml
+  charts/                                <- charts dep update populates
+  templates/
+    _helpers.tpl
+    namespace.yaml
+    serviceaccount.yaml
+    rbac.yaml
+    external-secret-keycloak.yaml
+    external-secret-postgres.yaml
+    auth-manager-deployment.yaml
+    auth-manager-service.yaml
+    auth-manager-configmap.yaml
+    openresty-deployment.yaml
+    openresty-service.yaml
+    openresty-configmap.yaml
+    cloudflared-deployment.yaml
+    cloudflared-secret.yaml
+    ingress.yaml
+    tenant-operator-deployment.yaml
+    crds/
+      tenant.auth.mcpmesh.io.yaml
+      app.auth.mcpmesh.io.yaml
+    NOTES.txt
+  subcharts/                             <- our own subcharts (vs deps)
+    auth-manager/
+    admin-ui/                            (if split out)
+    tenant-operator/
+#+end_src
+
+** =Chart.yaml=
+
+#+begin_src yaml
+apiVersion: v2
+name: auth-platform
+description: Multi-tenant IAM control plane (Keycloak + auth-manager + edge router)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0"
+
+dependencies:
+  - name: keycloak
+    version: "22.x.x"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: keycloak.enabled
+  - name: postgresql
+    version: "15.x.x"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: postgresql.enabled
+    alias: postgres
+  - name: redis
+    version: "19.x.x"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: redis.enabled
+  - name: external-secrets
+    version: "0.9.x"
+    repository: "https://charts.external-secrets.io"
+    condition: externalSecrets.enabled
+#+end_src
+
+** =values.yaml= (annotated, partial)
+
+#+begin_src yaml
+# auth-platform/values.yaml
+global:
+  domain: your-org.com
+  imageRegistry: ghcr.io/your-org
+  imagePullPolicy: IfNotPresent
+  storageClass: ""             # empty -> use cluster default
+
+# --- Keycloak (Bitnami subchart) ---------------------------------------------
+keycloak:
+  enabled: true
+  image:
+    registry: quay.io
+    repository: keycloak/keycloak
+    tag: "26.6.1"             # pin explicitly; Bitnami chart's appVersion lags upstream
+  auth:
+    adminUser: admin
+    existingSecret: keycloak-admin
+    passwordSecretKey: admin-password
+  replicaCount: 2
+  proxy: edge
+  production: true
+  externalDatabase:
+    host: auth-platform-postgres-pgbouncer
+    port: 6432
+    database: keycloak
+    user: keycloak
+    existingSecret: postgres-keycloak
+    existingSecretPasswordKey: password
+  postgresql:
+    enabled: false             # we use the shared one
+  extraEnvVars:
+    - name: KC_HOSTNAME
+      value: "auth.{{ .Values.global.domain }}"
+  extraVolumes:
+    - name: keycloak-spi
+      configMap: { name: auth-manager-keycloak-spi }
+  extraVolumeMounts:
+    - name: keycloak-spi
+      mountPath: /opt/bitnami/keycloak/providers
+
+# --- Postgres ---------------------------------------------------------------
+postgres:
+  enabled: true
+  architecture: standalone
+  auth:
+    existingSecret: postgres-admin
+  primary:
+    initdb:
+      scriptsConfigMap: auth-platform-postgres-init   # creates schemas + roles
+
+# --- Redis ------------------------------------------------------------------
+redis:
+  enabled: true
+  architecture: replication
+  auth:
+    existingSecret: redis-auth
+  master:
+    persistence: { enabled: true, size: 8Gi }
+  replica:
+    replicaCount: 1
+
+# --- OpenResty edge router --------------------------------------------------
+openresty:
+  enabled: true
+  image: { repository: openresty/openresty, tag: 1.25.3.1-jammy }
+  replicaCount: 2
+  service:
+    type: LoadBalancer
+    port: 443
+  tls:
+    secretName: openresty-tls    # mkcert locally; cert-manager in prod
+
+# --- auth-manager backend ---------------------------------------------------
+authManager:
+  enabled: true
+  image: { repository: "{{ .Values.global.imageRegistry }}/auth-manager", tag: 0.1.0 }
+  replicaCount: 1
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+  env:
+    SPRING_PROFILES_ACTIVE: prod
+    KEYCLOAK_URL: "http://auth-platform-keycloak"
+    KEYCLOAK_MASTER_CLIENT_ID: "auth-manager-admin-client"
+  envFromSecret: auth-manager-secrets   # client-secret, db password, etc.
+
+# --- tenant-operator --------------------------------------------------------
+tenantOperator:
+  enabled: true
+  image: { repository: "{{ .Values.global.imageRegistry }}/tenant-operator", tag: 0.1.0 }
+  watchAllNamespaces: true
+
+# --- External Secrets -------------------------------------------------------
+externalSecrets:
+  enabled: true
+  provider: fake     # local; override to "aws" or "vault" in prod values file
+#+end_src
+
+** =templates/auth-manager-deployment.yaml=
+
+#+begin_src yaml
+{{- if .Values.authManager.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-manager
+spec:
+  replicas: {{ .Values.authManager.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: auth-manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: auth-manager
+    spec:
+      serviceAccountName: auth-manager
+      initContainers:
+        - name: flyway
+          image: flyway/flyway:10
+          args: ["-url=jdbc:postgresql://$(DB_HOST):$(DB_PORT)/$(DB_NAME)",
+                 "-user=$(DB_USER)", "-password=$(DB_PASS)",
+                 "-locations=filesystem:/sql", "migrate"]
+          envFrom:
+            - secretRef: { name: auth-manager-secrets }
+          volumeMounts:
+            - { name: migrations, mountPath: /sql }
+      containers:
+        - name: app
+          image: "{{ tpl .Values.authManager.image.repository . }}:{{ .Values.authManager.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - secretRef: { name: {{ .Values.authManager.envFromSecret }} }
+          env:
+            {{- range $k, $v := .Values.authManager.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+          resources: {{- toYaml .Values.authManager.resources | nindent 12 }}
+      volumes:
+        - name: migrations
+          configMap: { name: auth-manager-migrations }
+{{- end }}
+#+end_src
+
+** =templates/openresty-configmap.yaml= (excerpt)
+
+#+begin_src yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openresty-config
+data:
+  nginx.conf: |-
+    {{ .Files.Get "files/openresty/nginx.conf" | nindent 4 }}
+  route.lua: |-
+    {{ .Files.Get "files/openresty/lua/route.lua" | nindent 4 }}
+  routing-invalidator.lua: |-
+    {{ .Files.Get "files/openresty/lua/routing-invalidator.lua" | nindent 4 }}
+#+end_src
+
+** =templates/ingress.yaml= (for non-Cloudflare environments)
+
+#+begin_src yaml
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: auth-platform
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["*.{{ .Values.global.domain }}"]
+      secretName: wildcard-tls
+  rules:
+    - host: "*.{{ .Values.global.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: openresty, port: { number: 443 } }
+{{- end }}
+#+end_src
+
+** Umbrella vs library vs application charts
+
+- *Application chart* (=auth-platform=): the deployable unit. Templates render
+  actual k8s resources.
+- *Library chart*: pure helpers (= named templates, no rendered resources).
+  We extract one (=auth-platform-lib=) once we duplicate enough boilerplate.
+- *Umbrella*: an application chart whose primary job is composing subcharts.
+  =auth-platform= is an umbrella in spirit but ships its own templates too;
+  this is fine.
+
+Use semver on the chart (=0.1.0= -> =0.2.0= for backwards-incompat values
+changes). =appVersion= tracks the app image version but is informational.
+
+Hooks: use =helm.sh/hook: pre-install,pre-upgrade= for the migration init only
+if we move it out of the Deployment initContainer. Generally we prefer the
+initContainer approach because it ties migration to pod startup, simpler to
+reason about during rollbacks.
+
+* Local-First Development Loop
+
+The fastest feedback loop for daily development is *not* Kubernetes. Helm
+upgrades, image builds, and pod restarts add 30--60 seconds per code change ---
+unacceptable for iterating on a Spring controller or a React component. The
+local-first loop runs dependencies in Docker Compose and the apps themselves
+directly from IDE/CLI with hot reload.
+
+** Three layers of "local"
+
+| Layer | Purpose                                         | Tooling                       | Code change → feedback |
+|-------+-------------------------------------------------+-------------------------------+------------------------|
+| 1     | Daily dev: backend, UI, lib, controller logic   | Docker Compose + =mvn= + =npm=| <1 second              |
+| 2     | Integration: operator, CRDs, Helm, networking   | k3d                           | 30--60 seconds         |
+| 3     | Pre-prod soak: real DNS, CF Tunnel, real TLS    | beelink k3s cluster           | minutes                |
+
+~WHY:~ Each layer is strictly more realistic but strictly slower. Spend ~80% of
+dev time in Layer 1, ~15% in Layer 2 (when touching the operator or Helm),
+~5% in Layer 3 (before opening a hostname to the world). Most projects skip
+Layer 1 and hate their dev loop; we won't.
+
+Skip Layer 1 ONLY for: =tenant-operator= (needs a real cluster), Helm chart
+template debugging (needs a cluster), NetworkPolicy/RBAC behavior (needs a
+cluster). Everything else belongs in Layer 1.
+
+** Layer 1 topology
+
+#+begin_example
+┌─ host machine ──────────────────────────────────────────┐
+│                                                         │
+│  IntelliJ ─► auth-manager (mvn spring-boot:run)         │
+│              port 8080, talks to compose services       │
+│                                                         │
+│  npm run dev ─► admin-ui (Vite HMR) on port 5173        │
+│                  Vite proxy /api → localhost:8080       │
+│                                                         │
+│  Docker Compose (dev/compose.yaml):                     │
+│    ├─ postgres:16        :5432                          │
+│    ├─ redis:7            :6379                          │
+│    ├─ keycloak:26.6.1    :8180  (realm pre-imported)    │
+│    ├─ openresty          :8090  (lua + redis lookup)    │
+│    └─ mailhog            :8025  (optional, email flows) │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+#+end_example
+
+Spring DevTools restarts the app on classpath change (sub-second). Vite HMR
+pushes UI changes through the browser without losing component state. The
+debugger attaches to the JVM natively; no =JAVA_TOOL_OPTIONS=-agentlib...=
+dance. =docker compose down -v= resets the entire dependency layer in 3
+seconds.
+
+** =dev/= directory layout
+
+#+begin_example
+dev/
+├── compose.yaml              # Layer 1 dependency stack
+├── seed/
+│   ├── realm.json            # KC realm export: 1 tenant, 1 app, 1 user
+│   └── postgres-init.sql     # Creates the keycloak DB before KC starts
+├── openresty/
+│   ├── Dockerfile            # nginx:openresty base + lua + our config
+│   ├── nginx.conf            # Layer-1 variant (no TLS, no CF IP check)
+│   └── lua/
+│       └── route.lua         # The Redis-lookup routing logic
+└── README.md                 # Quick-start: prereqs + `make dev`
+#+end_example
+
+** =dev/compose.yaml=
+
+#+begin_src yaml
+name: auth-platform-dev
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_MULTIPLE_DATABASES: "authmanager,keycloak"
+    volumes:
+      - ./seed/postgres-init.sh:/docker-entrypoint-initdb.d/01-create-dbs.sh:ro
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.1
+    command:
+      - start-dev
+      - --import-realm
+      - --http-port=8180
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: dev
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./seed/realm.json:/opt/keycloak/data/import/realm.json:ro
+    ports: ["8180:8180"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 5s
+      retries: 30
+
+  openresty:
+    build: ./openresty
+    ports: ["8090:80"]
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web UI
+
+volumes:
+  pgdata:
+#+end_src
+
+~NOTE:~ =POSTGRES_MULTIPLE_DATABASES= is not a native Postgres feature; the
+init script at =seed/postgres-init.sh= reads the env var and =CREATE DATABASE=
+for each comma-separated name. Boilerplate, but standard.
+
+** =dev/seed/realm.json=
+
+Export with =kcadm.sh get realms/<realm-id> -r master > realm.json= against a
+hand-configured KC, or check in the canonical seed and re-export only when the
+seed changes. The seed should contain:
+
+- One realm =dev=
+- One OIDC client =auth-manager-ui= (public, =Standard Flow=, redirect URI
+  =http://localhost:5173/*=)
+- One OIDC client =auth-manager-backend= (confidential, =Service Accounts=
+  enabled, secret =dev-secret=)
+- One Google IdP placeholder (=enabled: false=; flip to =true= and add real
+  =clientId/Secret= via env interpolation if you need to test brokering
+  locally)
+- One realm role =platform-admin=
+- One user =admin@dev.local= with password =admin=, assigned =platform-admin=
+
+The full JSON lives in =dev/seed/realm.json=. Treat it as a fixture: edits go
+through =kcadm.sh= or the KC admin UI on a running compose stack, then
+re-export. Don't hand-edit the JSON.
+
+** Spring profile =local=
+
+=apps/auth-manager/src/main/resources/application-local.properties=:
+
+#+begin_src properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/authmanager
+spring.datasource.username=postgres
+spring.datasource.password=dev
+
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+
+keycloak.url=http://localhost:8180
+keycloak.realm=master
+keycloak.client-id=auth-manager-backend
+keycloak.client-secret=dev-secret
+
+# Spring DevTools picks up classpath changes
+spring.devtools.restart.enabled=true
+spring.devtools.livereload.enabled=true
+
+# Trust the local self-signed / non-TLS KC for development only
+keycloak.tls.verify=false
+#+end_src
+
+Activate with =--spring.profiles.active=local= or set
+=SPRING_PROFILES_ACTIVE=local= in your IDE run config. The =local= profile
+NEVER ships to a Docker image --- production images set the profile via env at
+deploy time.
+
+~CAUTION:~ =keycloak.tls.verify=false= is local-only. Add a Spring
+=@Profile("!local")= assertion in =SecurityConfig= that fails fast if any
+non-=local= profile has TLS verification disabled. Belt and suspenders.
+
+** Vite dev proxy
+
+=apps/admin-ui/vite.config.ts=:
+
+#+begin_src typescript
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+    proxy: {
+      '/api':  { target: 'http://localhost:8080', changeOrigin: true },
+      '/auth': { target: 'http://localhost:8180', changeOrigin: true },
+    },
+  },
+});
+#+end_src
+
+The UI runs on :5173, hits =/api/v1/tenants= → proxied to the backend on :8080,
+and =/auth/realms/dev/...= → proxied to Keycloak on :8180. Browser sees a
+single origin; no CORS in dev.
+
+** =openresty/Dockerfile= and Lua
+
+=dev/openresty/Dockerfile=:
+
+#+begin_src dockerfile
+FROM openresty/openresty:alpine
+
+RUN apk add --no-cache curl && \
+    /usr/local/openresty/luajit/bin/luarocks install lua-resty-redis-cluster
+
+COPY nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
+COPY lua/       /usr/local/openresty/nginx/lua/
+
+EXPOSE 80
+#+end_src
+
+The Layer-1 =nginx.conf= is the same as the production one (see
+[[*OpenResty edge router][OpenResty edge router]]) minus: TLS termination
+(handled by Cloudflare in prod, irrelevant locally), CF IP allowlist (no CF in
+dev), and rate limiting (don't waste cycles in dev). The Lua =route.lua= is
+identical --- this is the single most important property of the local stack:
+*the routing behavior under test in Layer 1 is the routing behavior shipped to
+production*.
+
+To exercise it locally: =HSET host:bank1.local 'backend' 'auth-manager:8080'=
+in Redis, then =curl -H 'Host: bank1.local' http://localhost:8090=.
+
+** Top-level =Makefile= (Layer 1 targets only --- Layer 2 targets live in [[*Local Kubernetes Setup (k3d)][Local Kubernetes Setup]])
+
+#+begin_src makefile
+.PHONY: dev dev-down dev-clean dev-logs dev-seed dev-shell-kc dev-shell-pg
+
+# Bring up the Layer-1 dependency stack
+dev:
+	docker compose -f dev/compose.yaml up -d
+	@echo "Postgres:  localhost:5432  (postgres / dev)"
+	@echo "Redis:     localhost:6379"
+	@echo "Keycloak:  http://localhost:8180  (admin / admin)"
+	@echo "OpenResty: http://localhost:8090"
+	@echo "MailHog:   http://localhost:8025"
+	@echo
+	@echo "Next: cd apps/auth-manager && mvn spring-boot:run"
+	@echo "      cd apps/admin-ui     && npm run dev"
+
+dev-down:
+	docker compose -f dev/compose.yaml down
+
+# Full reset: drops volumes (pg data, kc data)
+dev-clean:
+	docker compose -f dev/compose.yaml down -v
+
+dev-logs:
+	docker compose -f dev/compose.yaml logs -f --tail=50
+
+# Re-import the realm.json into a running KC (after editing it)
+dev-seed:
+	docker compose -f dev/compose.yaml exec keycloak \
+	  /opt/keycloak/bin/kc.sh import \
+	  --file=/opt/keycloak/data/import/realm.json --override=true
+
+dev-shell-kc:
+	docker compose -f dev/compose.yaml exec keycloak \
+	  /opt/keycloak/bin/kcadm.sh config credentials \
+	  --server http://localhost:8180 --realm master \
+	  --user admin --password admin
+
+dev-shell-pg:
+	docker compose -f dev/compose.yaml exec postgres \
+	  psql -U postgres -d authmanager
+#+end_src
+
+** Typical session
+
+#+begin_src bash
+make dev                              # ~30s: compose up + healthchecks pass
+cd apps/auth-manager && mvn spring-boot:run -Dspring-boot.run.profiles=local
+# (in another shell)
+cd apps/admin-ui && npm run dev       # opens http://localhost:5173
+# code, save, hot-reload, repeat
+make dev-down                         # end of day
+#+end_src
+
+End of day: =make dev-down= leaves volumes intact (your local KC realm and
+Postgres state persist). =make dev-clean= when you want to start fresh.
+
+** When to graduate to Layer 2 (k3d)
+
+- About to write the =tenant-operator= reconciler (CRDs need a real cluster).
+- Helm chart change you want to render and apply end-to-end.
+- Multi-pod behavior --- KC clustering, Redis Sentinel, Postgres replica
+  failover.
+- NetworkPolicy or RBAC change.
+- Final smoke test before opening a PR to =main=.
+
+Don't graduate for: routine backend code changes, UI work, lib changes, config
+tweaks. Those stay in Layer 1.
+
+** Common pitfalls
+
+- *Forgot to set =SPRING_PROFILES_ACTIVE=local=*. App tries to connect to
+  Bitnami-style URLs (=keycloak.auth-platform.svc.cluster.local=) and dies.
+  Fix: set the profile in the IDE run config once.
+- *Vite proxy 502 to backend*. Spring app isn't running yet, or =mvn= is still
+  compiling. Wait, refresh.
+- *KC realm.json import fails*. The realm already exists. Set
+  =--override=true= in =make dev-seed=, or =docker compose down -v= then
+  =make dev=.
+- *Postgres "database authmanager does not exist"*. The
+  =postgres-init.sh= script didn't run because you mounted compose with stale
+  volumes from before the init script existed. Solution: =make dev-clean= then
+  =make dev=.
+- *OpenResty can't reach Redis*. Service name typo in =nginx.conf= or
+  =route.lua= --- use =redis= (compose service name), not =localhost=, since
+  OpenResty is inside the compose network.
+- *Tests pass locally but fail in CI*. Likely a Layer-1 vs Layer-2 difference.
+  CI runs Testcontainers --- a deeper match to production than compose. If
+  this happens, run the test suite against k3d before pushing.
+
+** Reproducing the local stack in CI?
+
+Don't. CI uses Testcontainers (Layer-2-equivalent in-process) which is more
+representative for tests than a hand-rolled compose. The compose stack exists
+for *human* feedback loops; the test stack exists for *machine* feedback loops.
+Different tools, both correct for their jobs.
+
+* Local Kubernetes Setup (k3d)
+
+This section covers Layer 2 of the dev loop --- see [[*Local-First Development Loop][Local-First Development Loop]] for the Layer 1 (no-Kubernetes) daily workflow that comes first.
+
+** Prerequisites
+
+#+begin_src bash
+# macOS
+brew install k3d helm kubectl cloudflared mkcert helm-docs jq yq
+brew install --cask orbstack         # optional, Mac-friendly Docker alternative
+mkcert -install                       # one-time, installs local CA
+#+end_src
+
+** Cluster up
+
+#+begin_src bash
+k3d cluster create auth-platform \
+  --port "443:443@loadbalancer" \
+  --port "80:80@loadbalancer" \
+  --registry-create auth-platform-registry:0.0.0.0:5000 \
+  --k3s-arg "--disable=traefik@server:*" \
+  --agents 2
+
+kubectl create namespace auth-platform
+kubectl config set-context --current --namespace=auth-platform
+#+end_src
+
+~WHY: disable Traefik.~ We bring our own ingress (OpenResty). Letting Traefik
+also bind 80/443 fights with us.
+
+** Local TLS
+
+#+begin_src bash
+mkdir -p ./certs
+mkcert -cert-file ./certs/tls.crt -key-file ./certs/tls.key \
+       "*.local.test" "local.test"
+kubectl -n auth-platform create secret tls openresty-tls \
+        --cert=./certs/tls.crt --key=./certs/tls.key
+#+end_src
+
+Map =*.local.test= to the cluster's LoadBalancer IP in =/etc/hosts= (or use
+=dnsmasq= to wildcard it):
+
+#+begin_src text
+127.0.0.1  admin.local.test auth-acme.local.test portal.acme.local.test
+#+end_src
+
+** Install the platform
+
+#+begin_src bash
+helm dependency update deploy/helm/auth-platform
+helm install auth-platform deploy/helm/auth-platform \
+  -f deploy/helm/auth-platform/values-local.yaml \
+  --namespace auth-platform --create-namespace
+kubectl rollout status deploy/auth-platform-keycloak
+kubectl rollout status deploy/auth-manager
+#+end_src
+
+** Cloudflare Tunnel (optional, for testing real-IdP callbacks)
+
+#+begin_src bash
+cloudflared tunnel login
+cloudflared tunnel create auth-platform-dev
+cloudflared tunnel route dns auth-platform-dev "*.dev.your-org.com"
+# Then mount the tunnel cred secret into the cloudflared deployment.
+helm upgrade auth-platform deploy/helm/auth-platform \
+  --set cloudflared.enabled=true \
+  --set cloudflared.tunnelId="<id>"
+#+end_src
+
+** =Makefile=
+
+#+begin_src bash
+.PHONY: up down seed logs test fmt
+
+CLUSTER ?= auth-platform
+NS      ?= auth-platform
+
+up:
+	k3d cluster create $(CLUSTER) --port "443:443@loadbalancer" --port "80:80@loadbalancer" \
+	    --registry-create $(CLUSTER)-registry:0.0.0.0:5000 --k3s-arg "--disable=traefik@server:*" || true
+	kubectl create namespace $(NS) || true
+	helm dependency update deploy/helm/auth-platform
+	helm upgrade --install auth-platform deploy/helm/auth-platform \
+	    -f deploy/helm/auth-platform/values-local.yaml -n $(NS) --create-namespace
+	kubectl rollout status -n $(NS) deploy/auth-platform-keycloak --timeout=5m
+	kubectl rollout status -n $(NS) deploy/auth-manager --timeout=5m
+
+down:
+	helm uninstall auth-platform -n $(NS) || true
+	k3d cluster delete $(CLUSTER)
+
+seed:
+	@./scripts/seed-demo-tenants.sh
+
+logs:
+	stern -n $(NS) .
+
+test:
+	./mvnw -pl auth-manager verify
+	cd admin-ui && npm test --silent
+
+fmt:
+	./mvnw spotless:apply
+	cd admin-ui && npm run format
+#+end_src
+
+* CI/CD
+
+** Build pipeline (GitHub Actions)
+
+#+begin_src yaml
+# .github/workflows/build.yml
+name: build
+on:
+  push:    { branches: [main] }
+  pull_request:
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21, cache: maven }
+      - run: ./mvnw -B -ntp verify
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          context: ./auth-manager
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/auth-manager:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/auth-manager:latest
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: admin-ui/package-lock.json }
+      - run: cd admin-ui && npm ci && npm test --silent && npm run build
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm dependency update deploy/helm/auth-platform
+      - run: helm lint deploy/helm/auth-platform
+      - run: helm template deploy/helm/auth-platform | kubectl apply --dry-run=client -f -
+#+end_src
+
+** Image tagging
+
+- Every commit on =main= -> =:<git-sha>= and =:latest=.
+- Tagged releases (=v0.2.0=) -> =:0.2.0= and =:0.2= (rolling minor pointer).
+- Never overwrite a semver tag; never tag PR builds with semver.
+
+** Deploy strategy
+
+- *Lower environments*: ArgoCD watches =envs/dev= and =envs/staging= overlays.
+- *Production*: ArgoCD watches =envs/prod=, but sync is *manual* (a human
+  promotes a sha). CI never deploys to prod directly --- the "never deploy from
+  CI to prod" rule keeps a clear separation of artifact build and rollout.
+
+* Observability
+
+** Logging
+
+JSON via Logback:
+
+#+begin_src xml
+<!-- src/main/resources/logback-spring.xml -->
+<configuration>
+  <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <customFields>{"service":"auth-manager","env":"${ENV:-local}"}</customFields>
+      <includeMdc>true</includeMdc>
+    </encoder>
+  </appender>
+  <root level="INFO">
+    <appender-ref ref="JSON"/>
+  </root>
+  <logger name="io.mcpmesh.auth.manager" level="DEBUG"/>
+</configuration>
+#+end_src
+
+MDC keys we propagate: =traceId=, =spanId=, =tenantId=, =actor=, =requestId=.
+
+** Metrics
+
+Spring Boot Actuator + Micrometer + Prometheus registry exposed at
+=/actuator/prometheus=. The Helm chart adds a =ServiceMonitor= (if
+Prometheus Operator is present):
+
+#+begin_src yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: { name: auth-manager }
+spec:
+  selector: { matchLabels: { app.kubernetes.io/component: auth-manager } }
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 30s
+#+end_src
+
+** Tracing
+
+OpenTelemetry Java agent attached at startup (=-javaagent:/otel/opentelemetry-javaagent.jar=).
+OTLP exporter to an in-cluster OTel Collector, which fans out to Tempo/Jaeger.
+
+** Key SLIs
+
+| SLI                                                       | Target                         |
+|-----------------------------------------------------------+--------------------------------|
+| =/api/v1/tenants= create p95                              | < 3 s                          |
+| Login success rate per tenant                             | > 99.5% (excludes user error)  |
+| Permission lookup p99 (Redis hit path)                    | < 5 ms                         |
+| Permission lookup p99 (Keycloak UMA fallback)             | < 150 ms                       |
+| JWKS refresh failures per realm per day                   | < 1                            |
+| Auth-manager 5xx rate                                     | < 0.1%                         |
+| OpenResty -> Redis lookup p99                             | < 2 ms                         |
+
+* Migration & Coexistence Plan
+
+** =oidc-keycloak= -> =auth-manager=
+
+| =oidc-keycloak= file                          | Fate                                                                             |
+|-----------------------------------------------+----------------------------------------------------------------------------------|
+| =AppRequest.java= (DTO)                       | Lifted as-is into =auth-manager.domain.AppManifest=                              |
+| =KeycloakClientFactory= / admin client wiring | Replaced by =KeycloakAdminClientFactory= using resilience4j retry                |
+| =OnboardingController=                        | Becomes =AppController= under =/api/v1/tenants/{id}/apps=                        |
+| =OnboardingService=                           | Renamed =AppOnboardingService=, gains idempotency via =app_manifests.hash=       |
+| Hardcoded master credentials                  | *Removed*; moved to External Secrets                                             |
+| YAML parsing                                  | Lifted; the manifest YAML format stays backwards compatible (we owe consumers)   |
+
+After =auth-manager= 0.1.0 ships and is verified, =oidc-keycloak= repo gets a
+final commit pointing to this one and is archived (GitHub "Archive" flag).
+
+** legacy lib v1 -> =auth-lib= v2
+
+Breaking changes:
+
+1. =@ComponentScan("ai.gentek.oidc.common")= no longer required (auto-config
+   picks up the new =io.mcpmesh.auth.lib.*= classes).
+2. Properties moved from arbitrary @Value injection to =@ConfigurationProperties(prefix="keycloak")=.
+3. JWT signature is now *verified* --- any consumer relying on accepting
+   forged tokens (none should, but...) will see 401s.
+4. Redis dependency added; consumers must provide a Redis or set
+   =keycloak.permission-cache.enabled=false=.
+5. *Package rename*: all symbols move to =io.mcpmesh.auth.lib.*=. See
+   [[*Naming & Code Conventions][Naming & Code Conventions]] for the full migration mapping.
+
+Migration steps for a consumer app (the sample consumer formerly known as
+=auth-client=, retargeted as =auth-client-sample=):
+1. Bump dependency to =2.0.0= (=groupId= becomes =io.mcpmesh.auth=,
+   =artifactId= becomes =auth-lib=).
+2. Remove =@ComponentScan("ai.gentek.oidc.common")= from the main class.
+3. Update import statements to =io.mcpmesh.auth.lib.*=. IntelliJ "Optimize
+   Imports" does this automatically after the lib dependency is bumped.
+4. Add to =application.yml=:
+   #+begin_src yaml
+   keycloak:
+     url: ${KEYCLOAK_URL}
+     realm: ${KEYCLOAK_REALM}
+     client-id: ${KEYCLOAK_CLIENT_ID}
+     client-secret: ${KEYCLOAK_CLIENT_SECRET}
+   spring:
+     data:
+       redis:
+         host: ${REDIS_HOST}
+   #+end_src
+5. Set =KEYCLOAK_URL= to the realm issuer URL exactly as Keycloak returns in
+   =iss= (e.g., =https://auth-bank1.your-org.com= --- NOT the internal service
+   URL, because issuer comparison is exact-match).
+6. Re-deploy. If 401s appear immediately, check JWKS reachability from the pod.
+
+** =auth-client-sample= consumer
+
+Becomes the integration-test target for =auth-lib v2= in this repo's
+CI. Deployed in k3d to verify end-to-end: =portal.demo.local.test= ->
+OpenResty -> =auth-client-sample= -> JWT verify -> permission cache hit.
+
+* Phased Roadmap
+
+** Phase 0 --- Scaffolding & local infra
+
+*** TODO Create =auth-manager= repo with Maven multi-module skeleton
+*** TODO GitHub Actions: build + test + lint workflows
+*** TODO Helm chart skeleton (=deploy/helm/auth-platform=)
+*** TODO =Makefile= with =up=/=down=/=seed= targets
+*** TODO k3d cluster boots clean + Keycloak+Postgres+Redis subcharts install
+*** TODO Exit criteria
+- =make up= succeeds on a clean Mac in < 5 minutes.
+- =kubectl get pods -n auth-platform= shows Keycloak, Postgres, Redis healthy.
+- Admin can reach Keycloak admin console at =https://auth.local.test=.
+
+** Phase 1 --- Backend MVP
+
+*** TODO Port =oidc-keycloak= app-onboarding into =auth-manager=
+*** TODO Implement =/api/v1/tenants= (POST/GET/DELETE) with realm provisioning
+*** TODO Implement =/api/v1/tenants/{id}/apps= reusing ported code
+*** TODO Implement =/api/v1/tenants/{id}/manifests:apply= with idempotency
+*** TODO Audit table writes for every state-changing call
+*** TODO Flyway migrations + Testcontainers integration tests
+*** TODO Redis routing-table writer + OpenResty Lua working end-to-end
+*** TODO Exit criteria
+- =curl -X POST .../api/v1/tenants -d @demo.yaml= creates a realm and registers
+  a route in Redis.
+- =curl https://portal.demo.local.test= reaches the demo backend through OpenResty.
+- =SELECT * FROM auth_manager.audit_events= shows the create event.
+
+** Phase 2 --- =auth-lib v2=
+
+*** TODO Replace =JwtDecoder= with =NimbusJwtDecoder.withJwkSetUri=
+*** TODO Add Redis-backed permission cache keyed by =jti=
+*** TODO Convert to Spring Boot 3 auto-config (=AutoConfiguration.imports=)
+*** TODO Externalize all config via =keycloak.*= + env
+*** TODO Migrate =auth-client-sample= to v2, deploy in k3d, verify end-to-end
+*** TODO Publish =v2.0.0= to internal Maven repo
+*** TODO Exit criteria
+- =auth-client= deployed in k3d enforces =@Secured("PERMISSION_ORDER_VIEW")=
+  on a JWT signed by the demo realm.
+- Forged JWT (wrong signature) returns 401.
+- Token with =alg: none= returns 401.
+- Second request with same JWT hits Redis cache (verified via Redis MONITOR).
+
+** Phase 3 --- Admin UI MVP
+
+*** TODO Vite + React + TS + shadcn/ui scaffold under =admin-ui/=
+*** TODO Auth flow (oidc-client-ts -> master realm)
+*** TODO Pages: Dashboard, Tenants list, Tenant detail (Apps, Users, Audit, Manifests)
+*** TODO Monaco YAML editor + diff preview for manifest apply
+*** TODO Build pipeline copies =dist/= into =auth-manager/src/main/resources/static/=
+*** TODO Exit criteria
+- Admin can log in via the browser, see a list of tenants, create a new one
+  via a form, and watch its status flip from =PENDING= to =ACTIVE=.
+- YAML apply with a diff modal works against the backend.
+
+** Phase 4 --- =tenant-operator= + GitOps demo
+
+*** TODO Tenant + App CRDs installed
+*** TODO java-operator-sdk reconciler implementations
+*** TODO Operator calls the same REST API as the UI (no separate code path)
+*** TODO ArgoCD demo: =kubectl apply -f tenant.yaml= -> Argo syncs -> operator reconciles
+*** TODO Exit criteria
+- =kubectl apply -f acme-tenant.yaml= results in a realm + routing entries
+  within 30 seconds.
+- =kubectl get tenants= shows =Phase=Ready=, =Realm=acme=.
+- Drift detection: manually deleting the realm in Keycloak triggers
+  reconciliation to recreate it.
+
+** Phase 5 --- Hardening
+
+*** TODO Observability stack (Prometheus, Grafana, Tempo, Loki) via subcharts
+*** TODO Per-tenant rate limiting in OpenResty
+*** TODO External Secrets in prod values (AWS Secrets Manager backend)
+*** TODO mTLS between Keycloak SPI and =auth-manager/internal/events=
+*** TODO NetworkPolicies for per-tenant namespaces
+*** TODO End-user docs + admin runbook in =docs/=
+*** TODO Exit criteria
+- SLIs from [[*Observability][Observability]] visible in Grafana dashboards.
+- Chaos drill: kill Redis -> system degrades to "permissions fetched live"
+  rather than failing closed; auto-recovers when Redis returns.
+- Pen-test on the test environment finds zero high-severity issues.
+
+* Open Questions / Decisions to Revisit
+
+- *Postgres-per-tenant vs shared with schema separation?*
+  Currently shared. Revisit if: any tenant requires PII residency in a
+  specific region, OR a single tenant's write rate dominates the others, OR
+  we cross ~50 tenants and per-tenant backup/restore becomes operationally
+  attractive.
+
+- *Keycloak vs Authentik vs ZITADEL?*
+  Sticking with Keycloak. Rationale: most mature admin REST API, strongest
+  community, our existing code targets it, UMA support is best-in-class.
+  Authentik has a nicer UI but a weaker admin API. ZITADEL is API-first but
+  the multi-tenancy model is different enough that switching would mean
+  rewriting realm-provisioning. Revisit only if Keycloak's Quarkus migration
+  causes us pain we can't mitigate.
+
+- *Operator language: =java-operator-sdk= vs =kubebuilder=?*
+  Default Java for stack uniformity (one toolchain, one IDE, shared DTOs).
+  Cost: ~250 MB image vs ~30 MB. Revisit if the operator becomes a
+  bottleneck or if we add several more controllers (a Go operator project
+  starts to amortize better at that scale).
+
+- *Push-based permission invalidation vs TTL-only?*
+  Start with TTL (=perm:<jti>= TTL = token =exp=). Add Keycloak event
+  listener push-invalidation in Phase 5 if/when role-change-latency
+  complaints emerge. Note: push invalidation also requires being able to
+  enumerate active =jti= values per user, which we get by also writing a
+  =user:<sub>:tokens= set in Redis on permission cache fill.
+
+- *Single Postgres vs CloudNativePG operator?*
+  Single Bitnami chart for v1. CNPG gives us HA + PITR with less work but
+  adds an operator to the dependency graph. Move to CNPG in Phase 5.
+
+- *Front-end auth: oidc-client-ts vs server-side BFF pattern?*
+  Currently planning oidc-client-ts (SPA-driven PKCE). The BFF (Backend for
+  Frontend) pattern --- where the SPA gets an httpOnly session cookie and the
+  backend talks to Keycloak --- is more secure (no tokens in the browser).
+  Consider switching in Phase 3 review.
+
+- *Should the Keycloak SPI be in this repo or its own?*
+  In this repo (=keycloak-spi/= submodule) for v1 to avoid version skew.
+  Revisit if SPI is reused by another team.
+
+* Appendix A: Useful Commands
+
+** k3d
+
+#+begin_src bash
+k3d cluster list
+k3d cluster create auth-platform --port "443:443@loadbalancer" --port "80:80@loadbalancer"
+k3d cluster delete auth-platform
+k3d image import myimg:dev -c auth-platform
+#+end_src
+
+** kubectl
+
+#+begin_src bash
+kubectl get pods -n auth-platform
+kubectl logs -f deploy/auth-manager -n auth-platform
+kubectl exec -it deploy/auth-platform-postgresql -n auth-platform -- psql -U postgres
+kubectl port-forward svc/auth-platform-keycloak 8080:80 -n auth-platform
+kubectl get tenants
+kubectl describe tenant acme
+#+end_src
+
+** helm
+
+#+begin_src bash
+helm dependency update deploy/helm/auth-platform
+helm template deploy/helm/auth-platform -f values-local.yaml | less
+helm upgrade --install auth-platform deploy/helm/auth-platform -f values-local.yaml
+helm history auth-platform
+helm rollback auth-platform 1
+#+end_src
+
+** Keycloak =kcadm.sh=
+
+#+begin_src bash
+kubectl exec -it deploy/auth-platform-keycloak -- bash
+/opt/bitnami/keycloak/bin/kcadm.sh config credentials \
+  --server http://localhost:8080 --realm master --user admin --password $KC_ADMIN
+/opt/bitnami/keycloak/bin/kcadm.sh get realms
+/opt/bitnami/keycloak/bin/kcadm.sh create realms -s realm=acme -s enabled=true
+/opt/bitnami/keycloak/bin/kcadm.sh get clients -r acme
+#+end_src
+
+** psql
+
+#+begin_src bash
+psql "postgres://auth_manager:$PW@localhost:6432/auth_manager"
+\dn                      -- list schemas
+\dt auth_manager.*       -- list tables in our schema
+SELECT id, slug, status FROM auth_manager.tenants;
+SELECT count(*) FROM auth_manager.audit_events WHERE occurred_at > now() - interval '1 hour';
+#+end_src
+
+** redis-cli
+
+#+begin_src bash
+redis-cli -h localhost
+KEYS host:*
+GET host:portal.acme.local.test
+KEYS perm:*
+TTL perm:<jti>
+PUBSUB CHANNELS
+SUBSCRIBE routing.invalidate
+#+end_src
+
+* Appendix B: References
+
+- Keycloak admin REST API: https://www.keycloak.org/docs-api/latest/rest-api/index.html
+- Keycloak Authorization Services: https://www.keycloak.org/docs/latest/authorization_services/
+- UMA 2.0 spec: https://docs.kantarainitiative.org/uma/wg/oauth-uma-grant-2.0-09.html
+- =NimbusJwtDecoder= javadoc: https://docs.spring.io/spring-security/site/docs/current/api/org/springframework/security/oauth2/jwt/NimbusJwtDecoder.html
+- Spring Boot 3 auto-configuration: https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html
+- External Secrets Operator: https://external-secrets.io/
+- java-operator-sdk: https://javaoperatorsdk.io/
+- shadcn/ui: https://ui.shadcn.com/
+- TanStack Query: https://tanstack.com/query/latest
+- OpenResty: https://openresty.org/en/
+- lua-resty-redis: https://github.com/openresty/lua-resty-redis
+- Cloudflare Tunnel: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+- k3d: https://k3d.io/
+- mkcert: https://github.com/FiloSottile/mkcert
+- ArgoCD app-of-apps: https://argo-cd.readthedocs.io/en/stable/operator-manual/cluster-bootstrapping/
+- Bitnami Keycloak chart: https://github.com/bitnami/charts/tree/main/bitnami/keycloak
+- Flyway: https://documentation.red-gate.com/fd
+- Resilience4j: https://resilience4j.readme.io/
+- Testcontainers: https://testcontainers.com/
+
+* Appendix C: Glossary
+
+- *Tenant*: an isolated customer organization in the platform; 1:1 with a Keycloak realm.
+- *Realm*: a Keycloak namespace containing users, clients, roles, groups.
+- *Client*: a Keycloak OAuth2 client; represents a deployable application.
+- *Resource*: a protected entity in Keycloak's authorization services (e.g., =order=).
+- *Scope*: an action verb in Keycloak's authorization services (e.g., =view=).
+- *Permission*: a Keycloak authz permission binding (resource + scope + policy).
+- *Policy*: a Keycloak authz rule (role-based, time-based, JS-based, etc.).
+- *RPT (Requesting Party Token)*: a JWT augmented with UMA-evaluated permissions.
+- *UMA (User-Managed Access)*: an OAuth2 profile for authorization; we use the
+  =urn:ietf:params:oauth:grant-type:uma-ticket= grant to fetch permissions.
+- *JWKS (JSON Web Key Set)*: the realm's public keys for verifying JWT signatures.
+- *JWT (JSON Web Token)*: the signed token format Keycloak issues.
+- *JTI (JWT ID)*: the unique identifier claim on a JWT; used as our cache key.
+- *CRD (Custom Resource Definition)*: a Kubernetes object schema extension.
+- *Operator*: a controller that reconciles desired state in CRDs to actual state.
+- *SPI (Service Provider Interface)*: Keycloak's extension hook mechanism.
+- *Helm subchart*: a chart packaged as a dependency of another chart.
+- *Helm umbrella chart*: an application chart whose main role is composing subcharts.
+- *PKCE (Proof Key for Code Exchange)*: an OAuth2 extension required for SPA flows.
+- *BFF (Backend For Frontend)*: an architecture pattern where a per-frontend
+  backend mediates between the SPA and downstream services, holding tokens server-side.
+- *External Secrets Operator*: a Kubernetes operator that syncs external secret
+  stores into native k8s Secrets.
+- *MDC (Mapped Diagnostic Context)*: Logback's per-thread context for structured logs.
+- *SLI (Service Level Indicator)*: a measurable indicator of service quality.
+- *p95 / p99*: 95th / 99th percentile latencies.
+
+* Appendix D: Brownfield Migration
+
+** Inventory: existing Cloudflare tunnels (as of 2026-05-18)
+
+On =beelink1= (=192.168.10.1=) there are *seven separate cloudflared
+systemd services*, each holding its own tunnel token, all bound to the
+same Cloudflare account. They evolved one-per-app over time; the result
+is a sprawl of independently-managed tunnels with no central view.
+
+| Systemd unit                       | Cloudflare tunnel purpose | Routes traffic to NodePort | App namespace |
+|------------------------------------+---------------------------+----------------------------+---------------|
+| =cloudflared-ai-debate.service=    | ai-debate hostnames       | 30085 (ai-debate-gateway)  | ai-debate     |
+| =cloudflared-ai.service=           | AI Interviewer / aicareers| 30082 (ai-gateway)         | aicareers     |
+| =cloudflared-dropwatch.service=    | dropwatch.ink             | 30087 (dropwatch-nginx)    | dropwatch     |
+| =cloudflared-maya.service=         | Maya hostnames            | 30083 (maya-gateway)       | maya          |
+| =cloudflared-skybot.service=       | SkyBot hostnames          | 30084 (skybot-nginx)       | skybot        |
+| =cloudflared-wisefolio.service=    | Wisefolio hostnames       | 30086 (wisefolio-nginx)    | wisefolio     |
+| =cloudflared.service=              | Safe & Sound Homes        | =safe-sound-ui:80=         | safe-sound    |
+
+Plus =cloudflared-update.service= --- the auto-update sidecar. Keep it;
+it does not carry traffic.
+
+The =happyfeet= namespace exposes =auth-gateway= on NodePort =30081= but
+no dedicated cloudflared tunnel was found on =beelink1=. Investigate
+whether it is exposed via a different node or piggybacks on one of the
+above tunnels before scheduling its cutover.
+
+~CAUTION:~ Each systemd unit's =ExecStart= hardcodes the tunnel JWT
+token. Those tokens are *tunnel credentials* and should be treated as
+secrets. When we consolidate, the new single-tunnel token must be loaded
+from a file (=--credentials-file=) or via a systemd credential, *not*
+pasted into a unit file checked into config management.
+
+** Cluster inventory: app NodePort exposure (as of 2026-05-18)
+
+k3s cluster, 5 nodes (=beelink1..5=), v1.34.3+k3s1, no Ingress controller
+installed (k3s's bundled Traefik is disabled). One stale =Ingress=
+resource exists --- =dropwatch/dropwatch-ingress= for =dropwatch.ink=,
+with no =ingressClassName=, presumably unused --- and should be deleted
+as part of the dropwatch cutover.
+
+| Namespace  | Service (Gateway) | NodePort        | Notes                  |
+|------------+-------------------+-----------------+------------------------|
+| ai-debate  | ai-debate-gateway | 30085           |                        |
+| aicareers  | ai-gateway        | 30082           |                        |
+| dropwatch  | dropwatch-nginx   | 30087           | stale Ingress present  |
+| happyfeet  | auth-gateway      | 30081           | already has auth front |
+| maya       | maya-gateway      | 30083           |                        |
+| skybot     | skybot-nginx      | 30084           |                        |
+| wisefolio  | wisefolio-nginx   | 30086           |                        |
+| safe-sound | safe-sound-ui     | ClusterIP =:80= | newest (26h)           |
+
+** Target end state (single tunnel, single edge)
+
+#+begin_example
+Before (today):                          After (target):
+
+Internet                                  Internet
+   |                                         |
+Cloudflare Edge                          Cloudflare Edge
+   |                                         |
+   |---tunnel1--->cloudflared-ai-debate      |---ONE tunnel-->cloudflared (single unit)
+   |---tunnel2--->cloudflared-ai            on beelink1 (and beelink2 for HA)
+   |---tunnel3--->cloudflared-dropwatch                  |
+   |---tunnel4--->cloudflared-maya                       v
+   |---tunnel5--->cloudflared-skybot          OpenResty Service (k8s)
+   |---tunnel6--->cloudflared-wisefolio       host-based routing via Redis lookup
+   |---tunnel7--->cloudflared                            |
+        (one systemd unit per app)                       v
+                                            existing per-app NodePort gateways
+                                                  (unchanged for now)
+#+end_example
+
+Properties of the end state:
+- *ONE* =cloudflared= systemd unit (or two for HA across =beelink1= +
+  =beelink2=).
+- *ONE* Cloudflare Tunnel object visible in the dashboard; the other
+  seven are deleted after their respective cutovers complete.
+- Per-app routing is *data* in Redis, not infrastructure on disk. Adding
+  a new app is =HSET host:newapp.dhyanraj.dev '{"backend":"newapp-gateway.newapp.svc.cluster.local:80"}'=
+  and a Cloudflare DNS record --- no host changes, no systemd reload.
+- No app's NodePort changes during this phase. Auth / Keycloak migration
+  is a *separate* phase, tracked in [[*IdP Brokering Strategy][IdP Brokering Strategy]].
+
+** Cutover order (low-risk first)
+
+Recommended sequencing based on blast radius and complexity:
+
+1. *skybot* --- small audience, simple nginx, low traffic. Validation
+   candidate for the whole pattern.
+2. *dropwatch* --- has the stale Ingress to clean up at the same time.
+3. *wisefolio* --- straightforward, public, no surprises.
+4. *maya* --- moderate complexity, moderate traffic.
+5. *ai-debate* --- newest of the long-running set; well-understood.
+6. *aicareers* (=cloudflared-ai.service=) --- verify which hostnames this
+   service actually serves before touching, since the unit name is
+   non-obvious.
+7. *safe-sound* --- already on its own tunnel; merge into the unified
+   tunnel last among the migrations of existing apps.
+8. *happyfeet* --- defer until the [[*IdP Brokering Strategy][IdP Brokering Strategy]] migration is
+   ready, because the =auth-gateway= will be replaced wholesale as part
+   of that effort rather than reconfigured.
+
+** Per-app cutover runbook
+
+For each app in the order above, perform the following steps. The
+example uses =skybot=; substitute hostname, namespace, and service for
+other apps.
+
+#+begin_src bash
+# 0. Preflight: the new "auth-platform" tunnel and OpenResty service exist.
+#    See Phase 0/1 exit criteria.
+
+# 1. Add the app's hostname to OpenResty routing table
+ssh beelink1 'kubectl exec -n auth-platform deploy/redis -- \
+  redis-cli HSET host:skybot.dhyanraj.dev \
+    backend "skybot-nginx.skybot.svc.cluster.local:80" \
+    tenant  "skybot" \
+    auth    "none"'   # "none" until Keycloak migration
+
+# 2. Add an ingress rule to the unified tunnel in Cloudflare dashboard:
+#    Hostname: skybot.dhyanraj.dev   Service: http://openresty.auth-platform.svc.cluster.local:80
+#    Save. Do NOT change DNS yet.
+
+# 3. Validate via the tunnel UUID hostname directly (bypassing DNS):
+curl -H 'Host: skybot.dhyanraj.dev' https://<new-tunnel-uuid>.cfargotunnel.com/health
+
+# 4. Cut DNS: in Cloudflare DNS, change CNAME skybot.dhyanraj.dev
+#    from <old-tunnel-uuid>.cfargotunnel.com to <new-tunnel-uuid>.cfargotunnel.com.
+#    TTL was likely 300s; wait ~10min for propagation.
+
+# 5. Validate end-user URL works:
+curl -v https://skybot.dhyanraj.dev/health
+
+# 6. Monitor for 24h: cloudflared logs on beelink1 for the OLD tunnel
+#    should show traffic dropping to zero.
+ssh beelink1 journalctl -u cloudflared-skybot.service -f --since '1 hour ago'
+
+# 7. Decommission the old tunnel:
+ssh beelink1 'sudo systemctl disable --now cloudflared-skybot.service && \
+              sudo rm /etc/systemd/system/cloudflared-skybot.service && \
+              sudo systemctl daemon-reload'
+
+# 8. Delete the corresponding Tunnel object in Cloudflare dashboard.
+#+end_src
+
+** Rollback procedure
+
+Until step 7 (systemd unit removal) the rollback is a single DNS change:
+- Re-point the CNAME from the new tunnel UUID back to the old tunnel
+  UUID.
+- TTL was 300s --- service is restored in 5 minutes or less.
+- Both tunnels keep running side-by-side throughout the cutover window;
+  the old one carries zero traffic post-cutover but stays alive until you
+  explicitly disable it.
+
+After step 7, rollback requires recreating the systemd unit and the
+Cloudflare Tunnel object --- much more expensive and error-prone. Do not
+do step 7 until the old tunnel has sat idle for at least 24 hours.
+
+** Cloudflare dashboard cleanup
+
+Post-cutover, the Cloudflare dashboard state should be:
+- =Zero Trust -> Networks -> Tunnels=: exactly one tunnel named
+  =auth-platform= (or similar).
+- All other tunnels (=safe-sound-homes=, =ai-debate=, =dropwatch=, =maya=,
+  =skybot=, =wisefolio=, =aicareers=) deleted.
+- =DNS=: every previously per-tunnel CNAME now points at the single new
+  tunnel UUID.
+
+~NOTE:~ Cloudflare bills per request, not per tunnel. The consolidation
+is for operational sanity, not cost reduction.
+
+** High availability for the unified tunnel
+
+A single-tunnel single-host deployment is a *regression* in availability
+compared to the current 7-on-1 layout (which is already a SPOF on
+=beelink1=, but with seven independent failure domains). Mitigations, in
+preference order:
+
+1. Install the unified =cloudflared= as a systemd unit on *two* beelinks
+   (e.g., =beelink1= and =beelink2=), both using the same tunnel token
+   (=--token=). Cloudflare load-balances across all connected replicas
+   of a tunnel and seamlessly drains traffic during a disconnect.
+2. Run =cloudflared= as a Deployment *in* the k3s cluster (image
+   =cloudflare/cloudflared=, =replicas: 2=, pod anti-affinity across
+   nodes). Token stored as a Kubernetes Secret. This eliminates the
+   host-systemd dependency entirely.
+3. Recommend (2) for the long term --- it keeps the tunnel's lifecycle
+   on the same control plane as everything else.
+
+~WHY:~ Running =cloudflared= in-cluster trades a tiny amount of "what if
+k3s itself is down" risk for substantial operational gains: declarative
+deployment, easy rolling updates, replica count tunable like any other
+workload, secrets managed alongside everything else. The off-cluster
+systemd pattern made sense when there was no cluster to host it on;
+that's no longer true.
+
+** Inventory script (re-run to refresh this section)
+
+A copy-paste shell script to regenerate the inventory tables. Useful as
+a quarterly drift-detection job:
+
+#+begin_src bash
+#!/usr/bin/env bash
+# Refresh the brownfield inventory. Run from a workstation with kubeconfig + ssh access.
+
+echo "=== Cloudflared systemd units on beelink1 ==="
+ssh beelink1 'systemctl list-units --type=service --all --no-legend | \
+              awk "/cloudflared/ {print \$1}"'
+
+echo
+echo "=== K3s NodePort services ==="
+kubectl --context=beelink get svc -A | awk '$5 ~ /NodePort/'
+
+echo
+echo "=== K3s ingresses (should be empty post-migration to OpenResty) ==="
+kubectl --context=beelink get ingress -A
+#+end_src
