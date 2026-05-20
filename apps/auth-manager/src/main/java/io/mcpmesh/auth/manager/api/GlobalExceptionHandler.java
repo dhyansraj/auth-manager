@@ -1,5 +1,7 @@
 package io.mcpmesh.auth.manager.api;
 
+import io.mcpmesh.auth.manager.service.exception.AppConflictException;
+import io.mcpmesh.auth.manager.service.exception.AppNotFoundException;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
 import io.mcpmesh.auth.manager.service.exception.TenantNotFoundException;
 import org.springframework.http.HttpStatus;
@@ -21,6 +23,20 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleConflict(TenantConflictException ex) {
         var pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         pd.setTitle("Tenant slug already in use");
+        return pd;
+    }
+
+    @ExceptionHandler(AppNotFoundException.class)
+    public ProblemDetail handleAppNotFound(AppNotFoundException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+        pd.setTitle("App not found");
+        return pd;
+    }
+
+    @ExceptionHandler(AppConflictException.class)
+    public ProblemDetail handleAppConflict(AppConflictException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        pd.setTitle("App slug already in use");
         return pd;
     }
 

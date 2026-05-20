@@ -1,7 +1,9 @@
 package io.mcpmesh.auth.manager.keycloak;
 
 import jakarta.ws.rs.NotFoundException;
+import jakarta.ws.rs.core.Response;
 import org.keycloak.admin.client.Keycloak;
+import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.representations.info.ServerInfoRepresentation;
 import org.springframework.stereotype.Service;
@@ -74,5 +76,59 @@ public class KeycloakAdminService {
 
         admin.realms().create(realm);
         return realmName;
+    }
+
+    /**
+     * Creates a confidential OIDC client in the given realm with platform defaults.
+     * Returns the client UUID (Keycloak's internal id, not the clientId).
+     */
+    public String createClient(String realmName, String clientId, String displayName) {
+        ClientRepresentation client = new ClientRepresentation();
+        client.setClientId(clientId);
+        client.setName(displayName);
+        client.setProtocol("openid-connect");
+        client.setPublicClient(false);
+        client.setClientAuthenticatorType("client-secret");
+        client.setStandardFlowEnabled(true);
+        client.setDirectAccessGrantsEnabled(true);
+        client.setServiceAccountsEnabled(true);
+        client.setFullScopeAllowed(true);
+        client.setRedirectUris(java.util.List.of("*"));
+        client.setWebOrigins(java.util.List.of("+"));
+
+        try (Response response = admin.realm(realmName).clients().create(client)) {
+            if (response.getStatus() < 200 || response.getStatus() >= 300) {
+                throw new RuntimeException(
+                    "Keycloak client create failed: HTTP " + response.getStatus()
+                    + " " + response.getStatusInfo().getReasonPhrase());
+            }
+            // The Location header looks like .../clients/<uuid>
+            String location = response.getHeaderString("Location");
+            if (location == null) {
+                throw new RuntimeException("Keycloak client create returned no Location header");
+            }
+            return location.substring(location.lastIndexOf('/') + 1);
+        }
+    }
+
+    /** Fetches the client secret for a confidential client. */
+    public String getClientSecret(String realmName, String clientUuid) {
+        return admin.realm(realmName).clients().get(clientUuid).getSecret().getValue();
+    }
+
+    /** Checks if a client with the given clientId exists in the realm. */
+    public boolean clientExists(String realmName, String clientId) {
+        return !admin.realm(realmName).clients().findByClientId(clientId).isEmpty();
+    }
+
+    /** Deletes the client identified by its KC UUID. */
+    public void deleteClient(String realmName, String clientUuid) {
+        admin.realm(realmName).clients().get(clientUuid).remove();
+    }
+
+    /** Finds a client by its clientId, returns its KC UUID. */
+    public java.util.Optional<String> findClientUuid(String realmName, String clientId) {
+        var matches = admin.realm(realmName).clients().findByClientId(clientId);
+        return matches.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(matches.get(0).getId());
     }
 }
