@@ -1,13 +1,17 @@
 package io.mcpmesh.auth.manager.tenant;
 
+import io.mcpmesh.auth.manager.domain.audit.AuditEvent;
+import io.mcpmesh.auth.manager.domain.audit.AuditResult;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
+import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.routing.RoutingTableService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
 import io.mcpmesh.auth.manager.service.exception.TenantNotFoundException;
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +47,9 @@ class TenantServiceIT {
     @Autowired
     TenantRepository repo;
 
+    @Autowired
+    AuditEventRepository auditRepo;
+
     @MockitoBean
     KeycloakAdminService keycloakAdmin;
 
@@ -51,6 +58,7 @@ class TenantServiceIT {
 
     @BeforeEach
     void setUp() {
+        auditRepo.deleteAll();
         repo.deleteAll();
         when(keycloakAdmin.realmExists(anyString())).thenReturn(false);
         when(keycloakAdmin.createRealm(anyString(), anyString())).thenAnswer(inv -> inv.getArgument(0));
@@ -68,6 +76,10 @@ class TenantServiceIT {
         assertThat(t.getSettings()).containsEntry("region", "us-east-1");
         assertThat(t.getCreatedAt()).isNotNull();
         assertThat(t.getCreatedBy()).isEqualTo("tester");
+
+        assertThat(auditRepo.findAll())
+            .extracting(AuditEvent::getAction, AuditEvent::getResult)
+            .containsExactly(Tuple.tuple("tenant.create", AuditResult.SUCCESS));
     }
 
     @Test

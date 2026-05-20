@@ -1,6 +1,8 @@
 package io.mcpmesh.auth.manager.service;
 
 import io.mcpmesh.auth.manager.api.dto.HostnameAssignment;
+import io.mcpmesh.auth.manager.audit.AuditService;
+import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.domain.tenant.TenantHostname;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
@@ -25,21 +27,27 @@ public class TenantService {
 
     private static final Logger log = LoggerFactory.getLogger(TenantService.class);
 
+    private static final String SYSTEM_ACTOR = "system";
+    private static final ActorKind SYSTEM_KIND = ActorKind.SERVICE;
+
     private final TenantRepository repo;
     private final TenantHostnameRepository hostnameRepo;
     private final KeycloakAdminService keycloak;
     private final RoutingTableService routingTable;
+    private final AuditService audit;
 
     public TenantService(
         TenantRepository repo,
         TenantHostnameRepository hostnameRepo,
         KeycloakAdminService keycloak,
-        RoutingTableService routingTable
+        RoutingTableService routingTable,
+        AuditService audit
     ) {
         this.repo = repo;
         this.hostnameRepo = hostnameRepo;
         this.keycloak = keycloak;
         this.routingTable = routingTable;
+        this.audit = audit;
     }
 
     /**
@@ -67,6 +75,13 @@ public class TenantService {
         String actor
     ) {
         if (repo.existsBySlug(slug)) {
+            // Pre-save conflict -- no tenant row exists, but the attempt is auditable.
+            var conflictPayload = createPayload(slug, displayName, settings, hostnames);
+            audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, null,
+                "tenant.create", "tenant", null,
+                conflictPayload,
+                new TenantConflictException(slug),
+                Map.of("reason", "slug_conflict", "slug", slug));
             throw new TenantConflictException(slug);
         }
         Tenant t = repo.save(new Tenant(slug, displayName, actor, settings));
@@ -75,8 +90,27 @@ public class TenantService {
                 hostnameRepo.save(new TenantHostname(h.host(), t.getId(), h.backend()));
             }
         }
-        return provisionRealm(t);
-        // Audit row lands in step 3d.
+        Tenant after = provisionRealm(t);
+
+        var payload = createPayload(slug, displayName, settings, hostnames);
+        Map<String, Object> details = new java.util.LinkedHashMap<>();
+        details.put("slug", slug);
+        details.put("status", after.getStatus().name());
+        details.put("realm", after.getRealmName());
+        details.put("hostnameCount", hostnames == null ? 0 : hostnames.size());
+
+        if (after.getStatus() == TenantStatus.ACTIVE) {
+            audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, after.getId(),
+                "tenant.create", "tenant", after.getId().toString(),
+                payload, details);
+        } else {
+            audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, after.getId(),
+                "tenant.create", "tenant", after.getId().toString(),
+                payload,
+                new RuntimeException("Provisioning ended in status " + after.getStatus()),
+                details);
+        }
+        return after;
     }
 
     /**
@@ -91,13 +125,36 @@ public class TenantService {
         Tenant t = get(id);
         if (t.getStatus() == TenantStatus.ACTIVE) {
             publishRoutes(t);
-            return t;
+            return t;  // no-op; not auditable
         }
         if (t.getStatus() != TenantStatus.FAILED) {
-            throw new IllegalStateException(
+            var ex = new IllegalStateException(
                 "Cannot retry provisioning for tenant in status " + t.getStatus());
+            audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, t.getId(),
+                "tenant.retry", "tenant", t.getId().toString(),
+                null, ex,
+                Map.of("currentStatus", t.getStatus().name()));
+            throw ex;
         }
-        return provisionRealm(t);
+
+        Tenant after = provisionRealm(t);
+        Map<String, Object> details = Map.of(
+            "slug", after.getSlug(),
+            "status", after.getStatus().name(),
+            "realm", after.getRealmName() == null ? "" : after.getRealmName()
+        );
+        if (after.getStatus() == TenantStatus.ACTIVE) {
+            audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, after.getId(),
+                "tenant.retry", "tenant", after.getId().toString(),
+                null, details);
+        } else {
+            audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, after.getId(),
+                "tenant.retry", "tenant", after.getId().toString(),
+                null,
+                new RuntimeException("Retry ended in status " + after.getStatus()),
+                details);
+        }
+        return after;
     }
 
     @Transactional(readOnly = true)
@@ -129,9 +186,26 @@ public class TenantService {
         var hostnames = hostnameRepo.findByTenantId(t.getId());
         routingTable.unpublishAll(hostnames);
         t.softDelete();
+        audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, t.getId(),
+            "tenant.delete", "tenant", t.getId().toString(),
+            null,
+            Map.of("slug", t.getSlug(), "hostnameCount", hostnames.size()));
         // Hostname rows in DB are left in place (audit trail). They will not be
         // re-published unless the tenant is undeleted -- not implemented yet.
         // Realm disable in KC is also deferred.
+    }
+
+    private Map<String, Object> createPayload(
+        String slug, String displayName,
+        Map<String, Object> settings,
+        List<HostnameAssignment> hostnames
+    ) {
+        var p = new java.util.LinkedHashMap<String, Object>();
+        p.put("slug", slug);
+        p.put("displayName", displayName);
+        if (settings != null) p.put("settings", settings);
+        if (hostnames != null) p.put("hostnames", hostnames);
+        return p;
     }
 
     private String realmNameFor(String slug) {
