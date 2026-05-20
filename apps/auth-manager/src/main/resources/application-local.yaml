@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:15432/authmanager
+    username: postgres
+    password: dev
+    hikari:
+      maximum-pool-size: 5
+  data:
+    redis:
+      host: localhost
+      port: 16379
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: true
+
+# Keycloak connection — used by the admin client once we wire it up.
+keycloak:
+  url: http://localhost:8180
+  realm: master
+  admin:
+    client-id: admin-cli
+    username: admin
+    password: admin

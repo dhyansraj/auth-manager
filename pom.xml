@@ -45,6 +45,10 @@
         apps/keycloak-event-spi     (Phase 5)
     -->
 
+    <modules>
+        <module>apps/auth-manager</module>
+    </modules>
+
     <dependencyManagement>
         <dependencies>
             <!-- Keycloak Admin Client. Talks to a Keycloak 26.x server (we pin

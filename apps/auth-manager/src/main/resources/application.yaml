@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: auth-manager
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate     # Flyway owns the schema; Hibernate must not touch it
+    properties:
+      hibernate.default_schema: auth_manager
+  flyway:
+    enabled: true
+    schemas: auth_manager
+    default-schema: auth_manager
+    create-schemas: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      timeout: 2s
+      connect-timeout: 2s
+
+server:
+  port: 8080
+  shutdown: graceful
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+
+logging:
+  level:
+    root: INFO
+    io.mcpmesh.auth: DEBUG
+    org.flywaydb: INFO
+    org.springframework.web: INFO
