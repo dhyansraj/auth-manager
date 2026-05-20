@@ -35,25 +35,30 @@ public class TenantController {
     ) {
         // TODO(security): replace "system" with the authenticated principal once
         //                 auth-lib v2 lands. See PLAN.org Phase 2.
-        var t = service.create(req.slug(), req.displayName(), req.settings(), "system");
-        var body = TenantResponse.from(t);
+        var t = service.create(
+            req.slug(), req.displayName(), req.settings(), req.hostnames(), "system");
+        var body = TenantResponse.from(t, service.hostnamesFor(t.getId()));
         var location = uriBuilder.path("/api/v1/tenants/{id}").buildAndExpand(t.getId()).toUri();
         return ResponseEntity.created(location).body(body);
     }
 
     @GetMapping
     public List<TenantResponse> list() {
-        return service.list().stream().map(TenantResponse::from).toList();
+        return service.list().stream()
+            .map(t -> TenantResponse.from(t, service.hostnamesFor(t.getId())))
+            .toList();
     }
 
     @GetMapping("/{id}")
     public TenantResponse get(@PathVariable UUID id) {
-        return TenantResponse.from(service.get(id));
+        var t = service.get(id);
+        return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 
     @GetMapping("/by-slug/{slug}")
     public TenantResponse getBySlug(@PathVariable String slug) {
-        return TenantResponse.from(service.getBySlug(slug));
+        var t = service.getBySlug(slug);
+        return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 
     @DeleteMapping("/{id}")
@@ -65,6 +70,7 @@ public class TenantController {
     @PostMapping("/{id}/retry")
     public TenantResponse retry(@PathVariable UUID id) {
         // TODO(security): replace "system" with the authenticated principal.
-        return TenantResponse.from(service.retryProvisioning(id, "system"));
+        var t = service.retryProvisioning(id, "system");
+        return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 }

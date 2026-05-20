@@ -4,6 +4,7 @@ import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
+import io.mcpmesh.auth.manager.routing.RoutingTableService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
 import io.mcpmesh.auth.manager.service.exception.TenantNotFoundException;
@@ -45,6 +46,9 @@ class TenantServiceIT {
     @MockitoBean
     KeycloakAdminService keycloakAdmin;
 
+    @MockitoBean
+    RoutingTableService routingTable;
+
     @BeforeEach
     void setUp() {
         repo.deleteAll();
@@ -54,7 +58,7 @@ class TenantServiceIT {
 
     @Test
     void create_persists_tenant_and_marks_active() {
-        Tenant t = service.create("bank1", "Bank 1", Map.of("region", "us-east-1"), "tester");
+        Tenant t = service.create("bank1", "Bank 1", Map.of("region", "us-east-1"), null, "tester");
 
         assertThat(t.getId()).isNotNull();
         assertThat(t.getSlug()).isEqualTo("bank1");
@@ -68,15 +72,15 @@ class TenantServiceIT {
 
     @Test
     void create_rejects_duplicate_slug() {
-        service.create("bank1", "Bank 1", null, "tester");
+        service.create("bank1", "Bank 1", null, null, "tester");
 
-        assertThatThrownBy(() -> service.create("bank1", "Whatever", null, "tester"))
+        assertThatThrownBy(() -> service.create("bank1", "Whatever", null, null, "tester"))
             .isInstanceOf(TenantConflictException.class);
     }
 
     @Test
     void get_returns_existing_tenant() {
-        Tenant created = service.create("bank2", "Bank 2", null, "tester");
+        Tenant created = service.create("bank2", "Bank 2", null, null, "tester");
         Tenant fetched = service.get(created.getId());
         assertThat(fetched.getSlug()).isEqualTo("bank2");
     }
@@ -89,7 +93,7 @@ class TenantServiceIT {
 
     @Test
     void softDelete_hides_tenant_from_listings() {
-        Tenant t = service.create("bank3", "Bank 3", null, "tester");
+        Tenant t = service.create("bank3", "Bank 3", null, null, "tester");
         service.softDelete(t.getId(), "tester");
 
         assertThat(service.list()).extracting(Tenant::getSlug).doesNotContain("bank3");

@@ -3,6 +3,7 @@ package io.mcpmesh.auth.manager.tenant;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
+import io.mcpmesh.auth.manager.routing.RoutingTableService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,6 +11,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -54,9 +56,11 @@ class TenantProvisioningIT {
     @Autowired TenantService tenants;
     @Autowired KeycloakAdminService keycloakAdmin;
 
+    @MockitoBean RoutingTableService routingTable;
+
     @Test
     void create_provisions_realm_and_marks_tenant_active() {
-        Tenant t = tenants.create("acme", "Acme Corp", null, "tester");
+        Tenant t = tenants.create("acme", "Acme Corp", null, null, "tester");
 
         assertThat(t.getStatus()).isEqualTo(TenantStatus.ACTIVE);
         assertThat(t.getRealmName()).isEqualTo("t-acme");
@@ -66,7 +70,7 @@ class TenantProvisioningIT {
     @Test
     void create_is_idempotent_when_realm_already_exists() {
         // First call provisions the realm.
-        Tenant first = tenants.create("idem-one", "Idem One", null, "tester");
+        Tenant first = tenants.create("idem-one", "Idem One", null, null, "tester");
         assertThat(first.getStatus()).isEqualTo(TenantStatus.ACTIVE);
 
         // Soft delete locally; the realm in Keycloak persists.
@@ -83,7 +87,7 @@ class TenantProvisioningIT {
     @Test
     void retry_recovers_from_failed_state() {
         // Stub a FAILED tenant by hand-marking and re-attempting.
-        Tenant t = tenants.create("retry-me", "Retry Me", null, "tester");
+        Tenant t = tenants.create("retry-me", "Retry Me", null, null, "tester");
         // Real lifecycle would mark FAILED via the KC catch-block; we
         // emulate by hitting retryProvisioning when ACTIVE returns
         // current state (no-op), which exercises that path:

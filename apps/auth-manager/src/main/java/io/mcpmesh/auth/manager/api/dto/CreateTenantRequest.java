@@ -1,9 +1,11 @@
 package io.mcpmesh.auth.manager.api.dto;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -12,6 +14,7 @@ import java.util.Map;
  * @param slug         DNS-safe identifier; will become part of the public hostname.
  * @param displayName  Human-readable name shown in the UI.
  * @param settings     Free-form per-tenant config blob (stored as JSONB).
+ * @param hostnames    Optional list of public hostnames to route to this tenant.
  */
 public record CreateTenantRequest(
 
@@ -25,5 +28,8 @@ public record CreateTenantRequest(
     @Size(min = 1, max = 100)
     String displayName,
 
-    Map<String, Object> settings
+    Map<String, Object> settings,
+
+    @Valid
+    List<HostnameAssignment> hostnames
 ) {}
