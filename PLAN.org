@@ -658,7 +658,7 @@ copy of the routing record. This caps Redis traffic at =workers * unique_hosts
 
 *** Version pinning policy
 
-Three rules. Violating any of these has cost us time on prior projects.
+Four rules. Violating any of these has cost us time on prior projects.
 
 1. *Pin the patch version, not =:latest= or =:26=.* Keycloak has shipped
    ~weekly patches throughout the 26.x line in 2026, including two
@@ -677,6 +677,28 @@ Three rules. Violating any of these has cost us time on prior projects.
    and pulls a stale Spring transitive tree. =auth-lib v2= drops it
    --- see [[*auth-lib v2 (formerly gentek-auth-lib)][auth-lib v2]]. If a copied =pom.xml=
    snippet brings it back, fail the build with a Maven enforcer rule.
+
+4. *Spring Boot 4 modularized integration auto-configs.* Several
+   integrations that lived in =spring-boot-autoconfigure= in SB 3.x have
+   moved into dedicated =spring-boot-starter-*= modules in SB 4. The
+   library jar alone is no longer enough; you need the matching starter
+   to bring the auto-config along.
+
+   Confirmed: =org.flywaydb:flyway-core= on its own is silently a no-op
+   under SB 4 --- no error, no log line, just an empty schema. Adding
+   =org.springframework.boot:spring-boot-starter-flyway= fixes it
+   (=spring-boot-flyway-4.0.6.jar= contains the
+   =FlywayAutoConfiguration= that =spring-boot-autoconfigure= used to
+   ship).
+
+   Likely also affects: Liquibase, Cache, Quartz, integration-test
+   slices, and any other historical autoconfigure entry --- check the
+   AutoConfiguration.imports for the relevant starter before relying on
+   the library jar alone.
+
+   ~RULE OF THUMB:~ If Spring Boot ships a starter for an integration,
+   use the starter --- don't reach for the underlying library jar
+   directly. Saves you from this failure mode.
 
 *Bump cadence*: review for upgrade once per quarter. Read the release notes
 for every minor between your current pin and the target before bumping; KC
@@ -2743,6 +2765,16 @@ tweaks. Those stay in Layer 1.
 
 ** Common pitfalls
 
+- *=mvn= or =java -jar= fails enforcer rule =requireJavaVersion=[21,)=
+  with "Detected JDK ... but enforced version ..."*. Homebrew's default
+  =java= on macOS is often an older LTS (17 at time of writing) even
+  though the unversioned =openjdk= cask provides a newer JDK. Fix:
+  =export JAVA_HOME=/opt/homebrew/opt/openjdk= (provides Java 25 as of
+  2026) or =/opt/homebrew/opt/openjdk@21= for a specific 21 LTS, then
+  =export PATH="$JAVA_HOME/bin:$PATH"=. Add to =~/.zshrc=. On Linux,
+  set =JAVA_HOME= to a JDK at =/usr/lib/jvm/java-21-*= or use
+  =sdkman=. Verify with =java -version= before =make dev= or =mvn=
+  invocations.
 - *Forgot to set =SPRING_PROFILES_ACTIVE=local=*. App tries to connect to
   Bitnami-style URLs (=keycloak.auth-platform.svc.cluster.local=) and dies.
   Fix: set the profile in the IDE run config once.
