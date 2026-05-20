@@ -1,7 +1,18 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+
+management:
+  health:
+    redis:
+      enabled: false
+
 # Layer 1 dev: point at the local Keycloak's 'dev' realm.
 auth-lib:
   issuer-uri: http://localhost:8180/realms/dev
   client-id: auth-manager-backend
   client-secret: dev-secret
   cache:
-    enabled: false   # no Redis required for the minimal smoke
+    enabled: false
