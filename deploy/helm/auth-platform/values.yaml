@@ -86,3 +86,26 @@ keycloak:
     database: keycloak
   production: false                 # use start-dev shape; faster boot for now
   proxy: edge                       # behind CF + OpenResty
+
+# ───── cloudflared (Cloudflare Tunnel connector) ─────
+# The tunnel token is held in a Secret named cloudflared-token (key: token)
+# that must exist in the namespace BEFORE installing this chart.
+# Create it with:
+#   kubectl create secret generic cloudflared-token -n auth-platform \
+#     --from-literal=token='<paste the tunnel token from CF dashboard>'
+cloudflared:
+  enabled: true
+  image:
+    repository: cloudflare/cloudflared
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  replicas: 2
+  secretName: "cloudflared-token"  # must pre-exist
+  metricsPort: 2000
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"

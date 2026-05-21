@@ -14,8 +14,14 @@
 #   - Our own chart (auth-platform) holds just auth-manager + admin-ui;
 #     it points at the service names of the three above.
 #
-# Prereqs: helm + kubectl with context set to beelink cluster, mutagen
-# sync running (so this repo's files are present on beelink).
+# Prereqs:
+#   - helm + kubectl with context set to beelink cluster
+#   - mutagen sync running (so this repo's files are present on beelink)
+#   - cloudflared-token Secret in the auth-platform namespace, holding the
+#     tunnel token under key "token". Create with:
+#       kubectl create secret generic cloudflared-token -n auth-platform \
+#         --from-literal=token='<tunnel-token-from-CF-dashboard>'
+#     Then configure routes + DNS with scripts/cf-setup-tunnel.sh.
 
 set -euo pipefail
 
