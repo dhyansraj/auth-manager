@@ -1,10 +1,18 @@
 const base = '/api/v1';
 
+// Module-level token holder; set by AuthTokenSync on every auth state change.
+let accessToken: string | null = null;
+
+export function setAccessToken(token: string | null) {
+  accessToken = token;
+}
+
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const r = await fetch(base + path, {
-    headers: { 'Content-Type': 'application/json', ...(init.headers || {}) },
-    ...init,
-  });
+  const headers = new Headers(init.headers);
+  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json');
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+
+  const r = await fetch(base + path, { ...init, headers });
   if (!r.ok) {
     const body = await r.text();
     throw new Error(`HTTP ${r.status} ${r.statusText}: ${body}`);
