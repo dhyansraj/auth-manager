@@ -146,28 +146,6 @@ end
 local path = ngx.var.uri
 local host = strip_port(ngx.var.http_host or ngx.var.host)
 
--- 0. KC admin host (kc.mcp-mesh.io): route everything to Keycloak. KC mounts
---    at root, so /admin/*, /resources/*, /realms/* etc. work as-is. The admin
---    console HTML embeds /auth/* prefixed URLs (because KC_HOSTNAME=.../auth);
---    those need the /auth prefix stripped so KC can serve them at root.
---    Auth is OPTIONAL here — KC's own admin login flow gates access, and the
---    Cloudflare WAF IP-restriction rule fronts this hostname.
-if host and host == config.kc_admin_host then
-    if matcher.match("/auth/*", path) then
-        local stripped
-        if path == "/auth" then
-            stripped = "/"
-        else
-            stripped = string.sub(path, 6)  -- drop "/auth"
-        end
-        if stripped ~= path then
-            ngx.req.set_uri(stripped, false)
-        end
-    end
-    ngx.var.route_backend = config.platform_kc_target
-    return
-end
-
 -- 1. Cross-cutting platform paths first.
 local backend, auth_mode, rewritten = match_platform(path)
 if backend then

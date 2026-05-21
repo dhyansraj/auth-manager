@@ -35,14 +35,11 @@ step()  { echo; bold "── $* ──"; }
 # Service URLs use Kubernetes DNS: <svc>.<namespace>.svc.cluster.local
 #
 # Hostname routing notes:
-#   - auth.mcp-mesh.io  → platform-edge (admin UI + auth-manager + KC under /auth)
-#   - kc.mcp-mesh.io    → platform-edge (KC admin host; edge router has a
-#                         dedicated branch keyed on Host that strips /auth from
-#                         /auth/* paths — KC mounts at root, so /admin/* and
-#                         /resources/* pass through unchanged. IP-restricted
-#                         via Cloudflare WAF custom rule (fires at CF edge
-#                         regardless of where the tunnel lands).
-#                         Listed BEFORE the wildcard so the specific match wins.
+#   - auth.mcp-mesh.io  → platform-edge (admin UI + auth-manager + KC under /auth,
+#                         including the KC admin console at /auth/admin/*).
+#                         IP-restriction for the admin paths is enforced at the
+#                         Cloudflare WAF layer on path /auth/admin/* — see
+#                         scripts/cf-firewall-setup.sh.
 #   - *.mcp-mesh.io     → platform-edge (catch-all for tenant subdomains:
 #                         app1.mcp-mesh.io, customer.mcp-mesh.io, etc.).
 #                         Order matters in CF tunnel ingress; this MUST come
@@ -53,10 +50,6 @@ INGRESS_RULES=$(cat <<'JSON'
     "ingress": [
       {
         "hostname": "auth.mcp-mesh.io",
-        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
-      },
-      {
-        "hostname": "kc.mcp-mesh.io",
         "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
       },
       {
@@ -75,9 +68,13 @@ JSON
 # Hostnames to ensure as DNS CNAMEs.
 # The *.mcp-mesh.io wildcard ingress is matched by the tunnel based on the
 # Host header; we still need per-subdomain CNAMEs at the DNS layer for each
-# hostname that should resolve. "auth" and "kc" are the platform-owned ones.
+# hostname that should resolve. "auth" is the only platform-owned one now —
+# the previous "kc" subdomain was collapsed into auth.mcp-mesh.io/auth/admin/*
 # Tenant subdomains (app1, etc.) will be added as we onboard tenants.
-DNS_HOSTNAMES=(auth kc)
+DNS_HOSTNAMES=(auth)
+
+# Stale CNAMEs to remove (orphaned by ingress rules dropped above).
+DNS_HOSTNAMES_TO_REMOVE=(kc)
 
 step "1. Verify API token"
 curl -sS -H "$H_AUTH" "$API/user/tokens/verify" | python3 -c '
@@ -134,7 +131,22 @@ for name in "${DNS_HOSTNAMES[@]}"; do
   fi
 done
 
+step "5. Delete stale DNS CNAMEs"
+for name in "${DNS_HOSTNAMES_TO_REMOVE[@]}"; do
+  EXISTING=$(curl -sS -H "$H_AUTH" "$API/zones/$ZONE_ID/dns_records?type=CNAME&name=$name.$CF_ZONE" \
+    | python3 -c 'import sys, json; r = json.load(sys.stdin).get("result", []); print(r[0]["id"] if r else "")')
+
+  if [ -n "$EXISTING" ]; then
+    curl -sS -X DELETE -H "$H_AUTH" \
+      "$API/zones/$ZONE_ID/dns_records/$EXISTING" \
+      > /dev/null
+    ok "$name.$CF_ZONE (deleted)"
+  else
+    ok "$name.$CF_ZONE (already absent)"
+  fi
+done
+
 step "Done"
 echo "  Try:  curl -sS https://auth.$CF_ZONE/actuator/health"
 echo "        curl -sS https://auth.$CF_ZONE/auth/realms/master/.well-known/openid-configuration"
-echo "        curl -sS https://kc.$CF_ZONE/admin/master/console/   # IP-restricted"
+echo "        curl -sS https://auth.$CF_ZONE/auth/admin/master/console/   # IP-restricted on /auth/admin/*"

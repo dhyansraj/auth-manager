@@ -24,7 +24,7 @@ adminUi:
 platformEdge:
   image:
     repository: platform-edge
-    tag: "0.1.3"
+    tag: "0.1.4"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,
@@ -34,7 +34,6 @@ platformEdge:
     adminUiTarget:  "auth-platform-admin-ui.auth-platform.svc.cluster.local:80"
     kcTarget:       "platform-kc-keycloak.auth-platform.svc.cluster.local:80"
     platformHost: "auth.mcp-mesh.io"
-    kcAdminHost:  "kc.mcp-mesh.io"
     # k3s cluster DNS (kube-dns/coredns ClusterIP). Single resolver only —
     # including 127.0.0.11 here caused intermittent 503s when nginx tried it.
     nginxResolver: "10.43.0.10"

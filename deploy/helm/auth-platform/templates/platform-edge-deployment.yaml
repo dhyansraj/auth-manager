@@ -4,7 +4,6 @@
 {{- $adminUi  := default (printf "%s-admin-ui:80" $fullname)      .Values.platformEdge.config.adminUiTarget -}}
 {{- $kc       := default "platform-kc-keycloak:80"                .Values.platformEdge.config.kcTarget -}}
 {{- $platformHost := default "auth.mcp-mesh.io"                   .Values.platformEdge.config.platformHost -}}
-{{- $kcAdminHost  := default "kc.mcp-mesh.io"                     .Values.platformEdge.config.kcAdminHost -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -54,8 +53,6 @@ spec:
               value: {{ $kc | quote }}
             - name: PLATFORM_HOST
               value: {{ $platformHost | quote }}
-            - name: KC_ADMIN_HOST
-              value: {{ $kcAdminHost | quote }}
             - name: NGINX_RESOLVER
               value: {{ required "platformEdge.config.nginxResolver must be set (e.g. 10.43.0.10 for k3s)" .Values.platformEdge.config.nginxResolver | quote }}
           readinessProbe:

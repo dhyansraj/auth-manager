@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Idempotently install a Cloudflare WAF Custom Rule on the zone that BLOCKS
-# any request to kc.mcp-mesh.io originating outside the whitelisted IP set.
+# any request to auth.mcp-mesh.io whose path starts with /auth/admin/ when
+# the source IP is not in the whitelisted set.
 #
-# The Keycloak admin console (kc.mcp-mesh.io) bypasses platform-edge so we
-# can't gate it at the edge with Lua. Instead we gate at Cloudflare's WAF
-# using a custom expression — cheaper, faster, and runs before traffic enters
-# the tunnel.
+# The Keycloak admin console lives under /auth/admin/* on the unified
+# auth.mcp-mesh.io hostname. We gate at Cloudflare's WAF instead of in Lua
+# — cheaper, faster, and runs before traffic enters the tunnel.
 #
 # Requires:
 #   CF_API_TOKEN     — Cloudflare API token with:
 #                        Zone · Firewall Services · Edit  (for the zone)
 #   CF_ZONE          — zone name, e.g. mcp-mesh.io
-#   CF_KC_ALLOW_IPS  — comma-separated CIDRs/IPs allowed to reach
-#                      kc.mcp-mesh.io. Default: 67.197.78.211 (home).
+#   CF_KC_ALLOW_IPS  — comma-separated CIDRs/IPs allowed to reach the KC
+#                      admin paths. Default: 67.197.78.211 (home).
 #
 # This script uses the Rulesets API (modern). For the per-zone custom-rules
 # phase the entrypoint ruleset is at:
@@ -30,7 +30,8 @@ set -euo pipefail
 
 CF_KC_ALLOW_IPS="${CF_KC_ALLOW_IPS:-67.197.78.211}"
 RULE_DESC="block-kc-from-non-whitelisted"
-RULE_HOST="${CF_KC_RULE_HOST:-kc.mcp-mesh.io}"
+RULE_HOST="${CF_KC_RULE_HOST:-auth.mcp-mesh.io}"
+RULE_PATH_PREFIX="${CF_KC_RULE_PATH_PREFIX:-/auth/admin}"
 
 API="https://api.cloudflare.com/client/v4"
 H_AUTH="Authorization: Bearer $CF_API_TOKEN"
@@ -58,7 +59,7 @@ ok "zone_id: $ZONE_ID"
 # Build the firewall expression. Format the whitelist as a CF IP-set literal:
 # {ip1 ip2 ...}.  Comma-separated input → space-separated tokens.
 IP_SET=$(echo "$CF_KC_ALLOW_IPS" | tr ',' ' ' | xargs)
-EXPRESSION="(http.host eq \"$RULE_HOST\" and not ip.src in {$IP_SET})"
+EXPRESSION="(http.host eq \"$RULE_HOST\" and starts_with(http.request.uri.path, \"$RULE_PATH_PREFIX\") and not ip.src in {$IP_SET})"
 ok "expression: $EXPRESSION"
 
 ENTRYPOINT_URL="$API/zones/$ZONE_ID/rulesets/phases/http_request_firewall_custom/entrypoint"
@@ -141,9 +142,9 @@ for r in rules:
 
 step "Done"
 echo "  Test from a non-whitelisted IP:"
-echo "    curl -i https://$RULE_HOST/admin/master/console/"
+echo "    curl -i https://$RULE_HOST$RULE_PATH_PREFIX/master/console/"
 echo "  Expected: HTTP 403 (Cloudflare block page)"
 echo
 echo "  Test from a whitelisted IP ($IP_SET):"
-echo "    curl -i https://$RULE_HOST/admin/master/console/"
+echo "    curl -i https://$RULE_HOST$RULE_PATH_PREFIX/master/console/"
 echo "  Expected: HTTP 200 (KC admin console)"
