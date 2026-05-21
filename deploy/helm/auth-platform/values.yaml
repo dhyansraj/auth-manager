@@ -60,6 +60,7 @@ platformEdge:
     kcTarget: ""                    # defaults in template to platform-kc-keycloak:80
     platformHost: ""                # defaults in template to auth.mcp-mesh.io
     kcAdminHost: ""                 # caller sets (e.g. kc.mcp-mesh.io) — direct KC admin host
+    nginxResolver: ""               # caller must set (e.g. 10.43.0.10 for k3s)
   resources:
     requests:
       cpu: "50m"

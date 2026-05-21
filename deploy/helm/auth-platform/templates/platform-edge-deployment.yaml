@@ -56,6 +56,8 @@ spec:
               value: {{ $platformHost | quote }}
             - name: KC_ADMIN_HOST
               value: {{ $kcAdminHost | quote }}
+            - name: NGINX_RESOLVER
+              value: {{ required "platformEdge.config.nginxResolver must be set (e.g. 10.43.0.10 for k3s)" .Values.platformEdge.config.nginxResolver | quote }}
           readinessProbe:
             httpGet:
               path: /health
