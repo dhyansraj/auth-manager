@@ -88,6 +88,18 @@ public class Tenant {
         this.deletedAt = Instant.now();
     }
 
+    /**
+     * Clears the soft-delete and resets to PENDING for re-provisioning.
+     * Caller is responsible for updating displayName/settings before save.
+     */
+    public void resurrect(String newDisplayName, Map<String, Object> newSettings) {
+        this.deletedAt = null;
+        this.status = TenantStatus.PENDING;
+        this.realmName = null;  // re-provisioning will set this
+        if (newDisplayName != null) this.displayName = newDisplayName;
+        if (newSettings != null) this.settings = newSettings;
+    }
+
     public boolean isDeleted() {
         return deletedAt != null;
     }

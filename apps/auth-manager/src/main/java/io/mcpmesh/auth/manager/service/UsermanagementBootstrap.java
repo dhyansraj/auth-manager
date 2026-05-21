@@ -6,7 +6,6 @@ import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.AppRepository;
-import io.mcpmesh.auth.manager.service.exception.AppConflictException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -58,13 +57,20 @@ public class UsermanagementBootstrap {
         try {
             // 1. Create the usermanagement App row + KC client (default confidential, recovered if exists)
             App app;
-            try {
+            if (appRepo.existsByTenantIdAndSlug(tenant.getId(), CLIENT_SLUG)) {
+                app = appRepo.findByTenantIdAndSlug(tenant.getId(), CLIENT_SLUG)
+                    .orElseThrow(() -> new IllegalStateException("App row vanished mid-bootstrap"));
+                log.info("usermanagement app row already exists for tenant {}, ensuring KC state…", tenant.getSlug());
+            } else {
                 var result = appService.create(tenant.getId(), CLIENT_SLUG, DISPLAY_NAME, actor);
                 app = result.app();
-            } catch (AppConflictException existing) {
-                log.info("usermanagement app already exists for tenant {} — using existing", tenant.getSlug());
-                app = appRepo.findByTenantIdAndSlug(tenant.getId(), CLIENT_SLUG)
-                    .orElseThrow(() -> new IllegalStateException("App conflict but lookup failed"));
+            }
+
+            // Ensure KC client exists -- it might be missing if the realm was manually
+            // recreated, or if a resurrect happened after KC realm was deleted by hand.
+            if (keycloak.findClientUuid(tenant.getRealmName(), CLIENT_SLUG).isEmpty()) {
+                log.info("KC usermanagement client missing for tenant {} — creating", tenant.getSlug());
+                keycloak.createClient(tenant.getRealmName(), CLIENT_SLUG, DISPLAY_NAME);
             }
 
             // 2. Flip to public (UI client uses PKCE; no client_secret).

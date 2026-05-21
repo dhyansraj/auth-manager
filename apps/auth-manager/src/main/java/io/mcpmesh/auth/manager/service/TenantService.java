@@ -74,17 +74,33 @@ public class TenantService {
         List<HostnameAssignment> hostnames,
         String actor
     ) {
-        if (repo.existsBySlug(slug)) {
-            // Pre-save conflict -- no tenant row exists, but the attempt is auditable.
-            var conflictPayload = createPayload(slug, displayName, settings, hostnames);
-            audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, null,
-                "tenant.create", "tenant", null,
-                conflictPayload,
-                new TenantConflictException(slug),
-                Map.of("reason", "slug_conflict", "slug", slug));
-            throw new TenantConflictException(slug);
+        Tenant t;
+        var existing = repo.findBySlug(slug);
+        boolean resurrected = false;
+        if (existing.isPresent()) {
+            Tenant prior = existing.get();
+            if (prior.isDeleted()) {
+                // Resurrect: same UUID, history preserved, re-provision realm.
+                log.info("Resurrecting previously-deleted tenant slug={} id={}", slug, prior.getId());
+                prior.resurrect(displayName, settings);
+                t = repo.save(prior);
+                // Clear any stale hostname rows from the prior life; replace with the new set
+                hostnameRepo.deleteByTenantId(t.getId());
+                resurrected = true;
+            } else {
+                // Active conflict -- no tenant row exists, but the attempt is auditable.
+                var conflictPayload = createPayload(slug, displayName, settings, hostnames);
+                audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, null,
+                    "tenant.create", "tenant", null,
+                    conflictPayload,
+                    new TenantConflictException(slug),
+                    Map.of("reason", "slug_conflict", "slug", slug));
+                throw new TenantConflictException(slug);
+            }
+        } else {
+            t = repo.save(new Tenant(slug, displayName, actor, settings));
         }
-        Tenant t = repo.save(new Tenant(slug, displayName, actor, settings));
+
         if (hostnames != null) {
             for (HostnameAssignment h : hostnames) {
                 hostnameRepo.save(new TenantHostname(h.host(), t.getId(), h.backend()));
@@ -98,6 +114,9 @@ public class TenantService {
         details.put("status", after.getStatus().name());
         details.put("realm", after.getRealmName());
         details.put("hostnameCount", hostnames == null ? 0 : hostnames.size());
+        if (resurrected) {
+            details.put("resurrected", true);
+        }
 
         if (after.getStatus() == TenantStatus.ACTIVE) {
             audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, after.getId(),
