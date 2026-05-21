@@ -123,9 +123,9 @@ step "6. Build + push platform-edge image"
 # Runs on beelink1 so it pushes to the local registry over plain HTTP (the
 # registry is configured insecure for 192.168.10.1:5000).
 ssh "$BUILD_HOST" "cd '$REPO_REMOTE_PATH' && \
-  docker build -f dev/openresty/Dockerfile -t '$REGISTRY/platform-edge:0.1.5' . && \
-  docker push '$REGISTRY/platform-edge:0.1.5'"
-ok "platform-edge:0.1.5 pushed to $REGISTRY"
+  docker build -f dev/openresty/Dockerfile -t '$REGISTRY/platform-edge:0.1.6' . && \
+  docker push '$REGISTRY/platform-edge:0.1.6'"
+ok "platform-edge:0.1.6 pushed to $REGISTRY"
 
 step "7. auth-manager + admin-ui + platform-edge"
 helm upgrade --install auth-platform deploy/helm/auth-platform \

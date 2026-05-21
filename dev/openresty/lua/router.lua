@@ -67,16 +67,26 @@ local function match_platform(path)
     -- window.location.hostname (e.g. app1.mcp-mesh.io → realm t-app1).
     -- Longest-prefix-first: /admin/api/* MUST be checked before /admin/*.
     --
-    -- The "/admin" prefix is stripped before forwarding to auth-manager
-    -- (the backend serves /api/v1/* at root). The admin-ui SPA sees its
-    -- own assets at /admin/* (vite base='/admin/') so no rewrite needed there.
+    -- The "/admin" prefix is stripped before forwarding upstream. Both
+    -- services serve at root: auth-manager at /api/v1/*, admin-ui's nginx
+    -- at /assets/* + /index.html. Vite's base='/admin/' only affects URLs
+    -- emitted INTO index.html (so the browser asks for /admin/assets/...);
+    -- the actual files in the image are still at /assets/..., so we MUST
+    -- strip /admin before nginx tries to find them.
     if matcher.match("/admin/api/*", path) then
         local stripped = string.sub(path, 7)  -- drop "/admin"
         if stripped == "" then stripped = "/" end
         return config.platform_admin_api_target, "OPTIONAL", stripped
     end
     if matcher.match("/admin/*", path) then
-        return config.platform_admin_ui_target, "OPTIONAL", nil
+        local stripped
+        if path == "/admin" then
+            stripped = "/"
+        else
+            stripped = string.sub(path, 7)  -- drop "/admin"
+            if stripped == "" then stripped = "/" end
+        end
+        return config.platform_admin_ui_target, "OPTIONAL", stripped
     end
     return nil, nil, nil
 end

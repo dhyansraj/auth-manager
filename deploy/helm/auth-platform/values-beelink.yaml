@@ -35,7 +35,7 @@ adminUi:
 platformEdge:
   image:
     repository: platform-edge
-    tag: "0.1.5"
+    tag: "0.1.6"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,
