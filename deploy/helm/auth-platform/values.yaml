@@ -1,0 +1,88 @@
+# Global defaults. Override per-environment via values-<env>.yaml.
+
+global:
+  imageRegistry: ""                 # set per env, e.g. "192.168.10.1:5000"
+  storageClass: ""                  # set per env, e.g. "longhorn"
+
+# ───── auth-manager (our app) ─────
+authManager:
+  enabled: true
+  image:
+    repository: auth-manager
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  config:
+    activeProfile: "k8s"
+    serverPort: 8080
+    keycloakUrl: ""                 # auto-derived from KC service if blank (set in templates)
+    postgresHost: ""                # auto-derived
+    redisHost: ""                   # auto-derived
+  env: {}
+
+# ───── admin-ui ─────
+adminUi:
+  enabled: true
+  image:
+    repository: admin-ui
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 80
+
+# ───── Postgres (Bitnami subchart) ─────
+postgresql:
+  enabled: true
+  auth:
+    username: authmanager
+    password: changeme              # override in env
+    database: authmanager           # auth-manager's DB
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+    initdb:
+      scripts:
+        # KC needs its own DB; create it on first init
+        00-create-keycloak-db.sql: |
+          CREATE DATABASE keycloak;
+
+# ───── Redis (Bitnami subchart) ─────
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false                  # we use Redis as a routing cache; no auth in v1
+  master:
+    persistence:
+      enabled: false                # routing table; ephemeral OK
+
+# ───── Keycloak (Bitnami subchart) ─────
+keycloak:
+  enabled: true
+  image:
+    tag: "26.6.1"                   # match our pin
+  auth:
+    adminUser: admin
+    adminPassword: admin            # override in env
+  postgresql:
+    enabled: false                  # use the platform's postgres
+  externalDatabase:
+    host: ""                        # set in templates
+    user: authmanager
+    password: changeme
+    database: keycloak
+  production: false                 # use start-dev shape; faster boot for now
+  proxy: edge                       # behind CF + OpenResty

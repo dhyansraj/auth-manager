@@ -1,0 +1,40 @@
+{{- if .Values.adminUi.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-admin-ui
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin-ui
+spec:
+  replicas: {{ .Values.adminUi.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: admin-ui
+  template:
+    metadata:
+      labels:
+        {{- include "auth-platform.labels" . | nindent 8 }}
+        app.kubernetes.io/component: admin-ui
+    spec:
+      containers:
+        - name: admin-ui
+          image: {{ include "auth-platform.image" (dict "global" .Values.global "repository" .Values.adminUi.image.repository "tag" .Values.adminUi.image.tag) }}
+          imagePullPolicy: {{ .Values.adminUi.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+{{- end }}

@@ -1,0 +1,31 @@
+{{- if .Values.authManager.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-auth-manager-config
+  labels: {{- include "auth-platform.labels" . | nindent 4 }}
+data:
+  application-k8s.yaml: |
+    spring:
+      datasource:
+        url: jdbc:postgresql://{{ .Values.authManager.config.postgresHost | default (printf "%s-postgresql" .Release.Name) }}:5432/{{ .Values.postgresql.auth.database }}
+        username: {{ .Values.postgresql.auth.username }}
+        # password injected via env var SPRING_DATASOURCE_PASSWORD
+      data:
+        redis:
+          host: {{ .Values.authManager.config.redisHost | default (printf "%s-redis-master" .Release.Name) }}
+          port: 6379
+
+    keycloak:
+      url: {{ .Values.authManager.config.keycloakUrl | default (printf "http://%s-keycloak" .Release.Name) | quote }}
+      realm: master
+      admin:
+        client-id: admin-cli
+        username: admin
+        # password injected via env var KEYCLOAK_ADMIN_PASSWORD
+
+    management:
+      health:
+        redis:
+          enabled: true
+{{- end }}

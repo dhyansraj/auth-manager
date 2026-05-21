@@ -1,0 +1,6 @@
+apiVersion: v2
+name: auth-platform
+description: Multi-tenant IAM platform (custom services only; PG/Redis/KC installed separately)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

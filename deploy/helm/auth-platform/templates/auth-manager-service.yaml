@@ -1,0 +1,18 @@
+{{- if .Values.authManager.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-auth-manager
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-manager
+spec:
+  type: {{ .Values.authManager.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.authManager.service.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: auth-manager
+{{- end }}

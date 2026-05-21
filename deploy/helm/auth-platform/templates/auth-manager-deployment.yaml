@@ -1,0 +1,69 @@
+{{- if .Values.authManager.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-auth-manager
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-manager
+spec:
+  replicas: {{ .Values.authManager.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: auth-manager
+  template:
+    metadata:
+      labels:
+        {{- include "auth-platform.labels" . | nindent 8 }}
+        app.kubernetes.io/component: auth-manager
+    spec:
+      containers:
+        - name: auth-manager
+          image: {{ include "auth-platform.image" (dict "global" .Values.global "repository" .Values.authManager.image.repository "tag" .Values.authManager.image.tag) }}
+          imagePullPolicy: {{ .Values.authManager.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.authManager.config.serverPort }}
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ .Values.authManager.config.activeProfile | quote }}
+            - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+              value: file:/config/
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-auth-manager
+                  key: postgres-password
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-auth-manager
+                  key: keycloak-admin-password
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.authManager.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-auth-manager-config
+            items:
+              - key: application-k8s.yaml
+                path: application-k8s.yaml
+{{- end }}
