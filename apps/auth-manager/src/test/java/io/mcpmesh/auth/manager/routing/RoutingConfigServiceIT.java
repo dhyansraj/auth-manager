@@ -54,7 +54,7 @@ class RoutingConfigServiceIT {
     @Autowired TenantRepository tenantRepo;
     @Autowired AuditEventRepository auditRepo;
     @Autowired StringRedisTemplate redisTpl;
-    @Autowired ObjectMapper objectMapper;
+    final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {

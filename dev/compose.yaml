@@ -54,6 +54,12 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # Cross-cutting platform targets (overrideable). auth-manager and admin-ui
+      # run on the host machine in local dev, so they're reached via
+      # host.docker.internal. Keycloak runs in compose at keycloak:8180.
+      PLATFORM_ADMIN_API_TARGET: "host.docker.internal:8080"
+      PLATFORM_ADMIN_UI_TARGET:  "host.docker.internal:8080"
+      PLATFORM_KC_TARGET:        "keycloak:8180"
     depends_on:
       redis:
         condition: service_healthy

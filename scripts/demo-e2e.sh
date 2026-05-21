@@ -274,6 +274,20 @@ if [ -n "$HOST_KEYS" ]; then
 else
     ok "No host:* keys present"
 fi
+
+note "Clearing route:* keys in Redis…"
+ROUTE_KEYS=$(rcli --scan --pattern 'route:*' 2>/dev/null || true)
+if [ -n "$ROUTE_KEYS" ]; then
+    count=0
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        rcli DEL "$key" >/dev/null
+        count=$((count + 1))
+    done <<< "$ROUTE_KEYS"
+    ok "Cleared $count route:* keys"
+else
+    ok "No route:* keys present"
+fi
 pause 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,6 +334,28 @@ ok "tenant id     : $TENANT_ID"
 ok "realm         : $REALM_NAME"
 ok "status        : $TENANT_STATUS"
 ok "hostnames     : ${PRIMARY_HOST}, ${WWW_HOST}  →  ${SAMPLE_BACKEND}"
+
+# Override the default route:<slug> JSON to point at the local sample app.
+# Tenant create seeded targets with k8s-DNS values
+# (acme-backend.tenant-acme.svc.cluster.local:8080) which don't resolve in
+# local docker-compose. We replace route:acme directly in Redis since the
+# RouteController PUT requires a tenant-admin JWT we don't have yet.
+note "Overriding route:${TENANT_SLUG} → sample backend (${SAMPLE_BACKEND})…"
+ROUTE_JSON=$(python3 -c "
+import json
+print(json.dumps({
+  'rules': [
+    {'path': '/api/*', 'authMode': 'REQUIRED', 'target': 'backend'},
+    {'path': '/*',     'authMode': 'OPTIONAL', 'target': 'frontend'}
+  ],
+  'targets': {
+    'backend':  '${SAMPLE_BACKEND}',
+    'frontend': '${SAMPLE_BACKEND}'
+  }
+}))
+")
+rcli SET "route:${TENANT_SLUG}" "$ROUTE_JSON" >/dev/null
+ok "route:${TENANT_SLUG} published (rules=2, targets→${SAMPLE_BACKEND})"
 pause 1
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -627,17 +663,37 @@ hit "real token       → GET /orders/approve"  "200" \
 pause 1
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 9: Same flow through OpenResty (hostname routing)
+# Step 9: Same flow through OpenResty (rule-based routing + auth gating)
 # ─────────────────────────────────────────────────────────────────────────────
 step "Step 9: Same flow through OpenResty edge (Host: ${PRIMARY_HOST})"
 
-note "This proves: hostname → Redis route lookup → proxy to backend → JWT verify → @PreAuthorize."
+note "This proves: hostname → tenant → route:<slug> rules → auth gating → proxy."
+note "Rule set: '/api/* REQUIRED → backend', '/* OPTIONAL → frontend' (both → sample app)."
+
+# Existing: /orders falls under /* OPTIONAL → sample app, which returns 401
+# itself when the token is missing.
 hit "no token  via edge → GET /orders"          "401" \
     -X GET -H "Host: ${PRIMARY_HOST}" "${OPENRESTY_URL}/orders"
 hit "real tok  via edge → GET /orders/whoami"   "200" \
     -X GET -H "Host: ${PRIMARY_HOST}" \
             -H "Authorization: Bearer ${ACCESS_TOKEN}" \
             "${OPENRESTY_URL}/orders/whoami"
+
+# New: /api/* is REQUIRED → openresty rejects with 401 BEFORE hitting backend.
+hit "no token  via edge → GET /api/anything (REQUIRED → 401 at edge)" "401" \
+    -X GET -H "Host: ${PRIMARY_HOST}" "${OPENRESTY_URL}/api/anything"
+
+# New: /auth/* → keycloak (platform cross-cutting, ignores tenant rules).
+hit "via edge → GET /auth/realms/${REALM_NAME}/.well-known/openid-configuration" "200" \
+    -X GET -H "Host: ${PRIMARY_HOST}" \
+            "${OPENRESTY_URL}/auth/realms/${REALM_NAME}/.well-known/openid-configuration"
+
+# New: /admin/api/* → auth-manager. The endpoint /admin/api/v1/tenants does
+# NOT exist (auth-manager mounts at /api/v1/...), so we expect 404 from
+# Spring — what matters is the request landed at auth-manager, not at the
+# sample app and not at OpenResty's "no rule matched" 404.
+hit "via edge → GET /admin/api/v1/tenants (platform → auth-manager 404)" "404" \
+    -X GET -H "Host: ${PRIMARY_HOST}" "${OPENRESTY_URL}/admin/api/v1/tenants"
 pause 1
 
 # ─────────────────────────────────────────────────────────────────────────────

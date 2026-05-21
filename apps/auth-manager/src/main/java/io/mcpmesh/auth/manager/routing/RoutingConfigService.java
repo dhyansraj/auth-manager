@@ -40,18 +40,16 @@ public class RoutingConfigService {
 
     private final TenantRepository tenants;
     private final StringRedisTemplate redis;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final AuditService audit;
 
     public RoutingConfigService(
         TenantRepository tenants,
         StringRedisTemplate redis,
-        ObjectMapper objectMapper,
         AuditService audit
     ) {
         this.tenants = tenants;
         this.redis = redis;
-        this.objectMapper = objectMapper;
         this.audit = audit;
     }
 
