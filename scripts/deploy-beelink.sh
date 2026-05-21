@@ -51,7 +51,12 @@ DB_NAME="${DB_NAME:-authmanager}"
 
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}"
 KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-admin}"
-KC_PUBLIC_HOSTNAME="${KC_PUBLIC_HOSTNAME:-https://kc.mcp-mesh.io}"
+# Public OIDC issuer hostname (path-included). KC 26 hostname-v2 builds the
+# issuer as KC_HOSTNAME + "/realms/<realm>", so a path component here means
+# tokens get iss="https://auth.mcp-mesh.io/auth/realms/<realm>".
+KC_PUBLIC_HOSTNAME="${KC_PUBLIC_HOSTNAME:-https://auth.mcp-mesh.io/auth}"
+# Admin console hostname — bypasses platform-edge and IP-restricted at CF.
+KC_ADMIN_HOSTNAME="${KC_ADMIN_HOSTNAME:-https://kc.mcp-mesh.io}"
 
 bold()  { printf "\033[1m%s\033[0m\n" "$*"; }
 ok()    { printf "  \033[32m✓\033[0m %s\n" "$*"; }
@@ -111,6 +116,8 @@ helm upgrade --install platform-kc bitnami/keycloak \
   --set "extraEnvVars[0].value=$KC_PUBLIC_HOSTNAME" \
   --set "extraEnvVars[1].name=KC_HOSTNAME_STRICT" \
   --set-string "extraEnvVars[1].value=true" \
+  --set "extraEnvVars[2].name=KC_HOSTNAME_ADMIN_URL" \
+  --set "extraEnvVars[2].value=$KC_ADMIN_HOSTNAME" \
   --set "replicaCount=1" \
   --wait --timeout=300s
 ok "platform-kc"
@@ -120,9 +127,9 @@ step "6. Build + push platform-edge image"
 # Runs on beelink1 so it pushes to the local registry over plain HTTP (the
 # registry is configured insecure for 192.168.10.1:5000).
 ssh "$BUILD_HOST" "cd '$REPO_REMOTE_PATH' && \
-  docker build -f dev/openresty/Dockerfile -t '$REGISTRY/platform-edge:0.1.0' . && \
-  docker push '$REGISTRY/platform-edge:0.1.0'"
-ok "platform-edge:0.1.0 pushed to $REGISTRY"
+  docker build -f dev/openresty/Dockerfile -t '$REGISTRY/platform-edge:0.1.1' . && \
+  docker push '$REGISTRY/platform-edge:0.1.1'"
+ok "platform-edge:0.1.1 pushed to $REGISTRY"
 
 step "7. auth-manager + admin-ui + platform-edge"
 helm upgrade --install auth-platform deploy/helm/auth-platform \

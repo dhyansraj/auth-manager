@@ -33,17 +33,31 @@ step()  { echo; bold "── $* ──"; }
 # ─── Ingress rules (HOSTNAME → in-cluster service URL) ───────────────────
 # Edit this block to add new public hostnames.
 # Service URLs use Kubernetes DNS: <svc>.<namespace>.svc.cluster.local
+#
+# Hostname routing notes:
+#   - auth.mcp-mesh.io  → platform-edge (admin UI + auth-manager + KC under /auth)
+#   - kc.mcp-mesh.io    → KC directly (bypasses edge; IP-restricted via WAF
+#                         custom rule — see scripts/cf-firewall-setup.sh).
+#                         Listed BEFORE the wildcard so the specific match wins.
+#   - *.mcp-mesh.io     → platform-edge (catch-all for tenant subdomains:
+#                         app1.mcp-mesh.io, customer.mcp-mesh.io, etc.).
+#                         Order matters in CF tunnel ingress; this MUST come
+#                         after the more specific entries above.
 INGRESS_RULES=$(cat <<'JSON'
 {
   "config": {
     "ingress": [
       {
         "hostname": "auth.mcp-mesh.io",
-        "service": "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080"
+        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
       },
       {
         "hostname": "kc.mcp-mesh.io",
         "service": "http://platform-kc-keycloak.auth-platform.svc.cluster.local:80"
+      },
+      {
+        "hostname": "*.mcp-mesh.io",
+        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
       },
       {
         "service": "http_status:404"
@@ -54,9 +68,11 @@ INGRESS_RULES=$(cat <<'JSON'
 JSON
 )
 
-# Hostnames to ensure as DNS CNAMEs (extracted from the INGRESS_RULES above).
-# Keep in sync manually -- the script could parse INGRESS_RULES but inline list
-# is easier to read at a glance.
+# Hostnames to ensure as DNS CNAMEs.
+# The *.mcp-mesh.io wildcard ingress is matched by the tunnel based on the
+# Host header; we still need per-subdomain CNAMEs at the DNS layer for each
+# hostname that should resolve. "auth" and "kc" are the platform-owned ones.
+# Tenant subdomains (app1, etc.) will be added as we onboard tenants.
 DNS_HOSTNAMES=(auth kc)
 
 step "1. Verify API token"
@@ -115,5 +131,6 @@ for name in "${DNS_HOSTNAMES[@]}"; do
 done
 
 step "Done"
-echo "  Try:  curl -sS https://auth.$CF_ZONE/api/v1/health"
-echo "        curl -sS https://kc.$CF_ZONE/realms/master/.well-known/openid-configuration"
+echo "  Try:  curl -sS https://auth.$CF_ZONE/actuator/health"
+echo "        curl -sS https://auth.$CF_ZONE/auth/realms/master/.well-known/openid-configuration"
+echo "        curl -sS https://kc.$CF_ZONE/admin/master/console/   # IP-restricted"

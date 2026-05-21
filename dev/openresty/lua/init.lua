@@ -23,6 +23,11 @@ _M.platform_admin_api_target = getenv("PLATFORM_ADMIN_API_TARGET", "host.docker.
 _M.platform_admin_ui_target  = getenv("PLATFORM_ADMIN_UI_TARGET",  "host.docker.internal:8080")
 _M.platform_kc_target        = getenv("PLATFORM_KC_TARGET",        "keycloak:8180")
 
+-- Platform host (e.g. auth.mcp-mesh.io). Requests with this Host header
+-- (after cross-cutting paths) route to admin-ui (SPA root) + auth-manager
+-- (under /api/* and /actuator/*), instead of going through tenant lookup.
+_M.platform_host             = getenv("PLATFORM_HOST",             "auth.mcp-mesh.io")
+
 -- Shared-dict for caching per-tenant route JSON.
 _M.cache_ttl_seconds = 30
 

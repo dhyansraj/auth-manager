@@ -24,9 +24,13 @@ adminUi:
 platformEdge:
   image:
     repository: platform-edge
-    tag: "0.1.0"
+    tag: "0.1.1"
   config:
-    redisHost: "platform-redis-master"
-    adminApiTarget: "auth-platform-auth-manager:8080"
-    adminUiTarget: "auth-platform-admin-ui:80"
-    kcTarget: "platform-kc-keycloak:80"
+    # Fully-qualified service DNS names — nginx's `resolver` directive does
+    # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,
+    # so short names like "auth-platform-auth-manager" would NXDOMAIN.
+    redisHost: "platform-redis-master.auth-platform.svc.cluster.local"
+    adminApiTarget: "auth-platform-auth-manager.auth-platform.svc.cluster.local:8080"
+    adminUiTarget:  "auth-platform-admin-ui.auth-platform.svc.cluster.local:80"
+    kcTarget:       "platform-kc-keycloak.auth-platform.svc.cluster.local:80"
+    platformHost: "auth.mcp-mesh.io"

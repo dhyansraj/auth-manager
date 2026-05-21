@@ -1,14 +1,17 @@
 -- router.lua
 -- Main access_by_lua entrypoint. Resolves request → backend in this order:
---   1. Cross-cutting platform paths (/admin/api/*, /admin/*, /auth/*,
---      /.well-known/openid-configuration) -- route by path alone, ignoring
---      the Host header. These bypass tenant lookup entirely.
---   2. Host header → tenant slug via Redis HGET host:<host> tenant.
---   3. Tenant slug → ordered rule list via Redis GET route:<slug>
+--   1. Cross-cutting platform paths (/auth/*, /.well-known/openid-configuration)
+--      -- route by path alone, ignoring the Host header. These bypass tenant
+--      lookup entirely (cross-cutting for OIDC discovery on any hostname).
+--   2. Platform host (PLATFORM_HOST, e.g. auth.mcp-mesh.io) — when the request
+--      Host matches, route /api/* and /actuator/* to auth-manager and
+--      everything else to admin-ui (SPA), with OPTIONAL auth at the edge.
+--   3. Otherwise: Host header → tenant slug via Redis HGET host:<host> tenant.
+--   4. Tenant slug → ordered rule list via Redis GET route:<slug>
 --      (with a 30s shared-dict cache).
---   4. First rule whose path glob matches ngx.var.uri wins.
---   5. Auth gating per rule.authMode (PUBLIC / REQUIRED / OPTIONAL).
---   6. Set ngx.var.route_backend for proxy_pass.
+--   5. First rule whose path glob matches ngx.var.uri wins.
+--   6. Auth gating per rule.authMode (PUBLIC / REQUIRED / OPTIONAL).
+--   7. Set ngx.var.route_backend for proxy_pass.
 
 local cjson = require "cjson.safe"
 local config = require "init"
@@ -42,9 +45,6 @@ local function match_platform(path)
     if path == "/.well-known/openid-configuration" then
         return config.platform_kc_target, "PUBLIC", nil
     end
-    if matcher.match("/admin/api/*", path) then
-        return config.platform_admin_api_target, "OPTIONAL", nil
-    end
     if matcher.match("/auth/*", path) then
         -- Strip the "/auth" prefix so Keycloak (which serves /realms/... at root)
         -- gets the URI it expects. "/auth" alone becomes "/".
@@ -56,10 +56,24 @@ local function match_platform(path)
         end
         return config.platform_kc_target, "OPTIONAL", stripped
     end
-    if matcher.match("/admin/*", path) then
-        return config.platform_admin_ui_target, "OPTIONAL", nil
-    end
     return nil, nil, nil
+end
+
+-- Platform-host routing. When Host == PLATFORM_HOST (after cross-cutting paths
+-- have been considered), route by path prefix:
+--   /api/*       → auth-manager
+--   /actuator/*  → auth-manager
+--   /*           → admin-ui (SPA root + assets)
+-- All paths pass through with OPTIONAL auth at the edge — backends enforce
+-- auth themselves. No path rewriting.
+local function match_platform_host(path)
+    if matcher.match("/api/*", path) then
+        return config.platform_admin_api_target, "OPTIONAL"
+    end
+    if matcher.match("/actuator/*", path) then
+        return config.platform_admin_api_target, "OPTIONAL"
+    end
+    return config.platform_admin_ui_target, "OPTIONAL"
 end
 
 local function lookup_tenant(host)
@@ -145,7 +159,15 @@ if backend then
     return
 end
 
--- 2. Host → tenant
+-- 2. Platform host (auth.mcp-mesh.io) routing — admin-ui + auth-manager.
+if host and host == config.platform_host then
+    local p_backend, p_auth = match_platform_host(path)
+    enforce_auth(p_auth, nil)
+    ngx.var.route_backend = p_backend
+    return
+end
+
+-- 3. Host → tenant
 if not host or host == "" then
     return fail(400, "missing Host header")
 end
@@ -157,7 +179,7 @@ if not tenant then
     return fail(404, "unknown host: " .. host)
 end
 
--- 3. Tenant → routes
+-- 4. Tenant → routes
 local rules_json, rerr = load_routes(tenant)
 if rerr then
     return fail(502, rerr)
@@ -172,7 +194,7 @@ if not routes or derr then
     return fail(500, "corrupt routing config for tenant: " .. tenant)
 end
 
--- 4. Path → rule
+-- 5. Path → rule
 local rule = matcher.find_rule(routes.rules, path)
 if not rule then
     return fail(404, "no rule matched for path: " .. path)
@@ -185,8 +207,8 @@ if not resolved or resolved == "" then
     return fail(500, "unresolved target: " .. (target_name or "(nil)"))
 end
 
--- 5. Auth gating
+-- 6. Auth gating
 enforce_auth(rule.authMode, tenant)
 
--- 6. Proxy
+-- 7. Proxy
 ngx.var.route_backend = resolved

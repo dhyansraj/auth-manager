@@ -3,6 +3,7 @@
 {{- $adminApi := default (printf "%s-auth-manager:8080" $fullname) .Values.platformEdge.config.adminApiTarget -}}
 {{- $adminUi  := default (printf "%s-admin-ui:80" $fullname)      .Values.platformEdge.config.adminUiTarget -}}
 {{- $kc       := default "platform-kc-keycloak:80"                .Values.platformEdge.config.kcTarget -}}
+{{- $platformHost := default "auth.mcp-mesh.io"                   .Values.platformEdge.config.platformHost -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,6 +51,8 @@ spec:
               value: {{ $adminUi | quote }}
             - name: PLATFORM_KC_TARGET
               value: {{ $kc | quote }}
+            - name: PLATFORM_HOST
+              value: {{ $platformHost | quote }}
           readinessProbe:
             httpGet:
               path: /health

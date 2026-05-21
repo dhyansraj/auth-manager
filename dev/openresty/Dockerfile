@@ -13,6 +13,10 @@ WORKDIR /usr/local/openresty/nginx
 # scripts/deploy-beelink.sh.
 COPY dev/openresty/nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
 COPY dev/openresty/lua/       /usr/local/openresty/nginx/lua/
+# Normalise file perms — mutagen-synced source on the build host strips
+# group/other perms to 0600, but the openresty worker runs as 'nobody' and
+# can't read 0600 root-owned files. Force world-readable.
+RUN chmod -R a+rX /usr/local/openresty/nginx/lua /usr/local/openresty/nginx/conf/nginx.conf
 
 EXPOSE 80
 

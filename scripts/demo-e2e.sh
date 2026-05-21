@@ -688,12 +688,11 @@ hit "via edge → GET /auth/realms/${REALM_NAME}/.well-known/openid-configuratio
     -X GET -H "Host: ${PRIMARY_HOST}" \
             "${OPENRESTY_URL}/auth/realms/${REALM_NAME}/.well-known/openid-configuration"
 
-# New: /admin/api/* → auth-manager. The endpoint /admin/api/v1/tenants does
-# NOT exist (auth-manager mounts at /api/v1/...), so we expect 404 from
-# Spring — what matters is the request landed at auth-manager, not at the
-# sample app and not at OpenResty's "no rule matched" 404.
-hit "via edge → GET /admin/api/v1/tenants (platform → auth-manager 404)" "404" \
-    -X GET -H "Host: ${PRIMARY_HOST}" "${OPENRESTY_URL}/admin/api/v1/tenants"
+# Note: the prior /admin/api/* and /admin/* cross-cutting routes have been
+# removed. Platform admin paths now require Host: auth.mcp-mesh.io (set via
+# PLATFORM_HOST on the edge), which the local compose dev stack doesn't
+# expose by default. The K8s deployment exercises that path; locally we just
+# verify tenant + cross-cutting OIDC.
 pause 1
 
 # ─────────────────────────────────────────────────────────────────────────────
