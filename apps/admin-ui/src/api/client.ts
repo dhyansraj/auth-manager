@@ -1,3 +1,5 @@
+import type { User, UserListResponse, CreateUserPayload } from './types';
+
 const base = '/api/v1';
 
 // Module-level token holder; set by AuthTokenSync on every auth state change.
@@ -35,4 +37,22 @@ export const api = {
   globalAudit:   (page = 0, size = 50) => req<import('./types').PageResponse<import('./types').AuditEvent>>(`/audit?page=${page}&size=${size}`),
   tenantAudit:   (tenantId: string, page = 0, size = 50) =>
     req<import('./types').PageResponse<import('./types').AuditEvent>>(`/tenants/${tenantId}/audit?page=${page}&size=${size}`),
+  listUsers: (tenantId: string, search?: string, first = 0, max = 50) => {
+    const qs = new URLSearchParams();
+    if (search) qs.set('search', search);
+    qs.set('first', String(first));
+    qs.set('max', String(max));
+    return req<UserListResponse>(`/tenants/${tenantId}/users?${qs}`);
+  },
+  getUser:    (tenantId: string, userId: string) => req<User>(`/tenants/${tenantId}/users/${userId}`),
+  createUser: (tenantId: string, body: CreateUserPayload) =>
+    req<User>(`/tenants/${tenantId}/users`, { method: 'POST', body: JSON.stringify(body) }),
+  disableUser:(tenantId: string, userId: string) =>
+    req<void>(`/tenants/${tenantId}/users/${userId}`, { method: 'DELETE' }),
+  updateUserRoles: (tenantId: string, userId: string, roles: string[]) =>
+    req<User>(`/tenants/${tenantId}/users/${userId}/roles`, {
+      method: 'PUT', body: JSON.stringify({ roles })
+    }),
+  resendInvite: (tenantId: string, userId: string) =>
+    req<void>(`/tenants/${tenantId}/users/${userId}/invite`, { method: 'POST' }),
 };

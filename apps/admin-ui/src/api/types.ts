@@ -48,3 +48,32 @@ export interface PageResponse<T> {
   totalItems: number;
   totalPages: number;
 }
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  enabled: boolean | null;
+  emailVerified: boolean | null;
+  createdAt: string | null;
+  roles: string[];
+}
+
+export interface UserListResponse {
+  items: User[];
+  first: number;
+  max: number;
+  totalItems: number;
+}
+
+export interface CreateUserPayload {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  roles?: string[];
+  sendInvite?: boolean;
+}
+
+export type UserRole = 'tenant-admin' | 'user-viewer';
