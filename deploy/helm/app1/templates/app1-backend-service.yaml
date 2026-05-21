@@ -1,0 +1,19 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  # MUST be literally "app1-backend" -- see comment in app1-backend-deployment.yaml.
+  name: app1-backend
+  labels:
+    {{- include "app1.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  type: {{ .Values.backend.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.backend.service.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: backend
+{{- end }}

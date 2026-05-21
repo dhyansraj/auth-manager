@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: app1-backend
+
+server:
+  port: 8080
+  # /api/orders & /api/whoami map to /api/* at the edge; nothing to rewrite here.
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# Default: the live tenant realm. Overridable via env (AUTH_LIB_ISSUER_URI, etc.)
+auth-lib:
+  issuer-uri: ${AUTH_LIB_ISSUER_URI:https://auth.mcp-mesh.io/auth/realms/t-app1}
+  client-id: ${AUTH_LIB_CLIENT_ID:orders}
+  client-secret: ${AUTH_LIB_CLIENT_SECRET:placeholder}
+  cache:
+    enabled: false
+
+logging:
+  level:
+    io.mcpmesh.auth: DEBUG
+    org.springframework.security: INFO

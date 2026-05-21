@@ -1,0 +1,6 @@
+apiVersion: v2
+name: app1
+description: Demo tenant app1 (backend + UI) deployed into namespace tenant-app1
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

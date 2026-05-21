@@ -68,10 +68,9 @@ JSON
 # Hostnames to ensure as DNS CNAMEs.
 # The *.mcp-mesh.io wildcard ingress is matched by the tunnel based on the
 # Host header; we still need per-subdomain CNAMEs at the DNS layer for each
-# hostname that should resolve. "auth" is the only platform-owned one now —
-# the previous "kc" subdomain was collapsed into auth.mcp-mesh.io/auth/admin/*
-# Tenant subdomains (app1, etc.) will be added as we onboard tenants.
-DNS_HOSTNAMES=(auth)
+# hostname that should resolve. "auth" is the platform admin/issuer host;
+# tenant subdomains (app1, etc.) are added as we onboard tenants.
+DNS_HOSTNAMES=(auth app1)
 
 # Stale CNAMEs to remove (orphaned by ingress rules dropped above).
 DNS_HOSTNAMES_TO_REMOVE=(kc)

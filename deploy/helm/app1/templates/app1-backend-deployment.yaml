@@ -1,0 +1,59 @@
+{{- if .Values.backend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # NOTE: bare name "app1-backend" (not Release.Name-prefixed) so the in-cluster
+  # service DNS matches what auth-manager's RoutingConfigService.defaultFor()
+  # writes to Redis: app1-backend.tenant-app1.svc.cluster.local:8080
+  name: app1-backend
+  labels:
+    {{- include "app1.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "app1.labels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: app1-backend
+          image: {{ include "app1.image" (dict "global" .Values.global "repository" .Values.backend.image.repository "tag" .Values.backend.image.tag) }}
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AUTH_LIB_ISSUER_URI
+              value: {{ .Values.backend.config.authLibIssuerUri | quote }}
+            - name: AUTH_LIB_CLIENT_ID
+              value: {{ .Values.backend.config.authLibClientId | quote }}
+            - name: AUTH_LIB_CLIENT_SECRET
+              value: {{ .Values.backend.config.authLibClientSecret | quote }}
+            # Redis is not present in this namespace; explicitly disable
+            # autoconfig + health check so the pod starts cleanly.
+            - name: SPRING_AUTOCONFIGURE_EXCLUDE
+              value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
+            - name: MANAGEMENT_HEALTH_REDIS_ENABLED
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+{{- end }}

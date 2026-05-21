@@ -49,6 +49,7 @@
         <module>apps/auth-manager</module>
         <module>libs/auth-lib</module>
         <module>apps/auth-client-sample</module>
+        <module>apps/app1-backend</module>
     </modules>
 
     <dependencyManagement>

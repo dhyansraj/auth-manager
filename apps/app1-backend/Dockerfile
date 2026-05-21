@@ -1,5 +1,5 @@
-# Build context MUST be the repo root, not apps/auth-manager/:
-#   docker build -f apps/auth-manager/Dockerfile -t auth-manager:tag .
+# Build context MUST be the repo root, not apps/app1-backend/:
+#   docker build -f apps/app1-backend/Dockerfile -t app1-backend:tag .
 
 # ───── Stage 1: build ─────
 FROM maven:3.9-eclipse-temurin-21 AS build
@@ -14,22 +14,21 @@ COPY apps/auth-manager/pom.xml ./apps/auth-manager/
 COPY apps/auth-client-sample/pom.xml ./apps/auth-client-sample/
 COPY apps/app1-backend/pom.xml ./apps/app1-backend/
 
-# Warm the dep cache (best-effort; ignores failures from missing src)
-RUN mvn -B -f apps/auth-manager/pom.xml dependency:go-offline -DexcludeArtifactIds=auth-lib || true
+# Warm the dep cache (best-effort)
+RUN mvn -B -f apps/app1-backend/pom.xml dependency:go-offline -DexcludeArtifactIds=auth-lib || true
 
 # Now copy sources
 COPY libs/auth-lib/src ./libs/auth-lib/src
-COPY apps/auth-manager/src ./apps/auth-manager/src
+COPY apps/app1-backend/src ./apps/app1-backend/src
 
 # Build the fat jar
-RUN mvn -B -pl apps/auth-manager -am clean package -DskipTests
+RUN mvn -B -pl apps/app1-backend -am clean package -DskipTests
 
 # ───── Stage 2: runtime ─────
 FROM eclipse-temurin:21-jre-alpine AS runtime
 WORKDIR /app
-COPY --from=build /src/apps/auth-manager/target/auth-manager-0.1.0-SNAPSHOT.jar app.jar
+COPY --from=build /src/apps/app1-backend/target/app1-backend-0.1.0-SNAPSHOT.jar app.jar
 
-# Spring Boot's "graceful" shutdown
 ENV SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE=30s
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError"
 
