@@ -16,11 +16,22 @@ const queryClient = new QueryClient({
   },
 });
 
+// vite's BASE_URL is '/admin/' here; React Router wants a basename without
+// the trailing slash (so '/admin' for routes like '/admin/tenants').
+const basename = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// onSigninCallback: strip ?code and ?state from the URL after the SPA exchanges
+// the auth code, so a refresh doesn't try to re-process the (already-used) code.
+// The redirect_uri lands on /admin/ (the dashboard), so we keep the pathname.
+const onSigninCallback = () => {
+  window.history.replaceState({}, document.title, window.location.pathname);
+};
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <AuthProvider {...oidcConfig}>
+    <AuthProvider {...oidcConfig} onSigninCallback={onSigninCallback}>
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
+        <BrowserRouter basename={basename}>
           <App />
         </BrowserRouter>
       </QueryClientProvider>

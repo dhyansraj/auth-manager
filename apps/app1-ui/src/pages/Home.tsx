@@ -39,6 +39,17 @@ export default function Home() {
     auth.user?.profile?.email ||
     'friend';
 
+  // UX-only gating: if the JWT carries the 'tenant-admin' role on the
+  // 'usermanagement' client, show a Manage users button that deep-links to
+  // the admin-ui on this same host. The admin-ui detects the tenant realm
+  // from window.location.hostname so SSO carries over. Backend enforces
+  // actual authorisation; this is just a hint.
+  const profile = auth.user?.profile as
+    | { resource_access?: { usermanagement?: { roles?: string[] } } }
+    | undefined;
+  const isTenantAdmin =
+    profile?.resource_access?.usermanagement?.roles?.includes('tenant-admin') ?? false;
+
   return (
     <div className="space-y-6">
       <div className="bg-white border rounded-lg p-6 shadow-sm">
@@ -52,6 +63,14 @@ export default function Home() {
         >
           View orders
         </Link>
+        {isTenantAdmin && (
+          <a
+            href={`${window.location.origin}/admin/`}
+            className="bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2 rounded shadow-sm"
+          >
+            Manage users
+          </a>
+        )}
         <button
           onClick={() => auth.signoutRedirect()}
           className="bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 px-4 py-2 rounded"

@@ -12,7 +12,7 @@ authManager:
     repository: auth-manager
     tag: "0.1.1"
   config:
-    keycloakUrl: "https://auth.mcp-mesh.io/auth"
+    keycloakUrl: "http://platform-kc-keycloak"
     postgresHost: "platform-pg-postgresql"
     redisHost: "platform-redis-master"
 

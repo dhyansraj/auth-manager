@@ -4,7 +4,6 @@ import Dashboard from './pages/Dashboard';
 import TenantsList from './pages/TenantsList';
 import TenantDetail from './pages/TenantDetail';
 import AuditLog from './pages/AuditLog';
-import AuthCallback from './auth/AuthCallback';
 import AuthTokenSync from './auth/AuthTokenSync';
 
 export default function App() {
@@ -43,7 +42,6 @@ export default function App() {
           <Route path="/tenants" element={<TenantsList />} />
           <Route path="/tenants/:id" element={<TenantDetail />} />
           <Route path="/audit" element={<AuditLog />} />
-          <Route path="/auth/callback" element={<AuthCallback />} />
         </Routes>
       </main>
     </div>

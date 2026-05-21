@@ -1,6 +1,8 @@
 import type { User, UserListResponse, CreateUserPayload } from './types';
 
-const base = '/api/v1';
+// The admin-ui is served at /admin/* on every host. The edge maps
+// /admin/api/v1/* → auth-manager (with /admin stripped at the proxy).
+const base = '/admin/api/v1';
 
 // Module-level token holder; set by AuthTokenSync on every auth state change.
 let accessToken: string | null = null;

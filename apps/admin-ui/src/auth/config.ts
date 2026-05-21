@@ -2,26 +2,55 @@ import type { UserManagerSettings } from 'oidc-client-ts';
 
 /**
  * OIDC configuration derived from window.location at runtime — no env vars
- * baked into the bundle. Behaviour:
- *   - localhost / 127.0.0.1 → http://localhost:8180/realms/dev   (compose dev)
- *   - anywhere else         → ${origin}/auth/realms/dev          (k8s edge)
+ * baked into the bundle.
  *
- * The k8s edge serves Keycloak under /auth (KC_HOSTNAME=https://<host>/auth),
- * so the SPA's authority matches the iss claim KC mints.
+ * The admin-ui is served at /admin/* on BOTH the platform host
+ * (auth.mcp-mesh.io) AND on tenant subdomains (e.g. app1.mcp-mesh.io). The
+ * realm to authenticate against is picked from the hostname:
+ *   - localhost / 127.0.0.1       → realm 'dev' on http://localhost:8180
+ *                                    (compose dev — platform host)
+ *   - auth.mcp-mesh.io             → realm 'dev' (platform-admin)
+ *   - app1.mcp-mesh.io             → realm 't-app1' (tenant-admin SSO)
+ *
+ * The k8s edge serves Keycloak under /auth on every host
+ * (KC_HOSTNAME=https://auth.mcp-mesh.io/auth), so tenant-host pages authority
+ * still points back to auth.mcp-mesh.io.
  */
-const isLocalhost =
-  window.location.hostname === 'localhost' ||
-  window.location.hostname === '127.0.0.1';
+const PLATFORM_HOST = 'auth.mcp-mesh.io';
+const PLATFORM_REALM = 'dev';
 
-const authority = isLocalhost
-  ? 'http://localhost:8180/realms/dev'
-  : `${window.location.origin}/auth/realms/dev`;
+function resolveRealm(): { authority: string; isPlatformHost: boolean } {
+  const host = window.location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return {
+      authority: `http://localhost:8180/realms/${PLATFORM_REALM}`,
+      isPlatformHost: true,
+    };
+  }
+  if (host === PLATFORM_HOST) {
+    return {
+      authority: `${window.location.origin}/auth/realms/${PLATFORM_REALM}`,
+      isPlatformHost: true,
+    };
+  }
+  // Tenant subdomain — e.g. app1.mcp-mesh.io → realm 't-app1'.
+  // The KC issuer always lives on the platform host under /auth.
+  const slug = host.split('.')[0];
+  return {
+    authority: `https://${PLATFORM_HOST}/auth/realms/t-${slug}`,
+    isPlatformHost: false,
+  };
+}
+
+const resolved = resolveRealm();
+
+export const isPlatformHost = resolved.isPlatformHost;
 
 export const oidcConfig: UserManagerSettings = {
-  authority,
-  client_id: 'auth-manager-ui',
-  redirect_uri: `${window.location.origin}/auth/callback`,
-  post_logout_redirect_uri: window.location.origin,
+  authority: resolved.authority,
+  client_id: 'usermanagement',
+  redirect_uri: `${window.location.origin}/admin/`,
+  post_logout_redirect_uri: `${window.location.origin}/admin/`,
   response_type: 'code',
   scope: 'openid profile email',
   loadUserInfo: true,
