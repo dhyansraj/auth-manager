@@ -1,0 +1,18 @@
+{{- if .Values.platformEdge.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "auth-platform.fullname" . }}-platform-edge
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: platform-edge
+spec:
+  type: {{ .Values.platformEdge.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.platformEdge.service.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: platform-edge
+{{- end }}

@@ -1,0 +1,67 @@
+{{- if .Values.platformEdge.enabled }}
+{{- $fullname := include "auth-platform.fullname" . -}}
+{{- $adminApi := default (printf "%s-auth-manager:8080" $fullname) .Values.platformEdge.config.adminApiTarget -}}
+{{- $adminUi  := default (printf "%s-admin-ui:80" $fullname)      .Values.platformEdge.config.adminUiTarget -}}
+{{- $kc       := default "platform-kc-keycloak:80"                .Values.platformEdge.config.kcTarget -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-platform-edge
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: platform-edge
+spec:
+  replicas: {{ .Values.platformEdge.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: platform-edge
+  template:
+    metadata:
+      labels:
+        {{- include "auth-platform.labels" . | nindent 8 }}
+        app.kubernetes.io/component: platform-edge
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+                    app.kubernetes.io/component: platform-edge
+      containers:
+        - name: platform-edge
+          image: {{ include "auth-platform.image" (dict "global" .Values.global "repository" .Values.platformEdge.image.repository "tag" .Values.platformEdge.image.tag) }}
+          imagePullPolicy: {{ .Values.platformEdge.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: 80
+          env:
+            - name: REDIS_HOST
+              value: {{ required "platformEdge.config.redisHost must be set" .Values.platformEdge.config.redisHost | quote }}
+            - name: REDIS_PORT
+              value: "6379"
+            - name: PLATFORM_ADMIN_API_TARGET
+              value: {{ $adminApi | quote }}
+            - name: PLATFORM_ADMIN_UI_TARGET
+              value: {{ $adminUi | quote }}
+            - name: PLATFORM_KC_TARGET
+              value: {{ $kc | quote }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.platformEdge.resources | nindent 12 }}
+{{- end }}

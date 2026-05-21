@@ -20,3 +20,13 @@ adminUi:
   image:
     repository: admin-ui
     tag: "0.1.0"
+
+platformEdge:
+  image:
+    repository: platform-edge
+    tag: "0.1.0"
+  config:
+    redisHost: "platform-redis-master"
+    adminApiTarget: "auth-platform-auth-manager:8080"
+    adminUiTarget: "auth-platform-admin-ui:80"
+    kcTarget: "platform-kc-keycloak:80"

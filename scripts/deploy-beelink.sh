@@ -30,6 +30,13 @@ cd "$REPO_ROOT"
 
 NAMESPACE="${NAMESPACE:-auth-platform}"
 
+# Beelink build host + local registry. Images are built on beelink1 (which has
+# the Docker daemon + access to the mutagen-synced repo) and pushed to the
+# private registry on the same host (insecure HTTP, accessible only on the LAN).
+BUILD_HOST="${BUILD_HOST:-beelink1}"
+REPO_REMOTE_PATH="${REPO_REMOTE_PATH:-/home/dhyanraj/workspace/github/auth-manager}"
+REGISTRY="${REGISTRY:-192.168.10.1:5000}"
+
 PG_CHART_VERSION="${PG_CHART_VERSION:-18.6.7}"
 REDIS_CHART_VERSION="${REDIS_CHART_VERSION:-25.5.3}"
 KC_CHART_VERSION="${KC_CHART_VERSION:-25.2.0}"
@@ -108,7 +115,16 @@ helm upgrade --install platform-kc bitnami/keycloak \
   --wait --timeout=300s
 ok "platform-kc"
 
-step "6. auth-manager + admin-ui"
+step "6. Build + push platform-edge image"
+# Build context is the repo root; Dockerfile lives at dev/openresty/Dockerfile.
+# Runs on beelink1 so it pushes to the local registry over plain HTTP (the
+# registry is configured insecure for 192.168.10.1:5000).
+ssh "$BUILD_HOST" "cd '$REPO_REMOTE_PATH' && \
+  docker build -f dev/openresty/Dockerfile -t '$REGISTRY/platform-edge:0.1.0' . && \
+  docker push '$REGISTRY/platform-edge:0.1.0'"
+ok "platform-edge:0.1.0 pushed to $REGISTRY"
+
+step "7. auth-manager + admin-ui + platform-edge"
 helm upgrade --install auth-platform deploy/helm/auth-platform \
   --namespace "$NAMESPACE" \
   -f deploy/helm/auth-platform/values-beelink.yaml \
@@ -119,8 +135,9 @@ step "Status"
 kubectl get pods -n "$NAMESPACE"
 echo
 echo "To reach the services from your Mac:"
-echo "  kubectl port-forward -n $NAMESPACE svc/auth-platform-auth-manager 8080:8080"
-echo "  kubectl port-forward -n $NAMESPACE svc/auth-platform-admin-ui     5173:80"
-echo "  kubectl port-forward -n $NAMESPACE svc/platform-kc-keycloak       8180:80"
+echo "  kubectl port-forward -n $NAMESPACE svc/auth-platform-auth-manager  8080:8080"
+echo "  kubectl port-forward -n $NAMESPACE svc/auth-platform-admin-ui      5173:80"
+echo "  kubectl port-forward -n $NAMESPACE svc/auth-platform-platform-edge 8090:80"
+echo "  kubectl port-forward -n $NAMESPACE svc/platform-kc-keycloak        8180:80"
 echo
 echo "Then open http://localhost:5173 for the admin UI."
