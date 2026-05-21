@@ -25,19 +25,24 @@ function entriesToTargets(entries: TargetEntry[]): Record<string, string> {
 }
 
 /**
- * Reads tenant-admin role from the OIDC JWT's
- * resource_access.usermanagement.roles claim (matches backend
- * TenantSecurity.checkRoleClaim). Note: this only signals whether the
- * UI should render in edit mode — the backend still enforces 403.
+ * Edit mode is granted when the user is either:
+ *  - a tenant-admin of this tenant (resource_access.usermanagement.roles), OR
+ *  - a platform-admin (realm_access.roles) — bypass for super-admin console.
+ * Mirrors TenantSecurity on the backend (which is still the authoritative gate).
  */
 function useIsTenantAdmin(): boolean {
   const auth = useAuth();
   if (!auth.isAuthenticated || !auth.user) return false;
-  const ra = auth.user.profile?.resource_access as
-    | Record<string, { roles?: string[] }>
+  const profile = auth.user.profile as
+    | {
+        resource_access?: Record<string, { roles?: string[] }>;
+        realm_access?: { roles?: string[] };
+      }
     | undefined;
-  const roles = ra?.usermanagement?.roles;
-  return Array.isArray(roles) && roles.includes('tenant-admin');
+  const realmRoles = profile?.realm_access?.roles;
+  if (Array.isArray(realmRoles) && realmRoles.includes('platform-admin')) return true;
+  const clientRoles = profile?.resource_access?.usermanagement?.roles;
+  return Array.isArray(clientRoles) && clientRoles.includes('tenant-admin');
 }
 
 export default function RoutesTab({ slug }: Props) {

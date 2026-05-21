@@ -23,5 +23,8 @@ keycloak:
     client-id: admin-cli
     username: admin
     password: admin
+  platform:
+    realm: dev
+    role: platform-admin
   connect-timeout: 5s
   read-timeout: 10s

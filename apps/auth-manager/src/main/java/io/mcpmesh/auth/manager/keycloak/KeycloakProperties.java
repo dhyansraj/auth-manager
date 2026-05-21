@@ -18,12 +18,14 @@ public record KeycloakProperties(
     @URL @NotBlank String url,
     @NotBlank String realm,
     @Valid @NotNull Admin admin,
+    @Valid Platform platform,
     Duration connectTimeout,
     Duration readTimeout
 ) {
     public KeycloakProperties {
         if (connectTimeout == null) connectTimeout = Duration.ofSeconds(5);
         if (readTimeout    == null) readTimeout    = Duration.ofSeconds(10);
+        if (platform       == null) platform       = new Platform("dev", "platform-admin");
     }
 
     /** Credentials used by the admin client to obtain tokens against {@code keycloak.realm}. */
@@ -32,4 +34,18 @@ public record KeycloakProperties(
         @NotBlank String username,
         @NotBlank String password
     ) {}
+
+    /**
+     * Cross-tenant platform-admin realm. A user signed into this realm with
+     * the {@link #role()} realm role bypasses per-tenant authorization checks.
+     */
+    public record Platform(
+        @NotBlank String realm,
+        @NotBlank String role
+    ) {
+        public Platform {
+            if (realm == null || realm.isBlank()) realm = "dev";
+            if (role  == null || role.isBlank())  role  = "platform-admin";
+        }
+    }
 }

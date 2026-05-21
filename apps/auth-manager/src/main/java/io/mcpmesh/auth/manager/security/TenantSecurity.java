@@ -41,6 +41,10 @@ public class TenantSecurity {
             log.debug("hasRole({},{}): no JWT in context", tenantId, roleName);
             return false;
         }
+        if (isPlatformAdmin(jwtAuth.getToken())) {
+            log.debug("hasRole({},{}): granted via platform-admin bypass", tenantId, roleName);
+            return true;
+        }
         var tenant = tenants.get(tenantId);  // throws TenantNotFoundException -> 404 (handled by GlobalExceptionHandler)
         return checkRoleClaim(jwtAuth.getToken(), tenant.getRealmName(), roleName);
     }
@@ -61,8 +65,33 @@ public class TenantSecurity {
             log.debug("hasRole({},{}): no JWT in context", slug, roleName);
             return false;
         }
+        if (isPlatformAdmin(jwtAuth.getToken())) {
+            log.debug("hasRoleBySlug({},{}): granted via platform-admin bypass", slug, roleName);
+            return true;
+        }
         var tenant = tenants.getBySlug(slug);
         return checkRoleClaim(jwtAuth.getToken(), tenant.getRealmName(), roleName);
+    }
+
+    /**
+     * Returns true when the caller's JWT was issued by the configured
+     * "platform" realm AND carries the configured platform-admin realm role.
+     * This is the cross-tenant super-admin bypass used by the admin-ui.
+     */
+    private boolean isPlatformAdmin(Jwt jwt) {
+        if (jwt == null) return false;
+        var platform = keycloak.platform();
+        if (platform == null) return false;
+        String issuer = jwt.getIssuer() == null ? "" : jwt.getIssuer().toString();
+        String expected = trim(keycloak.url()) + "/realms/" + platform.realm();
+        if (!issuer.equals(expected) && !issuer.equals(expected + "/")) {
+            return false;
+        }
+        Map<String, Object> realmAccess = jwt.getClaim("realm_access");
+        if (realmAccess == null) return false;
+        Object roles = realmAccess.get("roles");
+        if (!(roles instanceof List<?> roleList)) return false;
+        return roleList.contains(platform.role());
     }
 
     private boolean checkRoleClaim(Jwt jwt, String expectedRealmName, String roleName) {
