@@ -59,6 +59,7 @@ platformEdge:
     adminUiTarget: ""               # defaults in template to <fullname>-admin-ui:80
     kcTarget: ""                    # defaults in template to platform-kc-keycloak:80
     platformHost: ""                # defaults in template to auth.mcp-mesh.io
+    kcAdminHost: ""                 # caller sets (e.g. kc.mcp-mesh.io) — direct KC admin host
   resources:
     requests:
       cpu: "50m"

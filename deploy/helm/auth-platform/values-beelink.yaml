@@ -24,7 +24,7 @@ adminUi:
 platformEdge:
   image:
     repository: platform-edge
-    tag: "0.1.1"
+    tag: "0.1.2"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,
@@ -34,3 +34,4 @@ platformEdge:
     adminUiTarget:  "auth-platform-admin-ui.auth-platform.svc.cluster.local:80"
     kcTarget:       "platform-kc-keycloak.auth-platform.svc.cluster.local:80"
     platformHost: "auth.mcp-mesh.io"
+    kcAdminHost:  "kc.mcp-mesh.io"

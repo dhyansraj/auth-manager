@@ -36,8 +36,12 @@ step()  { echo; bold "── $* ──"; }
 #
 # Hostname routing notes:
 #   - auth.mcp-mesh.io  → platform-edge (admin UI + auth-manager + KC under /auth)
-#   - kc.mcp-mesh.io    → KC directly (bypasses edge; IP-restricted via WAF
-#                         custom rule — see scripts/cf-firewall-setup.sh).
+#   - kc.mcp-mesh.io    → platform-edge (KC admin host; edge router has a
+#                         dedicated branch keyed on Host that strips /auth from
+#                         /auth/* paths — KC mounts at root, so /admin/* and
+#                         /resources/* pass through unchanged. IP-restricted
+#                         via Cloudflare WAF custom rule (fires at CF edge
+#                         regardless of where the tunnel lands).
 #                         Listed BEFORE the wildcard so the specific match wins.
 #   - *.mcp-mesh.io     → platform-edge (catch-all for tenant subdomains:
 #                         app1.mcp-mesh.io, customer.mcp-mesh.io, etc.).
@@ -53,7 +57,7 @@ INGRESS_RULES=$(cat <<'JSON'
       },
       {
         "hostname": "kc.mcp-mesh.io",
-        "service": "http://platform-kc-keycloak.auth-platform.svc.cluster.local:80"
+        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
       },
       {
         "hostname": "*.mcp-mesh.io",
