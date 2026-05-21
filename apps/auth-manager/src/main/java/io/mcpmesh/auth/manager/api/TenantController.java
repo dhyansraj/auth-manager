@@ -4,8 +4,10 @@ import io.mcpmesh.auth.manager.api.dto.AuditEventResponse;
 import io.mcpmesh.auth.manager.api.dto.CreateTenantRequest;
 import io.mcpmesh.auth.manager.api.dto.PageResponse;
 import io.mcpmesh.auth.manager.api.dto.TenantResponse;
+import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
+import io.mcpmesh.auth.manager.service.UsermanagementBootstrap;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -28,10 +30,13 @@ public class TenantController {
 
     private final TenantService service;
     private final AuditEventRepository auditRepo;
+    private final UsermanagementBootstrap bootstrap;
 
-    public TenantController(TenantService service, AuditEventRepository auditRepo) {
+    public TenantController(TenantService service, AuditEventRepository auditRepo,
+                            UsermanagementBootstrap bootstrap) {
         this.service = service;
         this.auditRepo = auditRepo;
+        this.bootstrap = bootstrap;
     }
 
     @PostMapping
@@ -43,6 +48,9 @@ public class TenantController {
         //                 auth-lib v2 lands. See PLAN.org Phase 2.
         var t = service.create(
             req.slug(), req.displayName(), req.settings(), req.hostnames(), "system");
+        if (t.getStatus() == TenantStatus.ACTIVE) {
+            bootstrap.bootstrap(t, "system");
+        }
         var body = TenantResponse.from(t, service.hostnamesFor(t.getId()));
         var location = uriBuilder.path("/api/v1/tenants/{id}").buildAndExpand(t.getId()).toUri();
         return ResponseEntity.created(location).body(body);
@@ -77,6 +85,9 @@ public class TenantController {
     public TenantResponse retry(@PathVariable UUID id) {
         // TODO(security): replace "system" with the authenticated principal.
         var t = service.retryProvisioning(id, "system");
+        if (t.getStatus() == TenantStatus.ACTIVE) {
+            bootstrap.bootstrap(t, "system");
+        }
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 
