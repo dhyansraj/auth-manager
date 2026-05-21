@@ -5,6 +5,7 @@ import { useReplaceRoutesMutation, useRoutesQuery } from './useRoutesQuery';
 import { deepEqual, validate } from './validate';
 import RulesTable from './RulesTable';
 import TargetsTable, { type TargetEntry } from './TargetsTable';
+import { decodeAccessToken, hasClientRole, hasRealmRole } from '../../auth/claims';
 
 interface Props {
   slug: string;
@@ -29,20 +30,15 @@ function entriesToTargets(entries: TargetEntry[]): Record<string, string> {
  *  - a tenant-admin of this tenant (resource_access.usermanagement.roles), OR
  *  - a platform-admin (realm_access.roles) — bypass for super-admin console.
  * Mirrors TenantSecurity on the backend (which is still the authoritative gate).
+ * Reads from access_token (not profile/id_token) since KC only puts
+ * resource_access into the access token by default.
  */
 function useIsTenantAdmin(): boolean {
   const auth = useAuth();
   if (!auth.isAuthenticated || !auth.user) return false;
-  const profile = auth.user.profile as
-    | {
-        resource_access?: Record<string, { roles?: string[] }>;
-        realm_access?: { roles?: string[] };
-      }
-    | undefined;
-  const realmRoles = profile?.realm_access?.roles;
-  if (Array.isArray(realmRoles) && realmRoles.includes('platform-admin')) return true;
-  const clientRoles = profile?.resource_access?.usermanagement?.roles;
-  return Array.isArray(clientRoles) && clientRoles.includes('tenant-admin');
+  const claims = decodeAccessToken(auth.user.access_token);
+  if (hasRealmRole(claims, 'platform-admin')) return true;
+  return hasClientRole(claims, 'usermanagement', 'tenant-admin');
 }
 
 export default function RoutesTab({ slug }: Props) {

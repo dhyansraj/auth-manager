@@ -1,5 +1,6 @@
 import { useAuth } from 'react-oidc-context';
 import { Link } from 'react-router-dom';
+import { decodeAccessToken, hasClientRole } from '../auth/claims';
 
 export default function Home() {
   const auth = useAuth();
@@ -44,11 +45,11 @@ export default function Home() {
   // the admin-ui on this same host. The admin-ui detects the tenant realm
   // from window.location.hostname so SSO carries over. Backend enforces
   // actual authorisation; this is just a hint.
-  const profile = auth.user?.profile as
-    | { resource_access?: { usermanagement?: { roles?: string[] } } }
-    | undefined;
-  const isTenantAdmin =
-    profile?.resource_access?.usermanagement?.roles?.includes('tenant-admin') ?? false;
+  //
+  // Read from access_token, not profile (id_token claims): KC by default
+  // only writes resource_access into the access_token.
+  const claims = decodeAccessToken(auth.user?.access_token);
+  const isTenantAdmin = hasClientRole(claims, 'usermanagement', 'tenant-admin');
 
   return (
     <div className="space-y-6">
