@@ -2,6 +2,7 @@ package io.mcpmesh.auth.manager.security;
 
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.KeycloakProperties;
+import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +17,7 @@ import java.net.URL;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,25 +37,53 @@ class TenantSecurityTest {
     private static final String TENANT_SLUG = "acme";
     private static final UUID TENANT_ID = UUID.randomUUID();
 
+    // Conventional tenant-realm form used by the realm-name-derived current-tenant check.
+    private static final String APP1_SLUG = "app1";
+    private static final String APP1_REALM = "t-app1";
+    private static final UUID APP1_ID = UUID.randomUUID();
+    private static final String APP2_SLUG = "app2";
+    private static final String APP2_REALM = "t-app2";
+    private static final UUID APP2_ID = UUID.randomUUID();
+
     private TenantService tenants;
+    private TenantRepository tenantRepository;
     private KeycloakProperties props;
     private TenantSecurity tenantSecurity;
 
     @BeforeEach
     void setUp() {
         tenants = mock(TenantService.class);
+        tenantRepository = mock(TenantRepository.class);
         props = new KeycloakProperties(
             KC_URL, "master",
             new KeycloakProperties.Admin("admin-cli", "admin", "admin"),
             new KeycloakProperties.Platform(PLATFORM_REALM, PLATFORM_ROLE),
             null, null
         );
-        tenantSecurity = new TenantSecurity(tenants, props);
+        tenantSecurity = new TenantSecurity(tenants, tenantRepository, props);
 
         Tenant tenant = mock(Tenant.class);
         when(tenant.getRealmName()).thenReturn(TENANT_REALM);
         when(tenants.get(TENANT_ID)).thenReturn(tenant);
         when(tenants.getBySlug(TENANT_SLUG)).thenReturn(tenant);
+
+        Tenant app1 = mock(Tenant.class);
+        when(app1.getId()).thenReturn(APP1_ID);
+        when(app1.getRealmName()).thenReturn(APP1_REALM);
+        when(app1.getSlug()).thenReturn(APP1_SLUG);
+        when(tenantRepository.findByRealmNameAndDeletedAtIsNull(APP1_REALM))
+            .thenReturn(Optional.of(app1));
+        when(tenantRepository.findBySlugAndDeletedAtIsNull(APP1_SLUG))
+            .thenReturn(Optional.of(app1));
+
+        Tenant app2 = mock(Tenant.class);
+        when(app2.getId()).thenReturn(APP2_ID);
+        when(app2.getRealmName()).thenReturn(APP2_REALM);
+        when(app2.getSlug()).thenReturn(APP2_SLUG);
+        when(tenantRepository.findByRealmNameAndDeletedAtIsNull(APP2_REALM))
+            .thenReturn(Optional.of(app2));
+        when(tenantRepository.findBySlugAndDeletedAtIsNull(APP2_SLUG))
+            .thenReturn(Optional.of(app2));
     }
 
     @AfterEach
@@ -139,6 +169,140 @@ class TenantSecurityTest {
         );
         setContext(jwt);
         assertThat(tenantSecurity.hasRole(TENANT_ID, "tenant-admin")).isTrue();
+    }
+
+    // ----- currentTenantId / canSeeTenant ------------------------------------
+
+    @Test
+    void currentTenantId_returnsEmpty_whenNoJwt() {
+        assertThat(tenantSecurity.currentTenantId()).isEmpty();
+    }
+
+    @Test
+    void currentTenantId_returnsEmpty_whenIssuerLacksTenantRealmPrefix() {
+        // Issuer's realm is "dev" — not a tenant realm (doesn't start with "t-").
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + PLATFORM_REALM,
+            Map.of("realm_access", Map.of("roles", List.of(PLATFORM_ROLE))),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.currentTenantId()).isEmpty();
+    }
+
+    @Test
+    void currentTenantId_returnsTenantId_whenIssuerIsTenantRealm() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of(),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.currentTenantId()).contains(APP1_ID);
+    }
+
+    @Test
+    void currentTenantId_returnsEmpty_whenTenantRealmIsUnknown() {
+        // realm starts with t- but no DB row maps to it (orphan/stale token).
+        Jwt jwt = jwt(
+            KC_URL + "/realms/t-orphan",
+            Map.of(),
+            null
+        );
+        setContext(jwt);
+        when(tenantRepository.findByRealmNameAndDeletedAtIsNull("t-orphan"))
+            .thenReturn(Optional.empty());
+        assertThat(tenantSecurity.currentTenantId()).isEmpty();
+    }
+
+    @Test
+    void canSeeTenant_isTrue_forPlatformAdmin_onAnyTenant() {
+        setContext(jwtFromPlatformRealmWithRoles(List.of(PLATFORM_ROLE)));
+        assertThat(tenantSecurity.canSeeTenant(APP1_ID)).isTrue();
+        assertThat(tenantSecurity.canSeeTenant(APP2_ID)).isTrue();
+        assertThat(tenantSecurity.canSeeTenant(UUID.randomUUID())).isTrue();
+    }
+
+    @Test
+    void canSeeTenant_isTrue_forTenantAdminOfThatTenant() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of(),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canSeeTenant(APP1_ID)).isTrue();
+    }
+
+    @Test
+    void canSeeTenant_isFalse_forTenantAdminOfDifferentTenant() {
+        // Alice from app1 trying to fetch app2.
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of(),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canSeeTenant(APP2_ID)).isFalse();
+    }
+
+    @Test
+    void canSeeTenant_isFalse_whenNoJwt() {
+        assertThat(tenantSecurity.canSeeTenant(APP1_ID)).isFalse();
+    }
+
+    @Test
+    void canSeeTenantBySlug_isTrue_forPlatformAdmin() {
+        setContext(jwtFromPlatformRealmWithRoles(List.of(PLATFORM_ROLE)));
+        assertThat(tenantSecurity.canSeeTenantBySlug(APP1_SLUG)).isTrue();
+        // Platform admin doesn't need a DB row to "see" — we short-circuit.
+        assertThat(tenantSecurity.canSeeTenantBySlug("does-not-exist")).isTrue();
+    }
+
+    @Test
+    void canSeeTenantBySlug_isTrue_forTenantAdminOfThatSlug() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of(),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canSeeTenantBySlug(APP1_SLUG)).isTrue();
+    }
+
+    @Test
+    void canSeeTenantBySlug_isFalse_forTenantAdminOfDifferentSlug() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of(),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canSeeTenantBySlug(APP2_SLUG)).isFalse();
+    }
+
+    @Test
+    void canSeeTenantBySlug_isFalse_forMissingTenant() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of(),
+            null
+        );
+        setContext(jwt);
+        when(tenantRepository.findBySlugAndDeletedAtIsNull("does-not-exist"))
+            .thenReturn(Optional.empty());
+        assertThat(tenantSecurity.canSeeTenantBySlug("does-not-exist")).isFalse();
+    }
+
+    @Test
+    void isPlatformAdmin_isFalse_whenNoJwt() {
+        assertThat(tenantSecurity.isPlatformAdmin()).isFalse();
+    }
+
+    @Test
+    void isPlatformAdmin_isTrue_forPlatformRealmCallerWithRole() {
+        setContext(jwtFromPlatformRealmWithRoles(List.of(PLATFORM_ROLE)));
+        assertThat(tenantSecurity.isPlatformAdmin()).isTrue();
     }
 
     // ----- helpers -----------------------------------------------------------

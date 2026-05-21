@@ -1,9 +1,11 @@
 package io.mcpmesh.auth.manager.security;
 
 import io.mcpmesh.auth.manager.keycloak.KeycloakProperties;
+import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
@@ -11,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -26,12 +29,16 @@ public class TenantSecurity {
 
     private static final Logger log = LoggerFactory.getLogger(TenantSecurity.class);
     private static final String USERMANAGEMENT_CLIENT = "usermanagement";
+    private static final String TENANT_REALM_PREFIX = "t-";
 
     private final TenantService tenants;
+    private final TenantRepository tenantRepository;
     private final KeycloakProperties keycloak;
 
-    public TenantSecurity(TenantService tenants, KeycloakProperties keycloak) {
+    public TenantSecurity(TenantService tenants, TenantRepository tenantRepository,
+                          KeycloakProperties keycloak) {
         this.tenants = tenants;
+        this.tenantRepository = tenantRepository;
         this.keycloak = keycloak;
     }
 
@@ -71,6 +78,79 @@ public class TenantSecurity {
         }
         var tenant = tenants.getBySlug(slug);
         return checkRoleClaim(jwtAuth.getToken(), tenant.getRealmName(), roleName);
+    }
+
+    /**
+     * True when the caller's JWT was issued by the configured "platform"
+     * realm AND carries the configured platform-admin realm role. This is
+     * the cross-tenant super-admin bypass used by the admin-ui. Public so
+     * controllers can branch on it directly (e.g. "list all tenants for
+     * platform-admin, else list just my own").
+     */
+    public boolean isPlatformAdmin() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (!(auth instanceof JwtAuthenticationToken jwtAuth)) {
+            return false;
+        }
+        return isPlatformAdmin(jwtAuth.getToken());
+    }
+
+    /**
+     * The tenant the current caller belongs to, derived from the JWT issuer's
+     * realm name (e.g. issuer ".../realms/t-app1" -> realm "t-app1" -> tenant
+     * with realmName "t-app1"). Returns empty if there is no JWT, the realm
+     * doesn't match the {@code t-<slug>} convention, or no tenant exists with
+     * that realmName.
+     *
+     * <p>NOTE: platform-admin users (signed into the platform realm) DO NOT
+     * have an associated tenant. Callers should always check
+     * {@link #isPlatformAdmin()} first.
+     */
+    public Optional<UUID> currentTenantId() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (!(auth instanceof JwtAuthenticationToken jwtAuth)) {
+            return Optional.empty();
+        }
+        Jwt jwt = jwtAuth.getToken();
+        if (jwt == null || jwt.getIssuer() == null) {
+            return Optional.empty();
+        }
+        String issuer = jwt.getIssuer().toString();
+        int idx = issuer.indexOf("/realms/");
+        if (idx < 0) {
+            return Optional.empty();
+        }
+        String realm = issuer.substring(idx + "/realms/".length());
+        if (realm.endsWith("/")) {
+            realm = realm.substring(0, realm.length() - 1);
+        }
+        if (!realm.startsWith(TENANT_REALM_PREFIX)) {
+            return Optional.empty();
+        }
+        return tenantRepository.findByRealmNameAndDeletedAtIsNull(realm)
+            .map(t -> t.getId());
+    }
+
+    /**
+     * True if the caller is allowed to see the given tenant -- either
+     * because they're platform-admin (see all) or because the tenant
+     * matches their JWT realm.
+     */
+    public boolean canSeeTenant(UUID tenantId) {
+        if (isPlatformAdmin()) return true;
+        return currentTenantId().map(id -> id.equals(tenantId)).orElse(false);
+    }
+
+    /**
+     * Convenience: lookup by slug, then check visibility. Returns false on
+     * missing tenant so unauthorized callers see 403 rather than 404 (which
+     * would leak existence).
+     */
+    public boolean canSeeTenantBySlug(String slug) {
+        if (isPlatformAdmin()) return true;
+        return tenantRepository.findBySlugAndDeletedAtIsNull(slug)
+            .map(t -> canSeeTenant(t.getId()))
+            .orElse(false);
     }
 
     /**

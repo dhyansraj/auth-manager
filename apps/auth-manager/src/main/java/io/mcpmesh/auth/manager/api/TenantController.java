@@ -6,10 +6,12 @@ import io.mcpmesh.auth.manager.api.dto.PageResponse;
 import io.mcpmesh.auth.manager.api.dto.TenantResponse;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
+import io.mcpmesh.auth.manager.security.TenantSecurity;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.UsermanagementBootstrap;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -31,15 +33,18 @@ public class TenantController {
     private final TenantService service;
     private final AuditEventRepository auditRepo;
     private final UsermanagementBootstrap bootstrap;
+    private final TenantSecurity tenantSecurity;
 
     public TenantController(TenantService service, AuditEventRepository auditRepo,
-                            UsermanagementBootstrap bootstrap) {
+                            UsermanagementBootstrap bootstrap, TenantSecurity tenantSecurity) {
         this.service = service;
         this.auditRepo = auditRepo;
         this.bootstrap = bootstrap;
+        this.tenantSecurity = tenantSecurity;
     }
 
     @PostMapping
+    @PreAuthorize("@tenantSecurity.isPlatformAdmin()")
     public ResponseEntity<TenantResponse> create(
         @Valid @RequestBody CreateTenantRequest req,
         UriComponentsBuilder uriBuilder
@@ -56,32 +61,51 @@ public class TenantController {
         return ResponseEntity.created(location).body(body);
     }
 
+    /**
+     * Platform-admin sees every active tenant. Tenant-admins (and any other
+     * authenticated caller bearing a tenant-realm JWT) see only their own
+     * tenant. Unauthenticated requests get 403 via the
+     * {@code isAuthenticated()} guard.
+     */
     @GetMapping
+    @PreAuthorize("isAuthenticated()")
     public List<TenantResponse> list() {
-        return service.list().stream()
-            .map(t -> TenantResponse.from(t, service.hostnamesFor(t.getId())))
-            .toList();
+        if (tenantSecurity.isPlatformAdmin()) {
+            return service.list().stream()
+                .map(t -> TenantResponse.from(t, service.hostnamesFor(t.getId())))
+                .toList();
+        }
+        return tenantSecurity.currentTenantId()
+            .map(id -> {
+                var t = service.get(id);
+                return List.of(TenantResponse.from(t, service.hostnamesFor(t.getId())));
+            })
+            .orElse(List.of());
     }
 
     @GetMapping("/{id}")
+    @PreAuthorize("@tenantSecurity.canSeeTenant(#id)")
     public TenantResponse get(@PathVariable UUID id) {
         var t = service.get(id);
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 
     @GetMapping("/by-slug/{slug}")
+    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
     public TenantResponse getBySlug(@PathVariable String slug) {
         var t = service.getBySlug(slug);
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("@tenantSecurity.isPlatformAdmin()")
     @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID id) {
         service.softDelete(id, "system");  // TODO(security): real actor
     }
 
     @PostMapping("/{id}/retry")
+    @PreAuthorize("@tenantSecurity.isPlatformAdmin()")
     public TenantResponse retry(@PathVariable UUID id) {
         // TODO(security): replace "system" with the authenticated principal.
         var t = service.retryProvisioning(id, "system");
@@ -95,6 +119,7 @@ public class TenantController {
     }
 
     @GetMapping("/{id}/audit")
+    @PreAuthorize("@tenantSecurity.canSeeTenant(#id)")
     public PageResponse<AuditEventResponse> audit(
         @PathVariable UUID id,
         @RequestParam(defaultValue = "0")  int page,

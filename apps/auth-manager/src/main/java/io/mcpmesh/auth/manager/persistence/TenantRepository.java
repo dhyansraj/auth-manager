@@ -15,4 +15,14 @@ public interface TenantRepository extends JpaRepository<Tenant, UUID> {
 
     /** Active (non-soft-deleted) tenants. The DDL already has a partial index on this predicate. */
     List<Tenant> findAllByDeletedAtIsNullOrderByCreatedAtDesc();
+
+    /**
+     * Resolve a tenant by its Keycloak realm name, ignoring soft-deleted rows.
+     * Used by {@code TenantSecurity} to map a JWT issuer's realm back to a
+     * tenant id.
+     */
+    Optional<Tenant> findByRealmNameAndDeletedAtIsNull(String realmName);
+
+    /** Active (non-soft-deleted) tenant by slug. */
+    Optional<Tenant> findBySlugAndDeletedAtIsNull(String slug);
 }
