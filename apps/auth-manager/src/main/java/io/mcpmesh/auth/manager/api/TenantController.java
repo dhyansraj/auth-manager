@@ -49,7 +49,7 @@ public class TenantController {
         var t = service.create(
             req.slug(), req.displayName(), req.settings(), req.hostnames(), "system");
         if (t.getStatus() == TenantStatus.ACTIVE) {
-            bootstrap.bootstrap(t, "system");
+            bootstrap.bootstrap(t, req.adminEmail(), "system");
         }
         var body = TenantResponse.from(t, service.hostnamesFor(t.getId()));
         var location = uriBuilder.path("/api/v1/tenants/{id}").buildAndExpand(t.getId()).toUri();
@@ -86,7 +86,10 @@ public class TenantController {
         // TODO(security): replace "system" with the authenticated principal.
         var t = service.retryProvisioning(id, "system");
         if (t.getStatus() == TenantStatus.ACTIVE) {
-            bootstrap.bootstrap(t, "system");
+            // TODO: persist adminEmail on the Tenant entity so retry() can
+            //       re-send the invite. For now retry is admin-less; the user
+            //       must re-trigger via a future "resend invite" endpoint.
+            bootstrap.bootstrap(t, null, "system");
         }
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }

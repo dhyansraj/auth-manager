@@ -8,6 +8,7 @@ import org.keycloak.admin.client.resource.ClientResource;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
+import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.representations.idm.authorization.DecisionStrategy;
 import org.keycloak.representations.idm.authorization.Logic;
 import org.keycloak.representations.idm.authorization.ResourceRepresentation;
@@ -88,6 +89,17 @@ public class KeycloakAdminService {
         realm.setAccessTokenLifespan(300);
         realm.setSsoSessionIdleTimeout(1800);
         realm.setSsoSessionMaxLifespan(36000);
+
+        // SMTP config so the realm can send password-reset / verify-email actions.
+        // In dev this points at MailHog; in prod, override via property (TODO).
+        realm.setSmtpServer(java.util.Map.of(
+            "host", "host.docker.internal",
+            "port", "1025",
+            "from", "noreply@" + realmName + ".local",
+            "auth", "false",
+            "ssl", "false",
+            "starttls", "false"
+        ));
 
         admin.realms().create(realm);
         return realmName;
@@ -290,6 +302,71 @@ public class KeycloakAdminService {
         try (Response response = authz.permissions().scope().create(spr)) {
             requireSuccess(response, "create scope permission " + permissionName);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // User bootstrap operations.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Creates a user in the given realm. Returns the user UUID.
+     * If a user with the same username already exists, returns the existing
+     * UUID instead of failing (idempotent).
+     */
+    public String createUser(String realmName, String username, String email,
+                              String firstName, String lastName) {
+        UserRepresentation user = new UserRepresentation();
+        user.setUsername(username);
+        user.setEmail(email);
+        user.setFirstName(firstName);
+        user.setLastName(lastName);
+        user.setEnabled(true);
+        user.setEmailVerified(false);  // they'll verify by clicking the link in the email
+
+        try (Response response = admin.realm(realmName).users().create(user)) {
+            if (response.getStatus() == 409) {
+                // Already exists -- look up by username.
+                var existing = admin.realm(realmName).users().searchByUsername(username, true);
+                if (existing.isEmpty()) {
+                    throw new RuntimeException("User " + username + " reported as conflict but not found");
+                }
+                return existing.get(0).getId();
+            }
+            if (response.getStatus() < 200 || response.getStatus() >= 300) {
+                throw new RuntimeException(
+                    "Create user failed: HTTP " + response.getStatus() + " " + response.getStatusInfo().getReasonPhrase());
+            }
+            String location = response.getHeaderString("Location");
+            return location.substring(location.lastIndexOf('/') + 1);
+        }
+    }
+
+    /**
+     * Assigns a client role to a user. Idempotent: KC silently no-ops if the
+     * user already has the role.
+     */
+    public void assignClientRoleToUser(String realmName, String userId,
+                                       String clientId, String roleName) {
+        String clientUuid = findClientUuid(realmName, clientId)
+            .orElseThrow(() -> new IllegalStateException("Client not found: " + clientId));
+        var role = admin.realm(realmName).clients().get(clientUuid)
+                        .roles().get(roleName).toRepresentation();
+        admin.realm(realmName).users().get(userId)
+             .roles().clientLevel(clientUuid).add(java.util.List.of(role));
+    }
+
+    /**
+     * Triggers Keycloak's "execute actions" email flow. KC emails the user
+     * a one-time link to complete the listed actions (UPDATE_PASSWORD,
+     * VERIFY_EMAIL, etc.). Uses the realm's configured SMTP server.
+     *
+     * @param lifespanSeconds how long the link is valid (e.g., 86400 = 24h)
+     */
+    public void sendExecuteActionsEmail(String realmName, String userId,
+                                        java.util.List<String> actions,
+                                        int lifespanSeconds) {
+        admin.realm(realmName).users().get(userId)
+             .executeActionsEmail(actions, lifespanSeconds);
     }
 
     private void requireSuccess(Response response, String op) {

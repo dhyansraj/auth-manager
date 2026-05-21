@@ -1,6 +1,7 @@
 package io.mcpmesh.auth.manager.api.dto;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -15,6 +16,10 @@ import java.util.Map;
  * @param displayName  Human-readable name shown in the UI.
  * @param settings     Free-form per-tenant config blob (stored as JSONB).
  * @param hostnames    Optional list of public hostnames to route to this tenant.
+ * @param adminEmail   Optional email of the initial tenant admin. When set, a
+ *                     user is created in the tenant realm, granted the
+ *                     {@code tenant-admin} role on the {@code usermanagement}
+ *                     client, and sent a Keycloak "Update Password" email.
  */
 public record CreateTenantRequest(
 
@@ -31,5 +36,8 @@ public record CreateTenantRequest(
     Map<String, Object> settings,
 
     @Valid
-    List<HostnameAssignment> hostnames
+    List<HostnameAssignment> hostnames,
+
+    @Email
+    String adminEmail
 ) {}

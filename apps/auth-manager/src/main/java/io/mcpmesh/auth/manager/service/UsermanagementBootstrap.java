@@ -5,6 +5,7 @@ import io.mcpmesh.auth.manager.audit.AuditService;
 import io.mcpmesh.auth.manager.domain.app.App;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.AppRepository;
 import io.mcpmesh.auth.manager.service.exception.AppConflictException;
 import io.mcpmesh.auth.manager.service.exception.AppNotFoundException;
@@ -37,22 +38,26 @@ public class UsermanagementBootstrap {
     public static final String ROLE_USER_VIEWER = "user-viewer";
 
     private static final ActorKind SYSTEM_KIND = ActorKind.SERVICE;
+    private static final String SYSTEM_ACTOR = "system";
 
     private final AppService appService;
     private final ManifestService manifestService;
     private final AppRepository appRepo;
     private final AuditService audit;
+    private final KeycloakAdminService keycloak;
 
     public UsermanagementBootstrap(AppService appService, ManifestService manifestService,
-                                   AppRepository appRepo, AuditService audit) {
+                                   AppRepository appRepo, AuditService audit,
+                                   KeycloakAdminService keycloak) {
         this.appService = appService;
         this.manifestService = manifestService;
         this.appRepo = appRepo;
         this.audit = audit;
+        this.keycloak = keycloak;
     }
 
     @Transactional
-    public void bootstrap(Tenant tenant, String actor) {
+    public void bootstrap(Tenant tenant, String adminEmail, String actor) {
         try {
             App app;
             try {
@@ -86,6 +91,43 @@ public class UsermanagementBootstrap {
                 e,
                 Map.of("tenantSlug", tenant.getSlug(), "appSlug", CLIENT_SLUG));
             throw e;
+        }
+
+        // NEW: if adminEmail provided, bootstrap the admin user
+        if (adminEmail != null && !adminEmail.isBlank()) {
+            bootstrapAdminUser(tenant, adminEmail, actor);
+        }
+    }
+
+    private void bootstrapAdminUser(Tenant tenant, String email, String actor) {
+        try {
+            String userId = keycloak.createUser(
+                tenant.getRealmName(), email, email, "Admin", "User");
+            keycloak.assignClientRoleToUser(
+                tenant.getRealmName(), userId, CLIENT_SLUG, ROLE_TENANT_ADMIN);
+            try {
+                keycloak.sendExecuteActionsEmail(
+                    tenant.getRealmName(), userId,
+                    java.util.List.of("UPDATE_PASSWORD"),
+                    86400);
+            } catch (Exception emailErr) {
+                // Email failure shouldn't block the bootstrap -- log + audit.
+                log.warn("Failed to send invite email to {} (SMTP issue likely): {}",
+                         email, emailErr.getMessage());
+            }
+            audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, tenant.getId(),
+                "tenant.bootstrap.admin", "user", userId,
+                java.util.Map.of("email", email),
+                java.util.Map.of("realm", tenant.getRealmName(),
+                                  "role", ROLE_TENANT_ADMIN));
+        } catch (Exception e) {
+            log.error("Admin user bootstrap failed for {}: {}", email, e.getMessage(), e);
+            audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, tenant.getId(),
+                "tenant.bootstrap.admin", "user", null,
+                java.util.Map.of("email", email),
+                e,
+                java.util.Map.of("realm", tenant.getRealmName()));
+            // Don't rethrow -- the tenant itself is fine, admin bootstrap is recoverable
         }
     }
 
