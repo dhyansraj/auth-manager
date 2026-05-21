@@ -47,6 +47,13 @@ public class GlobalExceptionHandler {
         return pd;
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ProblemDetail handleIllegalArg(IllegalArgumentException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+        pd.setTitle("Invalid argument");
+        return pd;
+    }
+
     @ExceptionHandler(UnsupportedOperationException.class)
     public ProblemDetail handleUnsupported(UnsupportedOperationException ex) {
         var pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_IMPLEMENTED, ex.getMessage());

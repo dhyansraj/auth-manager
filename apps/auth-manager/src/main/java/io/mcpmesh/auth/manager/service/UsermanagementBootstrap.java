@@ -1,6 +1,5 @@
 package io.mcpmesh.auth.manager.service;
 
-import io.mcpmesh.auth.manager.api.dto.AccessManifest;
 import io.mcpmesh.auth.manager.audit.AuditService;
 import io.mcpmesh.auth.manager.domain.app.App;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
@@ -8,24 +7,24 @@ import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.AppRepository;
 import io.mcpmesh.auth.manager.service.exception.AppConflictException;
-import io.mcpmesh.auth.manager.service.exception.AppNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
 import java.util.Map;
 
 /**
- * Provisions the per-tenant "usermanagement" Keycloak client and applies the
- * default access manifest that powers tenant-admin self-serve user management.
+ * Provisions the per-tenant "usermanagement" Keycloak client as a public UI
+ * client with simple client roles. Powers tenant-admin self-serve user
+ * management without dragging in Keycloak Authorization Services (overkill
+ * for a single-audience UI client).
  *
  * <p>Invoked by {@code TenantController} immediately after a tenant reaches
  * {@code ACTIVE}. Lives outside {@link TenantService} to avoid a circular
  * dependency with {@link AppService} (which already depends on TenantService).
  *
- * <p>Both steps are idempotent: re-running the bootstrap is a safe no-op.
+ * <p>All steps are idempotent: re-running the bootstrap is a safe no-op.
  */
 @Service
 public class UsermanagementBootstrap {
@@ -41,16 +40,13 @@ public class UsermanagementBootstrap {
     private static final String SYSTEM_ACTOR = "system";
 
     private final AppService appService;
-    private final ManifestService manifestService;
     private final AppRepository appRepo;
     private final AuditService audit;
     private final KeycloakAdminService keycloak;
 
-    public UsermanagementBootstrap(AppService appService, ManifestService manifestService,
-                                   AppRepository appRepo, AuditService audit,
-                                   KeycloakAdminService keycloak) {
+    public UsermanagementBootstrap(AppService appService, AppRepository appRepo,
+                                   AuditService audit, KeycloakAdminService keycloak) {
         this.appService = appService;
-        this.manifestService = manifestService;
         this.appRepo = appRepo;
         this.audit = audit;
         this.keycloak = keycloak;
@@ -58,45 +54,45 @@ public class UsermanagementBootstrap {
 
     @Transactional
     public void bootstrap(Tenant tenant, String adminEmail, String actor) {
+        Map<String, Object> details = Map.of("tenant_slug", tenant.getSlug(), "realm", tenant.getRealmName());
         try {
+            // 1. Create the usermanagement App row + KC client (default confidential, recovered if exists)
             App app;
             try {
                 var result = appService.create(tenant.getId(), CLIENT_SLUG, DISPLAY_NAME, actor);
                 app = result.app();
             } catch (AppConflictException existing) {
-                log.info("Bootstrap: usermanagement client already exists for tenant {}; skipping client create",
-                         tenant.getSlug());
+                log.info("usermanagement app already exists for tenant {} — using existing", tenant.getSlug());
                 app = appRepo.findByTenantIdAndSlug(tenant.getId(), CLIENT_SLUG)
-                    .orElseThrow(() -> new AppNotFoundException(CLIENT_SLUG));
+                    .orElseThrow(() -> new IllegalStateException("App conflict but lookup failed"));
             }
 
-            var applyResult = manifestService.apply(tenant.getId(), app.getId(), defaultManifest(), actor);
-            if (applyResult.noOp()) {
-                log.info("Bootstrap: default manifest already applied for tenant {} (no-op)",
-                         tenant.getSlug());
-            }
+            // 2. Flip to public (UI client uses PKCE; no client_secret).
+            keycloak.setClientPublic(tenant.getRealmName(), CLIENT_SLUG, true);
+
+            // 3. Create client roles directly. Idempotent: keycloak.createClientRole skips if exists.
+            keycloak.createClientRole(tenant.getRealmName(), findClientUuid(tenant), ROLE_TENANT_ADMIN);
+            keycloak.createClientRole(tenant.getRealmName(), findClientUuid(tenant), ROLE_USER_VIEWER);
 
             audit.recordSuccess(actor, SYSTEM_KIND, tenant.getId(),
                 "tenant.bootstrap", "tenant", tenant.getId().toString(),
-                null,
-                Map.of(
-                    "tenantSlug", tenant.getSlug(),
-                    "appSlug", CLIENT_SLUG,
-                    "appId", app.getId().toString(),
-                    "manifestNoOp", applyResult.noOp()));
-        } catch (RuntimeException e) {
+                null, details);
+        } catch (Exception e) {
+            log.error("usermanagement bootstrap failed for tenant {}: {}", tenant.getSlug(), e.getMessage(), e);
             audit.recordFailure(actor, SYSTEM_KIND, tenant.getId(),
                 "tenant.bootstrap", "tenant", tenant.getId().toString(),
-                null,
-                e,
-                Map.of("tenantSlug", tenant.getSlug(), "appSlug", CLIENT_SLUG));
-            throw e;
+                null, e, details);
+            return;
         }
 
-        // NEW: if adminEmail provided, bootstrap the admin user
         if (adminEmail != null && !adminEmail.isBlank()) {
             bootstrapAdminUser(tenant, adminEmail, actor);
         }
+    }
+
+    private String findClientUuid(Tenant tenant) {
+        return keycloak.findClientUuid(tenant.getRealmName(), CLIENT_SLUG)
+            .orElseThrow(() -> new IllegalStateException("usermanagement client missing for " + tenant.getSlug()));
     }
 
     private void bootstrapAdminUser(Tenant tenant, String email, String actor) {
@@ -129,27 +125,5 @@ public class UsermanagementBootstrap {
                 java.util.Map.of("realm", tenant.getRealmName()));
             // Don't rethrow -- the tenant itself is fine, admin bootstrap is recoverable
         }
-    }
-
-    private static AccessManifest defaultManifest() {
-        return new AccessManifest(
-            List.of(ROLE_TENANT_ADMIN, ROLE_USER_VIEWER),
-            List.of(
-                new AccessManifest.ResourceSpec("user", List.of("view", "create", "update", "delete", "invite")),
-                new AccessManifest.ResourceSpec("role", List.of("view", "assign", "revoke")),
-                new AccessManifest.ResourceSpec("idp",  List.of("view", "create", "update", "delete"))
-            ),
-            Map.of(
-                ROLE_TENANT_ADMIN, List.of(
-                    new AccessManifest.RolePermission("user", List.of("view", "create", "update", "delete", "invite")),
-                    new AccessManifest.RolePermission("role", List.of("view", "assign", "revoke")),
-                    new AccessManifest.RolePermission("idp",  List.of("view", "create", "update", "delete"))
-                ),
-                ROLE_USER_VIEWER, List.of(
-                    new AccessManifest.RolePermission("user", List.of("view")),
-                    new AccessManifest.RolePermission("role", List.of("view"))
-                )
-            )
-        );
     }
 }

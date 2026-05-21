@@ -143,6 +143,26 @@ public class KeycloakAdminService {
         return admin.realm(realmName).clients().get(clientUuid).getSecret().getValue();
     }
 
+    /**
+     * Switches a client between confidential and public. For public, the
+     * client_secret is removed and clientAuthenticatorType is cleared. Use
+     * for UI / SPA clients that should use PKCE flow.
+     */
+    public void setClientPublic(String realmName, String clientId, boolean publicClient) {
+        String clientUuid = findClientUuid(realmName, clientId)
+            .orElseThrow(() -> new IllegalStateException("Client not found: " + clientId));
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        ClientRepresentation rep = clientResource.toRepresentation();
+        rep.setPublicClient(publicClient);
+        if (publicClient) {
+            rep.setSecret(null);
+            rep.setClientAuthenticatorType(null);
+            // Public clients can't have service accounts -- clear that.
+            rep.setServiceAccountsEnabled(false);
+        }
+        clientResource.update(rep);
+    }
+
     /** Checks if a client with the given clientId exists in the realm. */
     public boolean clientExists(String realmName, String clientId) {
         return !admin.realm(realmName).clients().findByClientId(clientId).isEmpty();
@@ -367,6 +387,64 @@ public class KeycloakAdminService {
                                         int lifespanSeconds) {
         admin.realm(realmName).users().get(userId)
              .executeActionsEmail(actions, lifespanSeconds);
+    }
+
+    /**
+     * Lists users in a realm with optional substring search across username/email.
+     * Returns a slice -- KC pagination uses first + max, not Spring's page-based
+     * model. Callers do the conversion.
+     */
+    public java.util.List<UserRepresentation> listUsers(
+        String realmName, String search, int first, int max
+    ) {
+        if (search == null || search.isBlank()) {
+            return admin.realm(realmName).users().list(first, max);
+        }
+        return admin.realm(realmName).users().search(search, first, max);
+    }
+
+    /** Total user count in a realm (for pagination metadata). */
+    public int countUsers(String realmName, String search) {
+        return search == null || search.isBlank()
+            ? admin.realm(realmName).users().count()
+            : admin.realm(realmName).users().count(search);
+    }
+
+    /** Single user representation (basic fields). */
+    public UserRepresentation getUser(String realmName, String userId) {
+        return admin.realm(realmName).users().get(userId).toRepresentation();
+    }
+
+    /** Client-level role names currently assigned to a user on a given client. */
+    public java.util.List<String> getUserClientRoles(
+        String realmName, String userId, String clientId
+    ) {
+        String clientUuid = findClientUuid(realmName, clientId)
+            .orElseThrow(() -> new IllegalStateException("Client not found: " + clientId));
+        return admin.realm(realmName).users().get(userId)
+            .roles().clientLevel(clientUuid).listAll()
+            .stream().map(r -> r.getName()).toList();
+    }
+
+    /** Disables a user (soft-delete). Idempotent. */
+    public void disableUser(String realmName, String userId) {
+        UserRepresentation u = getUser(realmName, userId);
+        if (u.isEnabled() == null || u.isEnabled()) {
+            u.setEnabled(false);
+            admin.realm(realmName).users().get(userId).update(u);
+        }
+    }
+
+    /** Removes a client-level role from a user. Idempotent. */
+    public void removeClientRoleFromUser(
+        String realmName, String userId, String clientId, String roleName
+    ) {
+        String clientUuid = findClientUuid(realmName, clientId)
+            .orElseThrow(() -> new IllegalStateException("Client not found: " + clientId));
+        var role = admin.realm(realmName).clients().get(clientUuid)
+            .roles().get(roleName).toRepresentation();
+        admin.realm(realmName).users().get(userId)
+            .roles().clientLevel(clientUuid).remove(java.util.List.of(role));
     }
 
     private void requireSuccess(Response response, String op) {
