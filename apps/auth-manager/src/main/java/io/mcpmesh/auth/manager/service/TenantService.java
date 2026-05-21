@@ -9,6 +9,7 @@ import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.TenantHostnameRepository;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
+import io.mcpmesh.auth.manager.routing.RoutingConfigService;
 import io.mcpmesh.auth.manager.routing.RoutingTableService;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
 import io.mcpmesh.auth.manager.service.exception.TenantNotFoundException;
@@ -34,6 +35,7 @@ public class TenantService {
     private final TenantHostnameRepository hostnameRepo;
     private final KeycloakAdminService keycloak;
     private final RoutingTableService routingTable;
+    private final RoutingConfigService routingConfig;
     private final AuditService audit;
 
     public TenantService(
@@ -41,12 +43,14 @@ public class TenantService {
         TenantHostnameRepository hostnameRepo,
         KeycloakAdminService keycloak,
         RoutingTableService routingTable,
+        RoutingConfigService routingConfig,
         AuditService audit
     ) {
         this.repo = repo;
         this.hostnameRepo = hostnameRepo;
         this.keycloak = keycloak;
         this.routingTable = routingTable;
+        this.routingConfig = routingConfig;
         this.audit = audit;
     }
 
@@ -83,6 +87,7 @@ public class TenantService {
                 // Resurrect: same UUID, history preserved, re-provision realm.
                 log.info("Resurrecting previously-deleted tenant slug={} id={}", slug, prior.getId());
                 prior.resurrect(displayName, settings);
+                // Existing routingConfig is preserved across resurrection.
                 t = repo.save(prior);
                 // Clear any stale hostname rows from the prior life; replace with the new set
                 hostnameRepo.deleteByTenantId(t.getId());
@@ -98,7 +103,13 @@ public class TenantService {
                 throw new TenantConflictException(slug);
             }
         } else {
-            t = repo.save(new Tenant(slug, displayName, actor, settings));
+            Tenant newTenant = new Tenant(slug, displayName, actor, settings);
+            // routing_config is NOT NULL in the schema; seed with conventional
+            // defaults so the initial INSERT succeeds. The post-persist
+            // replaceForTenant below is what actually publishes to Redis +
+            // emits the routes.apply audit event.
+            newTenant.setRoutingConfig(routingConfig.defaultFor(slug));
+            t = repo.save(newTenant);
         }
 
         if (hostnames != null) {
@@ -128,6 +139,17 @@ public class TenantService {
                 payload,
                 new RuntimeException("Provisioning ended in status " + after.getStatus()),
                 details);
+        }
+
+        // Publish the (default for fresh; preserved for resurrected) routing
+        // config to Redis and emit the routes.apply audit event. This runs
+        // unconditionally so even a FAILED tenant still has its rules visible
+        // to operators inspecting Redis.
+        try {
+            routingConfig.replaceForTenant(slug, after.getRoutingConfig());
+        } catch (Exception e) {
+            log.error("Routing config publish failed for new tenant {}; recoverable via PUT /routes",
+                      slug, e);
         }
         return after;
     }
@@ -204,6 +226,9 @@ public class TenantService {
         Tenant t = get(id);
         var hostnames = hostnameRepo.findByTenantId(t.getId());
         routingTable.unpublishAll(hostnames);
+        // Drop the route:<slug> cache so OpenResty stops serving the tenant
+        // immediately. The DB row keeps routing_config for resurrect.
+        routingConfig.deleteForTenant(t.getSlug());
         t.softDelete();
         audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, t.getId(),
             "tenant.delete", "tenant", t.getId().toString(),

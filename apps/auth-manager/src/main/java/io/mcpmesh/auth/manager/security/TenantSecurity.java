@@ -41,12 +41,33 @@ public class TenantSecurity {
             log.debug("hasRole({},{}): no JWT in context", tenantId, roleName);
             return false;
         }
-        Jwt jwt = jwtAuth.getToken();
-
         var tenant = tenants.get(tenantId);  // throws TenantNotFoundException -> 404 (handled by GlobalExceptionHandler)
+        return checkRoleClaim(jwtAuth.getToken(), tenant.getRealmName(), roleName);
+    }
 
+    /**
+     * Slug-keyed lookup used by controllers whose path variable is the
+     * tenant slug (e.g. {@code /api/v1/tenants/{slug}/routes}).
+     *
+     * <p>Named distinctly from {@link #hasRole(UUID, String)} to avoid
+     * SpEL ambiguity -- otherwise an expression like
+     * {@code @tenantSecurity.hasRole(#slug, 'tenant-admin')} where
+     * {@code #slug} is a {@code String} can be matched against the
+     * {@code UUID} overload and trigger a conversion failure.
+     */
+    public boolean hasRoleBySlug(String slug, String roleName) {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (!(auth instanceof JwtAuthenticationToken jwtAuth)) {
+            log.debug("hasRole({},{}): no JWT in context", slug, roleName);
+            return false;
+        }
+        var tenant = tenants.getBySlug(slug);
+        return checkRoleClaim(jwtAuth.getToken(), tenant.getRealmName(), roleName);
+    }
+
+    private boolean checkRoleClaim(Jwt jwt, String expectedRealmName, String roleName) {
         String issuer = jwt.getIssuer() == null ? "" : jwt.getIssuer().toString();
-        String expected = trim(keycloak.url()) + "/realms/" + tenant.getRealmName();
+        String expected = trim(keycloak.url()) + "/realms/" + expectedRealmName;
         if (!issuer.equals(expected) && !issuer.equals(expected + "/")) {
             log.debug("hasRole denied: issuer {} != expected {}", issuer, expected);
             return false;

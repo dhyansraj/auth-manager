@@ -1,5 +1,6 @@
 package io.mcpmesh.auth.manager.domain.tenant;
 
+import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -43,6 +44,10 @@ public class Tenant {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(nullable = false, columnDefinition = "jsonb")
     private Map<String, Object> settings = new HashMap<>();
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "routing_config", nullable = false, columnDefinition = "jsonb")
+    private RoutingConfig routingConfig;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -100,6 +105,16 @@ public class Tenant {
         if (newSettings != null) this.settings = newSettings;
     }
 
+    /**
+     * Replaces the routing config wholesale. The mutator is intentionally
+     * narrow: there is no per-rule add/remove; rules are managed as one
+     * atomic blob via {@code RoutingConfigService.replaceForTenant}.
+     */
+    public void setRoutingConfig(RoutingConfig config) {
+        if (config == null) throw new IllegalArgumentException("routingConfig is required");
+        this.routingConfig = config;
+    }
+
     public boolean isDeleted() {
         return deletedAt != null;
     }
@@ -112,6 +127,7 @@ public class Tenant {
     public String getRealmName() { return realmName; }
     public TenantStatus getStatus() { return status; }
     public Map<String, Object> getSettings() { return settings; }
+    public RoutingConfig getRoutingConfig() { return routingConfig; }
     public Instant getCreatedAt() { return createdAt; }
     public String getCreatedBy() { return createdBy; }
     public Instant getUpdatedAt() { return updatedAt; }

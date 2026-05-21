@@ -7,7 +7,11 @@ import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
+import io.mcpmesh.auth.manager.routing.RoutingConfigService;
 import io.mcpmesh.auth.manager.routing.RoutingTableService;
+import io.mcpmesh.auth.manager.routing.model.AuthMode;
+import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
+import io.mcpmesh.auth.manager.routing.model.RoutingRule;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
 import io.mcpmesh.auth.manager.service.exception.TenantNotFoundException;
@@ -56,12 +60,25 @@ class TenantServiceIT {
     @MockitoBean
     RoutingTableService routingTable;
 
+    @MockitoBean
+    RoutingConfigService routingConfigService;
+
     @BeforeEach
     void setUp() {
         auditRepo.deleteAll();
         repo.deleteAll();
         when(keycloakAdmin.realmExists(anyString())).thenReturn(false);
         when(keycloakAdmin.createRealm(anyString(), anyString())).thenAnswer(inv -> inv.getArgument(0));
+        when(routingConfigService.defaultFor(anyString())).thenAnswer(inv -> sampleConfig(inv.getArgument(0)));
+        when(routingConfigService.replaceForTenant(anyString(), org.mockito.ArgumentMatchers.any()))
+            .thenAnswer(inv -> inv.getArgument(1));
+    }
+
+    private static RoutingConfig sampleConfig(String slug) {
+        return new RoutingConfig(
+            java.util.List.of(new RoutingRule("/*", AuthMode.OPTIONAL, "frontend")),
+            java.util.Map.of("frontend", slug + "-ui:80")
+        );
     }
 
     @Test

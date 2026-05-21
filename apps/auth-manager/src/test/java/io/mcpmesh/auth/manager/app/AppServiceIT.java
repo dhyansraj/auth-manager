@@ -8,7 +8,11 @@ import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.AppRepository;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
+import io.mcpmesh.auth.manager.routing.RoutingConfigService;
 import io.mcpmesh.auth.manager.routing.RoutingTableService;
+import io.mcpmesh.auth.manager.routing.model.AuthMode;
+import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
+import io.mcpmesh.auth.manager.routing.model.RoutingRule;
 import io.mcpmesh.auth.manager.service.AppService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.exception.AppConflictException;
@@ -45,6 +49,7 @@ class AppServiceIT {
 
     @MockitoBean KeycloakAdminService keycloakAdmin;
     @MockitoBean RoutingTableService routingTable;
+    @MockitoBean RoutingConfigService routingConfigService;
 
     @Autowired TenantService tenants;
     @Autowired AppService apps;
@@ -64,7 +69,17 @@ class AppServiceIT {
         when(keycloakAdmin.findClientUuid(anyString(), anyString())).thenReturn(Optional.empty());
         when(keycloakAdmin.createClient(anyString(), anyString(), anyString())).thenReturn("kc-uuid-123");
         when(keycloakAdmin.getClientSecret(anyString(), anyString())).thenReturn("test-secret");
+        when(routingConfigService.defaultFor(anyString())).thenAnswer(inv -> sampleConfig(inv.getArgument(0)));
+        when(routingConfigService.replaceForTenant(anyString(), org.mockito.ArgumentMatchers.any()))
+            .thenAnswer(inv -> inv.getArgument(1));
         tenant = tenants.create("acme", "Acme Corp", null, null, "tester");
+    }
+
+    private static RoutingConfig sampleConfig(String slug) {
+        return new RoutingConfig(
+            java.util.List.of(new RoutingRule("/*", AuthMode.OPTIONAL, "frontend")),
+            java.util.Map.of("frontend", slug + "-ui:80")
+        );
     }
 
     @Test

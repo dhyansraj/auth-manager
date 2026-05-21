@@ -3,7 +3,11 @@ package io.mcpmesh.auth.manager.tenant;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
+import io.mcpmesh.auth.manager.routing.RoutingConfigService;
 import io.mcpmesh.auth.manager.routing.RoutingTableService;
+import io.mcpmesh.auth.manager.routing.model.AuthMode;
+import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
+import io.mcpmesh.auth.manager.routing.model.RoutingRule;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,6 +61,20 @@ class TenantProvisioningIT {
     @Autowired KeycloakAdminService keycloakAdmin;
 
     @MockitoBean RoutingTableService routingTable;
+    @MockitoBean RoutingConfigService routingConfigService;
+
+    @org.junit.jupiter.api.BeforeEach
+    void setupRoutingMocks() {
+        org.mockito.Mockito.when(routingConfigService.defaultFor(org.mockito.ArgumentMatchers.anyString()))
+            .thenAnswer(inv -> new RoutingConfig(
+                java.util.List.of(new RoutingRule("/*", AuthMode.OPTIONAL, "frontend")),
+                java.util.Map.of("frontend", inv.getArgument(0) + "-ui:80")
+            ));
+        org.mockito.Mockito.when(routingConfigService.replaceForTenant(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any()))
+            .thenAnswer(inv -> inv.getArgument(1));
+    }
 
     @Test
     void create_provisions_realm_and_marks_tenant_active() {
