@@ -44,6 +44,7 @@ DB_NAME="${DB_NAME:-authmanager}"
 
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}"
 KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-admin}"
+KC_PUBLIC_HOSTNAME="${KC_PUBLIC_HOSTNAME:-https://kc.mcp-mesh.io}"
 
 bold()  { printf "\033[1m%s\033[0m\n" "$*"; }
 ok()    { printf "  \033[32m✓\033[0m %s\n" "$*"; }
@@ -99,6 +100,10 @@ helm upgrade --install platform-kc bitnami/keycloak \
   --set "externalDatabase.database=keycloak" \
   --set "proxy=edge" \
   --set "production=false" \
+  --set "extraEnvVars[0].name=KC_HOSTNAME" \
+  --set "extraEnvVars[0].value=$KC_PUBLIC_HOSTNAME" \
+  --set "extraEnvVars[1].name=KC_HOSTNAME_STRICT" \
+  --set-string "extraEnvVars[1].value=true" \
   --set "replicaCount=1" \
   --wait --timeout=300s
 ok "platform-kc"
