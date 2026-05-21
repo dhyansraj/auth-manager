@@ -55,4 +55,10 @@ export const api = {
     }),
   resendInvite: (tenantId: string, userId: string) =>
     req<void>(`/tenants/${tenantId}/users/${userId}/invite`, { method: 'POST' }),
+  getRoutes: (slug: string) =>
+    req<import('./types').RoutingConfig>(`/tenants/${slug}/routes`),
+  replaceRoutes: (slug: string, body: import('./types').RoutingConfig) =>
+    req<import('./types').RoutingConfig>(`/tenants/${slug}/routes`, {
+      method: 'PUT', body: JSON.stringify(body)
+    }),
 };

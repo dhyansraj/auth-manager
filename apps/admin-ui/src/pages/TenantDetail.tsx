@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
+import RoutesTab from '../features/routes/RoutesTab';
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState<'overview' | 'apps' | 'users' | 'audit'>('overview');
+  const [tab, setTab] = useState<'overview' | 'apps' | 'routes' | 'users' | 'audit'>('overview');
   const tenant = useQuery({ queryKey: ['tenant', id], queryFn: () => api.getTenant(id!), enabled: !!id });
 
   if (tenant.isLoading) return <div>Loading…</div>;
@@ -21,7 +22,7 @@ export default function TenantDetail() {
         <code className="text-xs text-slate-500">{t.slug}</code>
       </div>
       <div className="flex gap-4 border-b">
-        {(['overview', 'apps', 'users', 'audit'] as const).map(k => (
+        {(['overview', 'apps', 'routes', 'users', 'audit'] as const).map(k => (
           <button key={k} onClick={() => setTab(k)}
                   className={'pb-2 px-1 text-sm ' + (tab === k ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-900')}>
             {k.charAt(0).toUpperCase() + k.slice(1)}
@@ -30,6 +31,7 @@ export default function TenantDetail() {
       </div>
       {tab === 'overview' && <OverviewTab tenant={t} />}
       {tab === 'apps' && <AppsTab tenantId={t.id} />}
+      {tab === 'routes' && <RoutesTab slug={t.slug} />}
       {tab === 'users' && <UsersTab tenantId={t.id} />}
       {tab === 'audit' && <AuditTab tenantId={t.id} />}
     </div>

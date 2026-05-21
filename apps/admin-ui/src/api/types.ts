@@ -77,3 +77,16 @@ export interface CreateUserPayload {
 }
 
 export type UserRole = 'tenant-admin' | 'user-viewer';
+
+export type AuthMode = 'PUBLIC' | 'REQUIRED' | 'OPTIONAL';
+
+export interface RoutingRule {
+  path: string;
+  authMode: AuthMode;
+  target: string;
+}
+
+export interface RoutingConfig {
+  rules: RoutingRule[];
+  targets: Record<string, string>;
+}
