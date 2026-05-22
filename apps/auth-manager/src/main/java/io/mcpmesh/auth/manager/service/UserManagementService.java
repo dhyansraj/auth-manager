@@ -25,7 +25,12 @@ public class UserManagementService {
     private static final Logger log = LoggerFactory.getLogger(UserManagementService.class);
     private static final ActorKind ACTOR_KIND = ActorKind.USER;
     private static final String USERMANAGEMENT_CLIENT = "usermanagement";
-    private static final List<String> DEFAULT_ROLES = List.of("user-viewer");
+    /**
+     * Baseline role granted to every active user in a tenant realm. Required so
+     * a user can view their own profile. Always added to the effective role
+     * set on create / update, even if the caller omits it.
+     */
+    private static final String BASELINE_ROLE = "user-viewer";
 
     private final TenantService tenants;
     private final KeycloakAdminService keycloak;
@@ -58,8 +63,15 @@ public class UserManagementService {
 
     public UserResponse create(UUID tenantId, CreateUserRequest req, String actor) {
         Tenant t = tenants.get(tenantId);
-        List<String> rolesToAssign = (req.roles() == null || req.roles().isEmpty()) ? DEFAULT_ROLES : req.roles();
-        validateRoles(rolesToAssign);
+        // Validate caller-supplied roles first (may be null), then ensure the
+        // baseline user-viewer role is always part of the effective set so
+        // every user can view their own profile. tenant-admin (if requested)
+        // is layered on top.
+        List<String> requested = req.roles() == null ? List.of() : req.roles();
+        validateRoles(requested);
+        Set<String> rolesToAssign = new java.util.LinkedHashSet<>();
+        rolesToAssign.add(BASELINE_ROLE);
+        rolesToAssign.addAll(requested);
 
         String userId;
         try {
@@ -98,11 +110,16 @@ public class UserManagementService {
 
     public UserResponse updateRoles(UUID tenantId, String userId, Set<String> desiredRoles, String actor) {
         validateRoles(desiredRoles);
+        // user-viewer is an invariant on every active user. If the caller
+        // omits it we silently re-add it rather than 400, since the intent is
+        // "set my role mix to X" — we satisfy that by also keeping the baseline.
+        Set<String> effective = new HashSet<>(desiredRoles);
+        effective.add(BASELINE_ROLE);
         Tenant t = tenants.get(tenantId);
 
         Set<String> current = new HashSet<>(keycloak.getUserClientRoles(t.getRealmName(), userId, USERMANAGEMENT_CLIENT));
-        Set<String> toAdd    = new HashSet<>(desiredRoles); toAdd.removeAll(current);
-        Set<String> toRemove = new HashSet<>(current);      toRemove.removeAll(desiredRoles);
+        Set<String> toAdd    = new HashSet<>(effective); toAdd.removeAll(current);
+        Set<String> toRemove = new HashSet<>(current);   toRemove.removeAll(effective);
 
         for (String r : toAdd) keycloak.assignClientRoleToUser(t.getRealmName(), userId, USERMANAGEMENT_CLIENT, r);
         for (String r : toRemove) keycloak.removeClientRoleFromUser(t.getRealmName(), userId, USERMANAGEMENT_CLIENT, r);

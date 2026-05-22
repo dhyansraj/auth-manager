@@ -307,9 +307,10 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
 }
 
 /**
- * Compact role chips for a user row. System client-roles (tenant-admin,
- * user-viewer) are shown as outlined badges; composite realm roles are
- * shown as filled badges. Click delegates to the popover.
+ * Compact role chips for a user row. tenant-admin is shown as an outlined
+ * system badge; composite realm roles are shown as filled badges. The
+ * user-viewer system role is the universal baseline and is hidden from the
+ * UI (every user has it, so showing it would be noise).
  */
 function RoleBadges({
   systemRoles,
@@ -323,8 +324,9 @@ function RoleBadges({
   onClick?: () => void;
 }) {
   const MAX = 3;
+  const visibleSystem = systemRoles.filter(r => r !== 'user-viewer');
   const all = [
-    ...systemRoles.map(r => ({ name: r, system: true })),
+    ...visibleSystem.map(r => ({ name: r, system: true })),
     ...realmRoles.map(r => ({ name: r, system: false })),
   ];
   const shown = all.slice(0, MAX);
@@ -349,7 +351,7 @@ function RoleBadges({
         <span className="text-xs text-slate-500 self-center">+{extra} more</span>
       )}
       {all.length === 0 && (
-        <span className="text-xs text-slate-400 italic">no roles</span>
+        <span className="text-xs text-slate-400 italic">—</span>
       )}
     </div>
   );
@@ -382,8 +384,10 @@ function InviteUserForm({
   const [email, setEmail] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
-  // System client-roles (passed to createUser). Default to user-viewer for back-compat.
-  const [systemRole, setSystemRole] = useState<'tenant-admin' | 'user-viewer'>('user-viewer');
+  // user-viewer is a universal baseline granted by the backend on every
+  // user. The only system-role toggle exposed in the invite dialog is the
+  // optional tenant-admin elevation.
+  const [grantAdmin, setGrantAdmin] = useState(false);
   // Composite realm-roles (applied via a follow-up PUT after invite succeeds).
   const [composite, setComposite] = useState<Set<string>>(new Set());
 
@@ -397,8 +401,11 @@ function InviteUserForm({
 
   const invite = useMutation({
     mutationFn: async () => {
+      // Always send user-viewer explicitly to keep the request honest, even
+      // though the backend will enforce it regardless.
+      const roles = grantAdmin ? ['user-viewer', 'tenant-admin'] : ['user-viewer'];
       const created = await api.createUser(tenantId, {
-        email, firstName, lastName, roles: [systemRole],
+        email, firstName, lastName, roles,
       });
       if (composite.size > 0) {
         await api.updateUserRealmRoles(slug, created.id, Array.from(composite));
@@ -414,15 +421,21 @@ function InviteUserForm({
       <div className="grid grid-cols-2 gap-2">
         <input placeholder="email" type="email" value={email} onChange={e => setEmail(e.target.value)} required
                className="border rounded px-2 py-1 text-sm" />
-        <select value={systemRole} onChange={e => setSystemRole(e.target.value as 'tenant-admin' | 'user-viewer')}
-                className="border rounded px-2 py-1 text-sm">
-          <option value="user-viewer">user-viewer (system)</option>
-          <option value="tenant-admin">tenant-admin (system)</option>
-        </select>
+        <div></div>
         <input placeholder="first name (optional)" value={firstName} onChange={e => setFirstName(e.target.value)}
                className="border rounded px-2 py-1 text-sm" />
         <input placeholder="last name (optional)" value={lastName} onChange={e => setLastName(e.target.value)}
                className="border rounded px-2 py-1 text-sm" />
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={grantAdmin} onChange={e => setGrantAdmin(e.target.checked)} />
+          <span>Grant tenant-admin (in addition to baseline view access)</span>
+        </label>
+        <div className="text-xs text-slate-500 mt-0.5 ml-6">
+          All users automatically get baseline view access (user-viewer). Check this to also grant admin rights.
+        </div>
       </div>
 
       {availableRoles.length > 0 && (
