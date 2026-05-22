@@ -17,8 +17,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+/**
+ * UUID-keyed user management. The {@code tenantId} path segment is constrained
+ * to UUID syntax so the slug-keyed twin in {@link io.mcpmesh.auth.manager.roles.UserRolesController}
+ * can share the same path prefix without ambiguity (Spring otherwise can't
+ * tell {@code /tenants/{slug}/users/...} apart from {@code /tenants/{uuid}/users/...}).
+ */
 @RestController
-@RequestMapping("/api/v1/tenants/{tenantId}/users")
+@RequestMapping("/api/v1/tenants/{tenantId:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}}/users")
 public class UserManagementController {
 
     private final UserManagementService service;

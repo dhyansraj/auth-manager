@@ -154,6 +154,16 @@ public class TenantSecurity {
     }
 
     /**
+     * True when the caller is allowed to mutate the given tenant -- either
+     * platform-admin (anywhere) or tenant-admin of that specific tenant.
+     * Used by composite-role + user-role endpoints whose write methods
+     * require admin authority.
+     */
+    public boolean canManageTenant(String slug) {
+        return hasRoleBySlug(slug, "tenant-admin");
+    }
+
+    /**
      * Returns true when the caller's JWT was issued by the configured
      * "platform" realm AND carries the configured platform-admin realm role.
      * This is the cross-tenant super-admin bypass used by the admin-ui.

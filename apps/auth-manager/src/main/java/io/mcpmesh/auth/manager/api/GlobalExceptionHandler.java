@@ -1,5 +1,7 @@
 package io.mcpmesh.auth.manager.api;
 
+import io.mcpmesh.auth.manager.roles.RoleInUseException;
+import io.mcpmesh.auth.manager.roles.RoleNotFoundException;
 import io.mcpmesh.auth.manager.service.exception.AppConflictException;
 import io.mcpmesh.auth.manager.service.exception.AppNotFoundException;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
@@ -8,6 +10,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -58,6 +62,30 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleUnsupported(UnsupportedOperationException ex) {
         var pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_IMPLEMENTED, ex.getMessage());
         pd.setTitle("Not implemented");
+        return pd;
+    }
+
+    @ExceptionHandler(RoleNotFoundException.class)
+    public ProblemDetail handleRoleNotFound(RoleNotFoundException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+        pd.setTitle("Role not found");
+        return pd;
+    }
+
+    /**
+     * Composite-role delete blocked by existing user assignments. Returns
+     * the structured body the UI uses to surface the count ({@code error},
+     * {@code userCount}) on top of the standard ProblemDetail fields.
+     */
+    @ExceptionHandler(RoleInUseException.class)
+    public ProblemDetail handleRoleInUse(RoleInUseException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        pd.setTitle("Role in use");
+        pd.setProperties(Map.of(
+            "error", "role_in_use",
+            "role", ex.roleName(),
+            "userCount", ex.userCount()
+        ));
         return pd;
     }
 
