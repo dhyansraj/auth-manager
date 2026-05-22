@@ -152,3 +152,29 @@ export interface IdentityProviderDto {
   /** True iff platform creds for this provider are configured (env vars set). */
   available: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Branding / Custom Themes (per-tenant ConfigMap-backed theme files)
+// ---------------------------------------------------------------------------
+
+/** Summary of the current theme stored for a tenant. */
+export interface ThemeMeta {
+  configured: boolean;
+  fileCount: number;
+  totalBytes: number;
+  lastModified: string | null;
+}
+
+export type ThemeRolloutState = 'READY' | 'ROLLING_OUT' | 'FAILED';
+
+export interface ThemeRolloutStatus {
+  state: ThemeRolloutState;
+  progress: number;
+}
+
+/** Structured validation error returned by POST /theme on a 400. */
+export interface ThemeValidationError {
+  code: string;
+  path: string;
+  message: string;
+}

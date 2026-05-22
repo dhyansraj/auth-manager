@@ -1,0 +1,114 @@
+# Overrides layered on top of Bitnami's keycloak chart for the platform-kc
+# release. The base flags (image, externalDatabase, KC_HOSTNAME, etc.) are
+# still set via --set in scripts/deploy-beelink.sh; this file ONLY carries
+# the additions for the per-tenant theme subsystem:
+#
+#   - extraInitContainers: a small kubectl/bash image that materializes
+#     every theme ConfigMap (label mcpmesh/theme=true) into a directory
+#     tree under /opt/keycloak/themes/ before KC starts.
+#   - extraVolumes: a shared emptyDir mounted by both the init container
+#     (write side) and the KC container (read side).
+#   - serviceAccount.create + RBAC patches so the init container has
+#     get,list on ConfigMaps in its namespace.
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: true
+
+# RBAC needed by the init container to list theme ConfigMaps. Bitnami's KC
+# chart doesn't expose Role/RoleBinding fields directly, so we layer them
+# via extraDeploy.
+extraDeploy:
+  - |
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: platform-kc-theme-reader
+      namespace: {{ .Release.Namespace }}
+    rules:
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["get", "list", "watch"]
+  - |
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: platform-kc-theme-reader
+      namespace: {{ .Release.Namespace }}
+    subjects:
+    - kind: ServiceAccount
+      name: {{ include "common.names.fullname" . }}
+      namespace: {{ .Release.Namespace }}
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: platform-kc-theme-reader
+
+# Shared volume between the materializer init container and the KC container.
+extraVolumes:
+  - name: tenant-themes
+    emptyDir:
+      sizeLimit: 16Mi
+
+extraVolumeMounts:
+  - name: tenant-themes
+    mountPath: /opt/keycloak/themes
+    readOnly: false
+
+# Materializer init container. Runs once per pod start: enumerates ConfigMaps
+# labeled mcpmesh/theme=true, decodes the __-encoded path keys, and writes
+# the directory tree to /shared/themes — which the KC container sees at
+# /opt/keycloak/themes via the shared emptyDir.
+initContainers:
+  - name: theme-materializer
+    image: docker.io/bitnamilegacy/kubectl:1.30
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/bash", "-eu", "-o", "pipefail", "-c"]
+    args:
+      - |
+        echo "theme-materializer: starting at $(date -u +%FT%TZ)"
+        mkdir -p /shared/themes
+        # We need jq; bitnami/kubectl ships with it.
+        cm_list=$(kubectl get cm -n "$POD_NAMESPACE" -l mcpmesh/theme=true -o json)
+        count=$(echo "$cm_list" | jq '.items | length')
+        echo "theme-materializer: found $count tenant theme ConfigMap(s)"
+        echo "$cm_list" | jq -c '.items[]' | while read -r cm_json; do
+          cm_name=$(echo "$cm_json" | jq -r '.metadata.name')
+          # ConfigMap name = "theme-<tenant-dir>" → strip leading "theme-".
+          tenant_dir="${cm_name#theme-}"
+          target="/shared/themes/$tenant_dir"
+          mkdir -p "$target"
+          echo "theme-materializer:  → $tenant_dir"
+          # Text files (data:)
+          echo "$cm_json" | jq -r '.data // {} | to_entries[] | @base64' | while read -r row; do
+            key=$(echo "$row" | base64 -d | jq -r '.key')
+            val=$(echo "$row" | base64 -d | jq -r '.value')
+            path="${key//__//}"
+            mkdir -p "$target/$(dirname "$path")"
+            printf '%s' "$val" > "$target/$path"
+          done
+          # Binary files (binaryData:) — base64-encoded by the apiserver
+          echo "$cm_json" | jq -r '.binaryData // {} | to_entries[] | @base64' | while read -r row; do
+            key=$(echo "$row" | base64 -d | jq -r '.key')
+            val=$(echo "$row" | base64 -d | jq -r '.value')
+            path="${key//__//}"
+            mkdir -p "$target/$(dirname "$path")"
+            echo "$val" | base64 -d > "$target/$path"
+          done
+        done
+        echo "theme-materializer: done; $(find /shared/themes -mindepth 1 -maxdepth 1 -type d | wc -l) tenant theme(s) materialized"
+    env:
+      - name: POD_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+    volumeMounts:
+      - name: tenant-themes
+        mountPath: /shared/themes
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "200m"
+        memory: "128Mi"

@@ -8,6 +8,8 @@ import type {
   UpdateRoleRequest,
   IdentityProviderDto,
   IdentityProviderId,
+  ThemeMeta,
+  ThemeRolloutStatus,
 } from './types';
 
 // The admin-ui is served at /admin/* on every host. The edge maps
@@ -19,6 +21,11 @@ let accessToken: string | null = null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
+}
+
+/** Read the current bearer token (used by callers that need to make raw fetches, e.g. blob downloads). */
+export function getAccessToken(): string | null {
+  return accessToken;
 }
 
 export class ApiError extends Error {
@@ -121,4 +128,32 @@ export const api = {
     req<IdentityProviderDto>(`/tenants/${slug}/identity-providers/${providerId}`, {
       method: 'PUT', body: JSON.stringify({ enabled })
     }),
+
+  // -------------------------------------------------------------------------
+  // Branding / Custom Themes
+  // -------------------------------------------------------------------------
+  /** Returns the URL to the starter zip; consumer should set window.location to it. */
+  themeStarterUrl: (slug: string) => `${base}/tenants/${slug}/theme/starter`,
+  getThemeMeta: (slug: string) => req<ThemeMeta>(`/tenants/${slug}/theme`),
+  uploadTheme: async (slug: string, file: File): Promise<ThemeMeta> => {
+    const headers = new Headers();
+    if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+    // Do NOT set Content-Type — the browser sets multipart boundary itself.
+    const form = new FormData();
+    form.append('file', file);
+    const r = await fetch(`${base}/tenants/${slug}/theme`, {
+      method: 'POST', body: form, headers,
+    });
+    if (!r.ok) {
+      const raw = await r.text();
+      let parsed: unknown = raw;
+      try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+      throw new ApiError(r.status, r.statusText, parsed, raw);
+    }
+    return r.json() as Promise<ThemeMeta>;
+  },
+  deleteTheme: (slug: string) =>
+    req<void>(`/tenants/${slug}/theme`, { method: 'DELETE' }),
+  getThemeStatus: (slug: string) =>
+    req<ThemeRolloutStatus>(`/tenants/${slug}/theme/status`),
 };

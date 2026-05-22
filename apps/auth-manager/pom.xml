@@ -73,6 +73,30 @@
             <artifactId>keycloak-admin-client</artifactId>
         </dependency>
 
+        <!-- Fabric8 Kubernetes client: used by ThemeStorage (per-tenant theme
+             ConfigMaps) and ThemeApplier (rolling restart of platform-kc
+             StatefulSet). Spring Boot 4 doesn't manage this dep, so we pin
+             explicitly. -->
+        <dependency>
+            <groupId>io.fabric8</groupId>
+            <artifactId>kubernetes-client</artifactId>
+            <version>6.13.4</version>
+        </dependency>
+
+        <!-- CSS parser for ThemeValidator (rejects @import, remote url(), etc.) -->
+        <dependency>
+            <groupId>com.helger</groupId>
+            <artifactId>ph-css</artifactId>
+            <version>7.0.4</version>
+        </dependency>
+
+        <!-- OWASP HTML sanitizer for SVG sanitization in ThemeValidator. -->
+        <dependency>
+            <groupId>com.googlecode.owasp-java-html-sanitizer</groupId>
+            <artifactId>owasp-java-html-sanitizer</artifactId>
+            <version>20240325.1</version>
+        </dependency>
+
         <!-- Dev-time conveniences -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -105,6 +129,14 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Fabric8 mock server for ThemeStorage tests. -->
+        <dependency>
+            <groupId>io.fabric8</groupId>
+            <artifactId>kubernetes-server-mock</artifactId>
+            <version>6.13.4</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

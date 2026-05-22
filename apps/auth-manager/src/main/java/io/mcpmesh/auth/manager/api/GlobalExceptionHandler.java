@@ -6,6 +6,7 @@ import io.mcpmesh.auth.manager.service.exception.AppConflictException;
 import io.mcpmesh.auth.manager.service.exception.AppNotFoundException;
 import io.mcpmesh.auth.manager.service.exception.TenantConflictException;
 import io.mcpmesh.auth.manager.service.exception.TenantNotFoundException;
+import io.mcpmesh.auth.manager.theme.ThemeValidationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -85,6 +86,26 @@ public class GlobalExceptionHandler {
             "error", "role_in_use",
             "role", ex.roleName(),
             "userCount", ex.userCount()
+        ));
+        return pd;
+    }
+
+    /**
+     * Theme zip failed prescan (path traversal, forbidden extension, CSS
+     * external URL, etc.). The {@code errors} array carries one entry per
+     * problem so the UI can render a checklist.
+     */
+    @ExceptionHandler(ThemeValidationException.class)
+    public ProblemDetail handleThemeValidation(ThemeValidationException ex) {
+        var pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+        pd.setTitle("Theme validation failed");
+        pd.setProperties(Map.of(
+            "error", "theme_validation_failed",
+            "errors", ex.errors().stream().map(e -> Map.of(
+                "code", e.code(),
+                "path", e.path() == null ? "" : e.path(),
+                "message", e.message()
+            )).toList()
         ));
         return pd;
     }

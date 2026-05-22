@@ -18,6 +18,7 @@ spec:
         {{- include "auth-platform.labels" . | nindent 8 }}
         app.kubernetes.io/component: auth-manager
     spec:
+      serviceAccountName: {{ .Release.Name }}-auth-manager
       containers:
         - name: auth-manager
           image: {{ include "auth-platform.image" (dict "global" .Values.global "repository" .Values.authManager.image.repository "tag" .Values.authManager.image.tag) }}
@@ -30,6 +31,13 @@ spec:
               value: {{ .Values.authManager.config.activeProfile | quote }}
             - name: SPRING_CONFIG_ADDITIONAL_LOCATION
               value: file:/config/
+            # Namespace used by ThemeStorage / ThemeApplier when talking to
+            # the Kubernetes API. Sourced from the downward API so the same
+            # image works in any namespace.
+            - name: MCPMESH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: SPRING_DATASOURCE_PASSWORD
               valueFrom:
                 secretKeyRef:

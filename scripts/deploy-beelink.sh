@@ -95,9 +95,14 @@ helm upgrade --install platform-redis bitnami/redis \
 ok "platform-redis"
 
 step "5. Keycloak (platform-kc)"
+# Theme materializer init container + RBAC + shared volume are layered via
+# the values-platform-kc.yaml overrides file. Re-running this step triggers
+# a KC restart, which is exactly what we want when the materializer logic
+# changes — but be aware logged-in user sessions are dropped.
 helm upgrade --install platform-kc bitnami/keycloak \
   --namespace "$NAMESPACE" \
   --version "$KC_CHART_VERSION" \
+  -f deploy/helm/keycloak-overrides/values-platform-kc.yaml \
   --set "image.registry=docker.io" \
   --set "image.repository=$KC_IMAGE_REPO" \
   --set "image.tag=$KC_IMAGE_TAG" \

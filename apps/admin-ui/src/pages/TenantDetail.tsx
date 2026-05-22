@@ -5,6 +5,7 @@ import { useIsPlatformAdmin, useIsTenantAdmin } from '@mcpmesh/auth-lib-react';
 import { api } from '../api/client';
 import RoutesTab from '../features/routes/RoutesTab';
 import IdentityProvidersTab from '../features/idp/IdentityProvidersTab';
+import BrandingTab from '../features/branding/BrandingTab';
 import PermissionsTab from '../features/roles/PermissionsTab';
 import RolesTab from '../features/roles/RolesTab';
 import UserRolesPopover from '../features/roles/UserRolesPopover';
@@ -13,7 +14,7 @@ import { useUserRealmRolesQueries } from '../features/roles/useUserRealmRolesQue
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState<'overview' | 'apps' | 'routes' | 'identity-providers' | 'permissions' | 'roles' | 'users' | 'audit'>('overview');
+  const [tab, setTab] = useState<'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'permissions' | 'roles' | 'users' | 'audit'>('overview');
   const tenant = useQuery({ queryKey: ['tenant', id], queryFn: () => api.getTenant(id!), enabled: !!id });
 
   if (tenant.isLoading) return <div>Loading…</div>;
@@ -29,7 +30,7 @@ export default function TenantDetail() {
         <code className="text-xs text-slate-500">{t.slug}</code>
       </div>
       <div className="flex gap-4 border-b">
-        {(['overview', 'apps', 'routes', 'identity-providers', 'permissions', 'roles', 'users', 'audit'] as const).map(k => (
+        {(['overview', 'apps', 'routes', 'identity-providers', 'branding', 'permissions', 'roles', 'users', 'audit'] as const).map(k => (
           <button key={k} onClick={() => setTab(k)}
                   className={'pb-2 px-1 text-sm ' + (tab === k ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-900')}>
             {tabLabel(k)}
@@ -40,6 +41,7 @@ export default function TenantDetail() {
       {tab === 'apps' && <AppsTab tenantId={t.id} />}
       {tab === 'routes' && <RoutesTab slug={t.slug} />}
       {tab === 'identity-providers' && <IdentityProvidersTab slug={t.slug} />}
+      {tab === 'branding' && <BrandingTab slug={t.slug} />}
       {tab === 'permissions' && <PermissionsTab slug={t.slug} />}
       {tab === 'roles' && <RolesTab slug={t.slug} />}
       {tab === 'users' && <UsersTab tenantId={t.id} slug={t.slug} />}

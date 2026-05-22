@@ -1,0 +1,56 @@
+{{- if .Values.authManager.enabled }}
+# ServiceAccount + Role granting auth-manager the cluster permissions it needs
+# to manage per-tenant theme ConfigMaps and trigger a rolling restart of the
+# platform-kc StatefulSet when a theme is uploaded.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-auth-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-auth-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-manager
+rules:
+# Per-tenant theme ConfigMaps (created dynamically — cannot be name-scoped).
+# Labeled mcpmesh/theme=true so the platform-kc theme-materializer init
+# container can enumerate them.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+# Patch the platform-kc StatefulSet's pod-template annotations to trigger a
+# rolling restart (kubectl rollout restart equivalent).
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  resourceNames: ["platform-kc-keycloak"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets/status"]
+  resourceNames: ["platform-kc-keycloak"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-auth-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth-manager
+subjects:
+- kind: ServiceAccount
+  name: {{ .Release.Name }}-auth-manager
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-auth-manager
+{{- end }}
