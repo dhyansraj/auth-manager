@@ -96,3 +96,14 @@ failsafe-reports/
 # settings.json without .local can be committed for team-shared config).
 .claude/settings.local.json
 .claude/local/
+
+# ─── Python ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
