@@ -44,21 +44,19 @@ extraDeploy:
       kind: Role
       name: platform-kc-theme-reader
 
-# Shared volume between the materializer init container and the KC container.
-extraVolumes:
-  - name: tenant-themes
-    emptyDir:
-      sizeLimit: 16Mi
-
-extraVolumeMounts:
-  - name: tenant-themes
-    mountPath: /opt/keycloak/themes
-    readOnly: false
-
 # Materializer init container. Runs once per pod start: enumerates ConfigMaps
 # labeled mcpmesh/theme=true, decodes the __-encoded path keys, and writes
-# the directory tree to /shared/themes — which the KC container sees at
-# /opt/keycloak/themes via the shared emptyDir.
+# the directory tree directly into Bitnami's shared empty-dir volume at
+# the app-themes-dir subPath — which the KC main container mounts at
+# /opt/bitnami/keycloak/themes.
+#
+# NOTE: we DO NOT use extraVolumes/extraVolumeMounts. Bitnami's KC chart
+# mounts a single shared `empty-dir` volume into the main container with
+# subPaths for every writable directory (tmp, conf, providers, themes, ...).
+# Adding our own extraVolumeMount at /opt/bitnami/keycloak/themes is
+# silently ignored by the chart's main-container mount-merge logic — only
+# the existing subPath mount survives. So we materialize INTO that shared
+# volume's app-themes-dir subPath instead, which IS what KC reads.
 initContainers:
   - name: theme-materializer
     image: docker.io/bitnamilegacy/kubectl:1.30
@@ -67,16 +65,18 @@ initContainers:
     args:
       - |
         echo "theme-materializer: starting at $(date -u +%FT%TZ)"
-        mkdir -p /shared/themes
-        # We need jq; bitnami/kubectl ships with it.
+        TARGET=/emptydir/app-themes-dir
+        # The prepare-write-dirs init container runs before us and creates
+        # this directory, but defensive mkdir to be safe.
+        mkdir -p "$TARGET"
         cm_list=$(kubectl get cm -n "$POD_NAMESPACE" -l mcpmesh/theme=true -o json)
         count=$(echo "$cm_list" | jq '.items | length')
-        echo "theme-materializer: found $count tenant theme ConfigMap(s)"
+        echo "theme-materializer: found $count tenant theme ConfigMap(s); target=$TARGET"
         echo "$cm_list" | jq -c '.items[]' | while read -r cm_json; do
           cm_name=$(echo "$cm_json" | jq -r '.metadata.name')
           # ConfigMap name = "theme-<tenant-dir>" → strip leading "theme-".
           tenant_dir="${cm_name#theme-}"
-          target="/shared/themes/$tenant_dir"
+          target="$TARGET/$tenant_dir"
           mkdir -p "$target"
           echo "theme-materializer:  → $tenant_dir"
           # Text files (data:)
@@ -96,15 +96,15 @@ initContainers:
             echo "$val" | base64 -d > "$target/$path"
           done
         done
-        echo "theme-materializer: done; $(find /shared/themes -mindepth 1 -maxdepth 1 -type d | wc -l) tenant theme(s) materialized"
+        echo "theme-materializer: done; $(find "$TARGET" -mindepth 1 -maxdepth 1 -type d | wc -l) tenant theme(s) materialized"
     env:
       - name: POD_NAMESPACE
         valueFrom:
           fieldRef:
             fieldPath: metadata.namespace
     volumeMounts:
-      - name: tenant-themes
-        mountPath: /shared/themes
+      - name: empty-dir
+        mountPath: /emptydir
     resources:
       requests:
         cpu: "50m"
