@@ -80,6 +80,13 @@ public class UsermanagementBootstrap {
             keycloak.createClientRole(tenant.getRealmName(), findClientUuid(tenant), ROLE_TENANT_ADMIN);
             keycloak.createClientRole(tenant.getRealmName(), findClientUuid(tenant), ROLE_USER_VIEWER);
 
+            // 4. Make user-viewer a composite of the realm's default-roles-<realm>
+            //    so every new user (including brokered Google/GitHub users via
+            //    KC's First Broker Login flow) lands with read-only access to
+            //    the usermanagement UI. Idempotent.
+            keycloak.ensureClientRoleInDefaultRoles(
+                tenant.getRealmName(), CLIENT_SLUG, ROLE_USER_VIEWER);
+
             audit.recordSuccess(actor, SYSTEM_KIND, tenant.getId(),
                 "tenant.bootstrap", "tenant", tenant.getId().toString(),
                 null, details);

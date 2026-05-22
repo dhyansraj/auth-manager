@@ -5,6 +5,7 @@ import jakarta.ws.rs.core.Response;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.resource.AuthorizationResource;
 import org.keycloak.admin.client.resource.ClientResource;
+import org.keycloak.admin.client.resource.RoleResource;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
@@ -227,6 +228,75 @@ public class KeycloakAdminService {
         RoleRepresentation role = new RoleRepresentation();
         role.setName(roleName);
         clientResource.roles().create(role);
+    }
+
+    /**
+     * Adds a client role as a composite of the realm's built-in
+     * {@code default-roles-<realm>} role. KC auto-assigns this default role to
+     * every user it creates (including users provisioned by the
+     * "First Broker Login" flow for social IdPs), so adding {@code user-viewer}
+     * here transparently grants it to every brokered user without our code
+     * having to participate in the broker flow.
+     *
+     * <p>Idempotent: if the role is already a composite, this is a no-op.
+     * Defensive: if the realm has no client with {@code clientId}, logs WARN
+     * and returns without throwing.
+     *
+     * @return {@code true} if the role was newly added; {@code false} if it
+     *         was already present, missing client, or any other skip.
+     */
+    public boolean ensureClientRoleInDefaultRoles(String realmName, String clientId, String roleName) {
+        var clientUuidOpt = findClientUuid(realmName, clientId);
+        if (clientUuidOpt.isEmpty()) {
+            log.warn("ensureClientRoleInDefaultRoles: client '{}' not found in realm '{}' — skipping",
+                clientId, realmName);
+            return false;
+        }
+        String clientUuid = clientUuidOpt.get();
+
+        RoleRepresentation clientRole;
+        try {
+            clientRole = admin.realm(realmName).clients().get(clientUuid)
+                .roles().get(roleName).toRepresentation();
+        } catch (NotFoundException e) {
+            log.warn("ensureClientRoleInDefaultRoles: client role '{}:{}' not found in realm '{}' — skipping",
+                clientId, roleName, realmName);
+            return false;
+        }
+
+        String defaultRoleName = "default-roles-" + realmName;
+        RoleResource defaultRole;
+        try {
+            defaultRole = admin.realm(realmName).roles().get(defaultRoleName);
+            defaultRole.toRepresentation();  // throws NotFoundException if missing
+        } catch (NotFoundException e) {
+            log.warn("ensureClientRoleInDefaultRoles: '{}' not found in realm '{}' — skipping",
+                defaultRoleName, realmName);
+            return false;
+        }
+
+        List<RoleRepresentation> existing;
+        try {
+            var composites = defaultRole.getRoleComposites();
+            existing = composites == null ? List.of() : List.copyOf(composites);
+        } catch (Exception e) {
+            log.warn("ensureClientRoleInDefaultRoles: failed to list composites of '{}' in realm '{}': {}",
+                defaultRoleName, realmName, e.getMessage());
+            return false;
+        }
+        boolean alreadyPresent = existing.stream().anyMatch(r ->
+            roleName.equals(r.getName())
+                && Boolean.TRUE.equals(r.getClientRole())
+                && clientUuid.equals(r.getContainerId()));
+        if (alreadyPresent) {
+            log.debug("ensureClientRoleInDefaultRoles: '{}:{}' already a composite of '{}'",
+                clientId, roleName, defaultRoleName);
+            return false;
+        }
+        defaultRole.addComposites(List.of(clientRole));
+        log.info("ensureClientRoleInDefaultRoles: added '{}:{}' as composite of '{}' in realm '{}'",
+            clientId, roleName, defaultRoleName, realmName);
+        return true;
     }
 
     /** Creates a top-level authz scope on the client; no-op if it exists. */
