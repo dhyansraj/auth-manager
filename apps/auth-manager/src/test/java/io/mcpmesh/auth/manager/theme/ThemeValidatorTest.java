@@ -20,10 +20,10 @@ class ThemeValidatorTest {
     @Test
     void validZip_isAccepted() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\nstyles=css/custom.css\n".getBytes(),
-            "resources/css/custom.css", ":root { --kc-primary: #000; }\n".getBytes(),
-            "resources/img/logo.svg", validSvg().getBytes(),
-            "messages/messages_en.properties", "loginAccountTitle=Welcome\n".getBytes()
+            "login/theme.properties", "parent=keycloak.v2\nstyles=css/custom.css\n".getBytes(),
+            "login/resources/css/custom.css", ":root { --kc-primary: #000; }\n".getBytes(),
+            "login/resources/img/logo.svg", validSvg().getBytes(),
+            "login/messages/messages_en.properties", "loginAccountTitle=Welcome\n".getBytes()
         ));
 
         ValidationResult r = validator.validateZip(zip);
@@ -31,16 +31,63 @@ class ThemeValidatorTest {
         assertThat(r.isValid())
             .as("errors: %s", r.errors())
             .isTrue();
-        assertThat(r.extractedFiles()).containsKey("theme.properties");
-        assertThat(r.extractedFiles()).containsKey("resources/css/custom.css");
+        assertThat(r.extractedFiles()).containsKey("login/theme.properties");
+        assertThat(r.extractedFiles()).containsKey("login/resources/css/custom.css");
     }
 
     @Test
     void parentKeycloakBaseIsAlsoAccepted() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak\n".getBytes()
+            "login/theme.properties", "parent=keycloak\n".getBytes()
         ));
         assertThat(validator.validateZip(zip).isValid()).isTrue();
+    }
+
+    @Test
+    void rootThemePropertiesAlone_isAcceptedForBackwardCompat() throws Exception {
+        // Backward-compat: a legacy flat theme with only root theme.properties
+        // is still rejected because it has no typed subdirectory. But if it
+        // ALSO has login/theme.properties, the root one is allowed alongside.
+        byte[] zip = zip(Map.of(
+            "theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+    }
+
+    @Test
+    void loginAndAccountStructure_isAccepted() throws Exception {
+        byte[] zip = zip(Map.of(
+            "login/theme.properties", "parent=keycloak.v2\nstyles=css/custom.css\n".getBytes(),
+            "login/resources/css/custom.css", ":root { --kc-primary: #000; }\n".getBytes(),
+            "login/resources/img/logo.svg", validSvg().getBytes(),
+            "login/messages/messages_en.properties", "loginAccountTitle=Welcome\n".getBytes(),
+            "account/theme.properties", "parent=keycloak.v2.account\nstyles=css/custom.css\n".getBytes(),
+            "account/resources/css/custom.css", ":root { --kc-primary: #000; }\n".getBytes(),
+            "account/resources/img/logo.svg", validSvg().getBytes()
+        ));
+
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+    }
+
+    @Test
+    void onlyLoginThemeProperties_isAccepted() throws Exception {
+        byte[] zip = zip(Map.of(
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+    }
+
+    @Test
+    void onlyAccountThemeProperties_isAccepted() throws Exception {
+        byte[] zip = zip(Map.of(
+            "account/theme.properties", "parent=keycloak.v2.account\n".getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
     }
 
     // ---- structural rejects ------------------------------------------------
@@ -69,7 +116,7 @@ class ThemeValidatorTest {
     void zipWithPathTraversal_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
             "../etc/passwd", "ha\n".getBytes(),
-            "theme.properties", "parent=keycloak.v2\n".getBytes()
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
@@ -87,20 +134,45 @@ class ThemeValidatorTest {
     }
 
     @Test
-    void missingThemeProperties_isRejected() throws Exception {
+    void missingTypedThemeProperties_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
             "resources/css/custom.css", "/* ok */".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
         assertThat(r.errors()).extracting(ValidationResult.Error::code)
-            .contains("missing_theme_properties");
+            .contains("missing_typed_theme_properties");
     }
 
     @Test
-    void wrongParentInThemeProperties_isRejected() throws Exception {
+    void noThemePropertiesAnywhere_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=hacked\n".getBytes()
+            "login/resources/css/custom.css", "/* ok */".getBytes(),
+            "account/resources/css/custom.css", "/* ok */".getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).isFalse();
+        assertThat(r.errors()).extracting(ValidationResult.Error::code)
+            .contains("missing_typed_theme_properties");
+    }
+
+    @Test
+    void rootThemePropertiesOnly_isRejectedForMissingTyped() throws Exception {
+        // A legacy flat theme with ONLY root theme.properties has no typed
+        // subdirectory; this is rejected (the root is optional, not sufficient).
+        byte[] zip = zip(Map.of(
+            "theme.properties", "parent=keycloak.v2\n".getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).isFalse();
+        assertThat(r.errors()).extracting(ValidationResult.Error::code)
+            .contains("missing_typed_theme_properties");
+    }
+
+    @Test
+    void wrongParentInLoginThemeProperties_isRejected() throws Exception {
+        byte[] zip = zip(Map.of(
+            "login/theme.properties", "parent=hacked\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
@@ -108,13 +180,22 @@ class ThemeValidatorTest {
             .contains("theme_properties_bad_parent");
     }
 
+    @Test
+    void accountThemeWithAccountParent_isAccepted() throws Exception {
+        byte[] zip = zip(Map.of(
+            "account/theme.properties", "parent=keycloak.v2.account\n".getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+    }
+
     // ---- extension allowlist -----------------------------------------------
 
     @Test
     void jsFile_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/js/evil.js", "alert(1)".getBytes()
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/js/evil.js", "alert(1)".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
@@ -124,7 +205,7 @@ class ThemeValidatorTest {
     @Test
     void htmlFile_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
             "login.html", "<html></html>".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -135,7 +216,7 @@ class ThemeValidatorTest {
     @Test
     void ftlFile_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
             "login.ftl", "<#assign x = 1 />".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -148,8 +229,8 @@ class ThemeValidatorTest {
     @Test
     void cssWithRemoteUrl_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/css/custom.css",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/css/custom.css",
                 "body { background: url(https://evil.com/pixel.png); }\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -160,8 +241,8 @@ class ThemeValidatorTest {
     @Test
     void cssWithProtocolRelativeUrl_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/css/custom.css",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/css/custom.css",
                 "body { background: url(//evil.com/pixel.png); }\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -172,8 +253,8 @@ class ThemeValidatorTest {
     @Test
     void cssWithImport_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/css/custom.css",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/css/custom.css",
                 "@import url('https://evil.com/x.css');\n body { color: red; }".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -184,8 +265,8 @@ class ThemeValidatorTest {
     @Test
     void cssWithExpression_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/css/custom.css",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/css/custom.css",
                 "body { width: expression(alert(1)); }\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -196,8 +277,8 @@ class ThemeValidatorTest {
     @Test
     void cssWithJavascriptUrl_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/css/custom.css",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/css/custom.css",
                 "body { background: url(javascript:alert(1)); }\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -208,10 +289,10 @@ class ThemeValidatorTest {
     @Test
     void cssWithRelativeUrl_isAccepted() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/css/custom.css",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/css/custom.css",
                 "body { background: url('../img/logo.svg'); }\n".getBytes(),
-            "resources/img/logo.svg", validSvg().getBytes()
+            "login/resources/img/logo.svg", validSvg().getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.errors()).isEmpty();
@@ -226,13 +307,13 @@ class ThemeValidatorTest {
             + "<circle cx=\"5\" cy=\"5\" r=\"4\" fill=\"red\"/>"
             + "</svg>";
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/img/logo.svg", evil.getBytes()
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.svg", evil.getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         // SVG sanitization: stripping a <script> is a warn-and-allow, NOT a reject.
         assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
-        String sanitized = new String(r.extractedFiles().get("resources/img/logo.svg"), StandardCharsets.UTF_8);
+        String sanitized = new String(r.extractedFiles().get("login/resources/img/logo.svg"), StandardCharsets.UTF_8);
         assertThat(sanitized.toLowerCase()).doesNotContain("<script");
         assertThat(sanitized.toLowerCase()).contains("circle");
     }
@@ -243,8 +324,8 @@ class ThemeValidatorTest {
             + "<foreignObject><iframe src=\"https://evil.com\"></iframe></foreignObject>"
             + "</svg>";
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/img/logo.svg", evil.getBytes()
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.svg", evil.getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
@@ -256,8 +337,8 @@ class ThemeValidatorTest {
         String evil = "<svg xmlns=\"http://www.w3.org/2000/svg\">"
             + "<use xlink:href=\"https://evil.com/x.svg#thing\"/></svg>";
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/img/logo.svg", evil.getBytes()
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.svg", evil.getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
@@ -269,8 +350,8 @@ class ThemeValidatorTest {
     @Test
     void propertiesWithScriptTag_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "messages/messages_en.properties",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/messages/messages_en.properties",
                 "loginTitle=Welcome <script>alert(1)</script>\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -282,8 +363,8 @@ class ThemeValidatorTest {
     @Test
     void propertiesWithOnclick_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "messages/messages_en.properties",
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/messages/messages_en.properties",
                 "loginTitle=<a onclick=alert(1)>Welcome</a>\n".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
@@ -297,8 +378,8 @@ class ThemeValidatorTest {
     @Test
     void pngWithWrongMagic_isRejected() throws Exception {
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/img/logo.png", "this is not a PNG".getBytes()
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.png", "this is not a PNG".getBytes()
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
@@ -312,8 +393,8 @@ class ThemeValidatorTest {
         png[0] = (byte) 0x89; png[1] = 0x50; png[2] = 0x4E; png[3] = 0x47;
         png[4] = 0x0D; png[5] = 0x0A; png[6] = 0x1A; png[7] = 0x0A;
         byte[] zip = zip(Map.of(
-            "theme.properties", "parent=keycloak.v2\n".getBytes(),
-            "resources/img/logo.png", png
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.png", png
         ));
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.errors()).isEmpty();

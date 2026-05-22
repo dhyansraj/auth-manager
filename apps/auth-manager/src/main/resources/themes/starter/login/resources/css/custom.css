@@ -1,0 +1,31 @@
+/*
+ * Tenant theme starter — customise these variables to brand your Keycloak
+ * login + account pages. The variable names map to the keycloak.v2 design
+ * tokens; override any subset.
+ */
+:root {
+  --kc-primary: #0f172a;
+  --kc-primary-hover: #1e293b;
+  --kc-bg: #f8fafc;
+  --kc-card-bg: #ffffff;
+  --kc-text: #0f172a;
+  --kc-text-muted: #64748b;
+  --kc-border: #e2e8f0;
+  --kc-error: #b91c1c;
+  --kc-success: #166534;
+}
+
+/*
+ * Examples (uncomment + edit):
+ *
+ * .login-pf body { background: var(--kc-bg); }
+ * .pf-c-button.pf-m-primary { background: var(--kc-primary); }
+ * .pf-c-button.pf-m-primary:hover { background: var(--kc-primary-hover); }
+ *
+ * Logo (drop your file in resources/img/logo.svg, then):
+ *   #kc-header-wrapper {
+ *     background: url("../img/logo.svg") no-repeat center;
+ *     background-size: contain;
+ *     height: 60px;
+ *   }
+ */

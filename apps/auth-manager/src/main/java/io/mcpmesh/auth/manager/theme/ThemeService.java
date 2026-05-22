@@ -66,14 +66,17 @@ public class ThemeService {
     }
 
     private void addStarterEntries(ZipOutputStream zos) throws IOException {
-        // Resource paths under /themes/starter/. The list is intentionally
-        // small; tenant admins add their own files via the upload flow.
+        // Keycloak themes require a <type>/ subdirectory layout (login, account,
+        // email, ...). README is documentation for the user reading the unzipped
+        // starter and is intentionally excluded from the zip.
         List<String> resources = List.of(
-            "theme.properties",
-            "resources/css/custom.css",
-            "resources/img/logo.svg",
-            "messages/messages_en.properties",
-            "README.md"
+            "login/theme.properties",
+            "login/resources/css/custom.css",
+            "login/resources/img/logo.svg",
+            "login/messages/messages_en.properties",
+            "account/theme.properties",
+            "account/resources/css/custom.css",
+            "account/resources/img/logo.svg"
         );
         for (String name : resources) {
             ClassPathResource cp = new ClassPathResource("themes/starter/" + name);

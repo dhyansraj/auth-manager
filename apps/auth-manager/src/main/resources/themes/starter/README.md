@@ -1,20 +1,34 @@
 # Tenant Theme Starter
 
 This is a starter pack for customising your Keycloak login + account pages.
-Edit the files, zip the contents (NOT a wrapper folder), and upload back to
-the Branding tab.
+Edit the files, zip the contents (NOT a wrapper folder — the `login/` and
+`account/` directories must be at the zip root), and upload back to the
+Branding tab.
+
+## Layout
+
+Keycloak themes are structured as `<type>/...` subdirectories. The starter
+ships with two types:
+
+- `login/` — sign-in, registration, password reset pages
+- `account/` — the user's self-service account console
+
+You can add or remove types (`email/`, `admin/`, `welcome/`) as needed; at
+least one `<type>/theme.properties` is required.
 
 ## What you can change
 
-- `theme.properties` — must declare `parent=keycloak.v2` (or `keycloak`). Add
-  message-bundle includes here.
-- `resources/css/custom.css` — your CSS overrides. CSS variables stubbed at
-  the top are pre-wired by the parent theme; override them and you're done.
-- `resources/img/*` — logos and icons. Allowed: `.png`, `.jpg`, `.webp`,
-  `.ico`, `.svg`.
-- `resources/fonts/*` — custom fonts. Allowed: `.woff`, `.woff2`, `.ttf`,
-  `.otf`.
-- `messages/messages_*.properties` — i18n overrides per locale.
+- `<type>/theme.properties` — must declare `parent=keycloak.v2` for `login/`
+  and `parent=keycloak.v2.account` for `account/`. Add message-bundle includes
+  here.
+- `<type>/resources/css/custom.css` — your CSS overrides. CSS variables
+  stubbed at the top are pre-wired by the parent theme; override them and
+  you're done.
+- `<type>/resources/img/*` — logos and icons. Allowed: `.png`, `.jpg`,
+  `.webp`, `.ico`, `.svg`.
+- `<type>/resources/fonts/*` — custom fonts. Allowed: `.woff`, `.woff2`,
+  `.ttf`, `.otf`.
+- `<type>/messages/messages_*.properties` — i18n overrides per locale.
 
 ## What is forbidden
 

@@ -77,7 +77,18 @@ public class ThemeValidator {
     );
 
     /** Allowed values for the {@code parent=} declaration in theme.properties. */
-    private static final Set<String> ALLOWED_PARENT_THEMES = Set.of("keycloak.v2", "keycloak");
+    private static final Set<String> ALLOWED_PARENT_THEMES = Set.of(
+        "keycloak.v2",
+        "keycloak",
+        "keycloak.v2.account",
+        "keycloak.account",
+        "base"
+    );
+
+    /** KC theme types that may contain a {@code theme.properties}. */
+    private static final Set<String> KC_THEME_TYPES = Set.of(
+        "login", "account", "email", "admin", "welcome"
+    );
 
     private static final Set<String> ALLOWED_THEME_JSON_KEYS = Set.of(
         "parent", "displayName", "description"
@@ -109,11 +120,25 @@ public class ThemeValidator {
         }
 
         // ---- Required files ----
-        if (!b.hasFile("theme.properties")) {
-            b.error("missing_theme_properties", "theme.properties",
-                "Theme must contain a theme.properties file at the root");
-        } else {
-            validateThemePropertiesParent(b.file("theme.properties"), b);
+        // KC themes are structured as <type>/theme.properties (login, account,
+        // email, admin, welcome). At least one typed theme.properties must
+        // exist. A root-level theme.properties is OPTIONAL and accepted for
+        // backward compatibility with previously-uploaded flat themes.
+        int typedFound = 0;
+        for (String type : KC_THEME_TYPES) {
+            String typedPath = type + "/theme.properties";
+            if (b.hasFile(typedPath)) {
+                typedFound++;
+                validateThemePropertiesParent(typedPath, b.file(typedPath), b);
+            }
+        }
+        if (b.hasFile("theme.properties")) {
+            validateThemePropertiesParent("theme.properties", b.file("theme.properties"), b);
+        }
+        if (typedFound == 0) {
+            b.error("missing_typed_theme_properties", "",
+                "Theme must contain at least one of: login/theme.properties, "
+                + "account/theme.properties, email/theme.properties — none found");
         }
 
         return b.build();
@@ -469,7 +494,7 @@ public class ThemeValidator {
         }
     }
 
-    private void validateThemePropertiesParent(byte[] content, ValidationResult.Builder b) {
+    private void validateThemePropertiesParent(String path, byte[] content, ValidationResult.Builder b) {
         String text = new String(content, StandardCharsets.UTF_8);
         String parent = null;
         for (String line : text.split("\\r?\\n", -1)) {
@@ -485,11 +510,11 @@ public class ThemeValidator {
             }
         }
         if (parent == null) {
-            b.error("theme_properties_no_parent", "theme.properties",
-                "theme.properties must declare 'parent=keycloak.v2' or 'parent=keycloak'");
+            b.error("theme_properties_no_parent", path,
+                path + " must declare 'parent=' (one of " + ALLOWED_PARENT_THEMES + ")");
         } else if (!ALLOWED_PARENT_THEMES.contains(parent)) {
-            b.error("theme_properties_bad_parent", "theme.properties",
-                "theme.properties parent must be one of " + ALLOWED_PARENT_THEMES
+            b.error("theme_properties_bad_parent", path,
+                path + " parent must be one of " + ALLOWED_PARENT_THEMES
                 + "; found '" + parent + "'");
         }
     }
