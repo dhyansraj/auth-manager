@@ -30,7 +30,7 @@ keycloak:
 adminUi:
   image:
     repository: admin-ui
-    tag: "0.1.6"
+    tag: "0.1.7"
 
 platformEdge:
   image:
