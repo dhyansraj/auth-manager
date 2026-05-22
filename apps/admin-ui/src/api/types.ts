@@ -58,7 +58,10 @@ export interface User {
   enabled: boolean | null;
   emailVerified: boolean | null;
   createdAt: string | null;
+  /** System client-roles on the usermanagement client (e.g. tenant-admin, user-viewer). */
   roles: string[];
+  /** Composite (custom) realm-role names. Only populated by the slug-keyed user endpoint. */
+  realmRoles?: string[];
 }
 
 export interface UserListResponse {
@@ -89,4 +92,46 @@ export interface RoutingRule {
 export interface RoutingConfig {
   rules: RoutingRule[];
   targets: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Custom Roles (composite roles + atomic permissions)
+// ---------------------------------------------------------------------------
+
+/** An atomic permission exposed by an app (a KC client-role on the app client). */
+export interface PermissionDto {
+  client: string;
+  name: string;
+  description?: string | null;
+}
+
+/** Reference to an atomic permission, used in role create/update payloads. */
+export interface PermissionRef {
+  client: string;
+  name: string;
+}
+
+/** A composite role (KC realm role whose constituents are atomic permissions). */
+export interface RoleDto {
+  name: string;
+  description: string | null;
+  permissions: PermissionDto[];
+  userCount: number;
+  system: boolean;
+}
+
+export interface CreateRoleRequest {
+  name: string;
+  description?: string | null;
+  permissions: PermissionRef[];
+}
+
+export interface UpdateRoleRequest {
+  description?: string | null;
+  permissions: PermissionRef[];
+}
+
+/** Atomic-replace request for a user's composite role assignments. */
+export interface UpdateUserRolesRequest {
+  roleNames: string[];
 }

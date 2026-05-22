@@ -1,4 +1,12 @@
-import type { User, UserListResponse, CreateUserPayload } from './types';
+import type {
+  User,
+  UserListResponse,
+  CreateUserPayload,
+  PermissionDto,
+  RoleDto,
+  CreateRoleRequest,
+  UpdateRoleRequest,
+} from './types';
 
 // The admin-ui is served at /admin/* on every host. The edge maps
 // /admin/api/v1/* → auth-manager (with /admin stripped at the proxy).
@@ -11,6 +19,17 @@ export function setAccessToken(token: string | null) {
   accessToken = token;
 }
 
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+  constructor(status: number, statusText: string, body: unknown, raw: string) {
+    super(`HTTP ${status} ${statusText}: ${raw}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json');
@@ -18,8 +37,10 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const r = await fetch(base + path, { ...init, headers });
   if (!r.ok) {
-    const body = await r.text();
-    throw new Error(`HTTP ${r.status} ${r.statusText}: ${body}`);
+    const raw = await r.text();
+    let parsed: unknown = raw;
+    try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+    throw new ApiError(r.status, r.statusText, parsed, raw);
   }
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
@@ -62,5 +83,30 @@ export const api = {
   replaceRoutes: (slug: string, body: import('./types').RoutingConfig) =>
     req<import('./types').RoutingConfig>(`/tenants/${slug}/routes`, {
       method: 'PUT', body: JSON.stringify(body)
+    }),
+
+  // -------------------------------------------------------------------------
+  // Custom Roles: permissions catalog + composite-role CRUD (slug-keyed)
+  // -------------------------------------------------------------------------
+  listPermissions: (slug: string) =>
+    req<PermissionDto[]>(`/tenants/${slug}/permissions`),
+  listRoles: (slug: string) =>
+    req<RoleDto[]>(`/tenants/${slug}/roles`),
+  createRole: (slug: string, body: CreateRoleRequest) =>
+    req<RoleDto>(`/tenants/${slug}/roles`, { method: 'POST', body: JSON.stringify(body) }),
+  updateRole: (slug: string, name: string, body: UpdateRoleRequest) =>
+    req<RoleDto>(`/tenants/${slug}/roles/${encodeURIComponent(name)}`, {
+      method: 'PUT', body: JSON.stringify(body)
+    }),
+  deleteRole: (slug: string, name: string) =>
+    req<void>(`/tenants/${slug}/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  /** Slug-keyed: returns both client `roles` and composite `realmRoles`. */
+  getUserBySlug: (slug: string, userId: string) =>
+    req<User>(`/tenants/${slug}/users/${userId}`),
+  /** Atomic-replace the user's composite-role assignments. */
+  updateUserRealmRoles: (slug: string, userId: string, roleNames: string[]) =>
+    req<User>(`/tenants/${slug}/users/${userId}/roles`, {
+      method: 'PUT', body: JSON.stringify({ roleNames })
     }),
 };
