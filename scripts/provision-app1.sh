@@ -256,11 +256,52 @@ kcadm set-password -r "$REALM_NAME" \
     --username "$USER_EMAIL" --new-password "$USER_PASSWORD" >/dev/null
 ok "password set (literal '${USER_PASSWORD}')"
 
-kcadm add-roles -r "$REALM_NAME" \
-    --uusername "$USER_EMAIL" \
-    --cclientid "$APP_SLUG" \
-    --rolename "$USER_ROLE" >/dev/null 2>&1 || warn "role assign may have been a no-op (already assigned)"
-ok "role ${USER_ROLE} granted on ${APP_SLUG}"
+# Create a composite role bundling the app's atomic permission(s) and
+# assign it to the user via the platform API. This is the "Custom Roles"
+# pattern: developer-defined atomic client roles (e.g. ADMIN on orders)
+# are NEVER granted to users directly — they're constituents of admin-
+# composed realm roles that the UI can list and manage. Direct grants
+# bypass the admin's visibility and confuse the model.
+step "4b. Create composite role + assign to ${USER_EMAIL}"
+
+COMPOSITE_ROLE="${COMPOSITE_ROLE:-Order Admin}"
+PA_TOKEN=$(curl -sS -X POST "${AUTH_MANAGER_URL}/auth/realms/master/protocol/openid-connect/token" \
+    -d "client_id=admin-cli" -d "username=${KC_ADMIN_USER}" -d "password=${KC_ADMIN_PASSWORD}" \
+    -d "grant_type=password" | python3 -c "import sys,json;print(json.load(sys.stdin).get('access_token',''))")
+if [ -z "$PA_TOKEN" ]; then
+    warn "couldn't get platform-admin token; skipping composite-role step"
+else
+    ROLE_BODY=$(python3 -c "
+import json
+print(json.dumps({
+  'name': '${COMPOSITE_ROLE}',
+  'description': 'Full admin access to ${APP_SLUG}',
+  'permissions': [{'client': '${APP_SLUG}', 'name': '${USER_ROLE}'}]
+}))
+")
+    # Create (409 if exists is fine)
+    CREATE_RESP=$(curl -sS -o /tmp/role-create.json -w "%{http_code}" -X POST \
+        "${AUTH_MANAGER_URL}/admin/api/v1/tenants/${TENANT_SLUG}/roles" \
+        -H "Authorization: Bearer $PA_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$ROLE_BODY")
+    if [ "$CREATE_RESP" = "201" ]; then
+        ok "composite role '${COMPOSITE_ROLE}' created"
+    elif [ "$CREATE_RESP" = "409" ] || grep -q "role_in_use\|already" /tmp/role-create.json 2>/dev/null; then
+        ok "composite role '${COMPOSITE_ROLE}' already exists"
+    else
+        warn "composite role create returned HTTP $CREATE_RESP"
+        cat /tmp/role-create.json 2>/dev/null
+    fi
+
+    # Atomic replace: assign the composite role to the user
+    curl -sS -o /dev/null -w "  realm-role assign → HTTP %{http_code}\n" -X PUT \
+        "${AUTH_MANAGER_URL}/admin/api/v1/tenants/${TENANT_SLUG}/users/${USER_ID}/roles" \
+        -H "Authorization: Bearer $PA_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"roleNames\":[\"${COMPOSITE_ROLE}\"]}"
+    ok "${COMPOSITE_ROLE} composite assigned to ${USER_EMAIL}"
+fi
 
 step "5. kcadm: create public PKCE client '${TENANT_UI_CLIENT}'"
 
