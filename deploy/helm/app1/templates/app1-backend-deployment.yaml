@@ -36,9 +36,12 @@ spec:
             - name: AUTH_LIB_CLIENT_SECRET
               value: {{ .Values.backend.config.authLibClientSecret | quote }}
             # Redis is not present in this namespace; explicitly disable
-            # autoconfig + health check so the pod starts cleanly.
+            # autoconfig + health check so the pod starts cleanly. Spring
+            # Boot 4 renamed these classes from the SB3 path
+            # (org.springframework.boot.autoconfigure.data.redis.*) to the
+            # current ones below.
             - name: SPRING_AUTOCONFIGURE_EXCLUDE
-              value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
+              value: "org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration,org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration"
             - name: MANAGEMENT_HEALTH_REDIS_ENABLED
               value: "false"
           readinessProbe:

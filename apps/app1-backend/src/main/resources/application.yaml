@@ -20,8 +20,20 @@ auth-lib:
   issuer-uri: ${AUTH_LIB_ISSUER_URI:https://auth.mcp-mesh.io/auth/realms/t-app1}
   client-id: ${AUTH_LIB_CLIENT_ID:orders}
   client-secret: ${AUTH_LIB_CLIENT_SECRET:placeholder}
+  # Permissions.allFor(jwt) aggregates UMA permissions across these audiences.
+  # Defaults to a single-element list with auth-lib.client-id when omitted.
+  audiences: ${AUTH_LIB_AUDIENCES:orders}
   cache:
     enabled: false
+
+# Identity of THIS tenant app, surfaced by GET /api/me so the UI doesn't have
+# to derive it from the JWT issuer.
+app1:
+  tenant:
+    id: ${APP1_TENANT_ID:}
+    slug: ${APP1_TENANT_SLUG:app1}
+    display-name: ${APP1_TENANT_DISPLAY_NAME:App One}
+    realm-name: ${APP1_TENANT_REALM_NAME:t-app1}
 
 logging:
   level:

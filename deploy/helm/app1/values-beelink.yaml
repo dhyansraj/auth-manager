@@ -6,7 +6,7 @@ global:
 backend:
   image:
     repository: app1-backend
-    tag: "0.1.0"
+    tag: "0.1.1"
   config:
     authLibIssuerUri: "https://auth.mcp-mesh.io/auth/realms/t-app1"
     authLibClientId: "orders"

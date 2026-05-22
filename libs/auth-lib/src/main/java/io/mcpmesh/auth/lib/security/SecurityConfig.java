@@ -54,6 +54,15 @@ public class SecurityConfig {
     }
 
     @Bean
+    public io.mcpmesh.auth.lib.Permissions permissions(
+        AuthLibProperties props,
+        RestTemplate authLibRestTemplate,
+        org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis
+    ) {
+        return new io.mcpmesh.auth.lib.Permissions(props, authLibRestTemplate, redis.getIfAvailable());
+    }
+
+    @Bean
     public PermissionJwtAuthenticationConverter jwtAuthenticationConverter(PermissionService permissions) {
         return new PermissionJwtAuthenticationConverter(permissions);
     }
