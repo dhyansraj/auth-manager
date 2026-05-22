@@ -1,0 +1,2 @@
+mcpmesh-auth-lib
+uvicorn[standard]>=0.29
