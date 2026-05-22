@@ -1,0 +1,9 @@
+{
+  "name": "auth-platform-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/admin-ui",
+    "apps/app1-ui",
+    "libs/auth-lib-react"
+  ]
+}

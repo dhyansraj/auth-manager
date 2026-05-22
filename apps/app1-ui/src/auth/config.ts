@@ -1,28 +1,18 @@
-import type { UserManagerSettings } from 'oidc-client-ts';
+import { createOidcConfig } from '@mcpmesh/auth-lib-react';
 
 /**
  * OIDC config derived from window.location at runtime — no baked env vars.
  *   - localhost / 127.0.0.1 → http://localhost:8180/realms/dev (compose dev)
- *   - anywhere else         → https://auth.mcp-mesh.io/auth/realms/t-app1
+ *   - app1.mcp-mesh.io      → https://auth.mcp-mesh.io/auth/realms/t-app1
+ *   - <slug>.mcp-mesh.io    → https://auth.mcp-mesh.io/auth/realms/t-<slug>
  *
- * For the deployed app the SPA always points at the live platform's
- * tenant realm. The k8s edge serves Keycloak under /auth.
+ * The k8s edge serves Keycloak under /auth on the platform host
+ * (auth.mcp-mesh.io), so all tenant-host pages still point their OIDC
+ * authority back there.
  */
-const isLocalhost =
-  window.location.hostname === 'localhost' ||
-  window.location.hostname === '127.0.0.1';
-
-const authority = isLocalhost
-  ? 'http://localhost:8180/realms/dev'
-  : 'https://auth.mcp-mesh.io/auth/realms/t-app1';
-
-export const oidcConfig: UserManagerSettings = {
-  authority,
-  client_id: 'app1-ui',
-  redirect_uri: `${window.location.origin}/`,
-  post_logout_redirect_uri: window.location.origin,
-  response_type: 'code',
-  scope: 'openid profile email',
-  loadUserInfo: true,
-  automaticSilentRenew: true,
-};
+export const oidcConfig = createOidcConfig({
+  clientId: 'app1-ui',
+  hostToRealm: {
+    'app1.mcp-mesh.io': 't-app1',
+  },
+});

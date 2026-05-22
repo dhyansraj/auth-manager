@@ -1,9 +1,10 @@
 import { useAuth } from 'react-oidc-context';
 import { Link } from 'react-router-dom';
-import { decodeAccessToken, hasClientRole } from '../auth/claims';
+import { RequireRole, useMeUser } from '@mcpmesh/auth-lib-react';
 
 export default function Home() {
   const auth = useAuth();
+  const meUser = useMeUser();
 
   if (auth.isLoading) {
     return <div className="text-slate-500">Loading…</div>;
@@ -35,21 +36,14 @@ export default function Home() {
     );
   }
 
+  // Prefer /me-derived identity; fall back to OIDC profile while the call is in flight.
   const name =
+    meUser?.name ||
+    meUser?.preferredUsername ||
+    meUser?.email ||
     auth.user?.profile?.preferred_username ||
     auth.user?.profile?.email ||
     'friend';
-
-  // UX-only gating: if the JWT carries the 'tenant-admin' role on the
-  // 'usermanagement' client, show a Manage users button that deep-links to
-  // the admin-ui on this same host. The admin-ui detects the tenant realm
-  // from window.location.hostname so SSO carries over. Backend enforces
-  // actual authorisation; this is just a hint.
-  //
-  // Read from access_token, not profile (id_token claims): KC by default
-  // only writes resource_access into the access_token.
-  const claims = decodeAccessToken(auth.user?.access_token);
-  const isTenantAdmin = hasClientRole(claims, 'usermanagement', 'tenant-admin');
 
   return (
     <div className="space-y-6">
@@ -64,14 +58,20 @@ export default function Home() {
         >
           View orders
         </Link>
-        {isTenantAdmin && (
+        {/*
+         * UX-only gating: tenant-admins see a Manage users link that deep-links
+         * to the admin-ui on this same host. The admin-ui detects the tenant
+         * realm from window.location.hostname so SSO carries over. Backend
+         * enforces actual authorisation; this is just a hint.
+         */}
+        <RequireRole role="tenant-admin">
           <a
             href={`${window.location.origin}/admin/`}
             className="bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2 rounded shadow-sm"
           >
             Manage users
           </a>
-        )}
+        </RequireRole>
         <button
           onClick={() => auth.signoutRedirect()}
           className="bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 px-4 py-2 rounded"

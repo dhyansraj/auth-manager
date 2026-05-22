@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import { AuthProvider } from 'react-oidc-context';
+import { MeProvider } from '@mcpmesh/auth-lib-react';
 import App from './App';
 import { oidcConfig } from './auth/config';
 import './index.css';
@@ -31,9 +32,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <AuthProvider {...oidcConfig} onSigninCallback={onSigninCallback}>
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter basename={basename}>
-          <App />
-        </BrowserRouter>
+        <MeProvider endpoint="/admin/api/v1/me">
+          <BrowserRouter basename={basename}>
+            <App />
+          </BrowserRouter>
+        </MeProvider>
       </QueryClientProvider>
     </AuthProvider>
   </React.StrictMode>

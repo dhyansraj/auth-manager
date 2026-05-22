@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useAuth } from 'react-oidc-context';
+import { useIsPlatformAdmin, useIsTenantAdmin } from '@mcpmesh/auth-lib-react';
 import type { RoutingConfig, RoutingRule } from '../../api/types';
 import { useReplaceRoutesMutation, useRoutesQuery } from './useRoutesQuery';
 import { deepEqual, validate } from './validate';
 import RulesTable from './RulesTable';
 import TargetsTable, { type TargetEntry } from './TargetsTable';
-import { decodeAccessToken, hasClientRole, hasRealmRole } from '../../auth/claims';
 
 interface Props {
   slug: string;
@@ -25,24 +24,11 @@ function entriesToTargets(entries: TargetEntry[]): Record<string, string> {
   return out;
 }
 
-/**
- * Edit mode is granted when the user is either:
- *  - a tenant-admin of this tenant (resource_access.usermanagement.roles), OR
- *  - a platform-admin (realm_access.roles) — bypass for super-admin console.
- * Mirrors TenantSecurity on the backend (which is still the authoritative gate).
- * Reads from access_token (not profile/id_token) since KC only puts
- * resource_access into the access token by default.
- */
-function useIsTenantAdmin(): boolean {
-  const auth = useAuth();
-  if (!auth.isAuthenticated || !auth.user) return false;
-  const claims = decodeAccessToken(auth.user.access_token);
-  if (hasRealmRole(claims, 'platform-admin')) return true;
-  return hasClientRole(claims, 'usermanagement', 'tenant-admin');
-}
-
 export default function RoutesTab({ slug }: Props) {
-  const isTenantAdmin = useIsTenantAdmin();
+  // Edit mode is granted when the user is either a tenant-admin of this
+  // tenant OR a platform-admin (super-admin bypass). Mirrors TenantSecurity
+  // on the backend, which is still the authoritative gate.
+  const isTenantAdmin = useIsTenantAdmin() || useIsPlatformAdmin();
   const query = useRoutesQuery(slug);
   const mutation = useReplaceRoutesMutation(slug);
 

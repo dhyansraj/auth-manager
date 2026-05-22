@@ -4,7 +4,7 @@
 // Client-side decode is fine — the BACKEND validates the signature; the SPA
 // just uses the claims to render the right UI.
 
-type AccessTokenClaims = {
+export type AccessTokenClaims = {
   sub?: string;
   preferred_username?: string;
   email?: string;
