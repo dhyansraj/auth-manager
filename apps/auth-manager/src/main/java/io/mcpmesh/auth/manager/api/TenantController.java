@@ -5,6 +5,7 @@ import io.mcpmesh.auth.manager.api.dto.CreateTenantRequest;
 import io.mcpmesh.auth.manager.api.dto.PageResponse;
 import io.mcpmesh.auth.manager.api.dto.TenantResponse;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
+import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
 import io.mcpmesh.auth.manager.service.TenantService;
@@ -33,13 +34,17 @@ public class TenantController {
     private final TenantService service;
     private final AuditEventRepository auditRepo;
     private final UsermanagementBootstrap bootstrap;
+    private final IdentityProvidersBootstrap idpBootstrap;
     private final TenantSecurity tenantSecurity;
 
     public TenantController(TenantService service, AuditEventRepository auditRepo,
-                            UsermanagementBootstrap bootstrap, TenantSecurity tenantSecurity) {
+                            UsermanagementBootstrap bootstrap,
+                            IdentityProvidersBootstrap idpBootstrap,
+                            TenantSecurity tenantSecurity) {
         this.service = service;
         this.auditRepo = auditRepo;
         this.bootstrap = bootstrap;
+        this.idpBootstrap = idpBootstrap;
         this.tenantSecurity = tenantSecurity;
     }
 
@@ -55,6 +60,10 @@ public class TenantController {
             req.slug(), req.displayName(), req.settings(), req.hostnames(), "system");
         if (t.getStatus() == TenantStatus.ACTIVE) {
             bootstrap.bootstrap(t, req.adminEmail(), "system");
+            // Best-effort: enable Google + GitHub IdP brokering on the new realm
+            // if platform OAuth creds are configured. Bootstrap logs + swallows
+            // per-provider failures so tenant create stays clean.
+            idpBootstrap.ensureProviders(t.getRealmName(), idpBootstrap.defaultProvidersForNewTenant());
         }
         var body = TenantResponse.from(t, service.hostnamesFor(t.getId()));
         var location = uriBuilder.path("/api/v1/tenants/{id}").buildAndExpand(t.getId()).toUri();
@@ -114,6 +123,7 @@ public class TenantController {
             //       re-send the invite. For now retry is admin-less; the user
             //       must re-trigger via a future "resend invite" endpoint.
             bootstrap.bootstrap(t, null, "system");
+            idpBootstrap.ensureProviders(t.getRealmName(), idpBootstrap.defaultProvidersForNewTenant());
         }
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }

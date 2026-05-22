@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Configuration;
  * we do not manage refresh.
  */
 @Configuration
-@EnableConfigurationProperties(KeycloakProperties.class)
+@EnableConfigurationProperties({KeycloakProperties.class, PlatformOAuthProperties.class})
 public class KeycloakAdminClientConfig {
 
     @Bean

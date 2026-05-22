@@ -135,3 +135,20 @@ export interface UpdateRoleRequest {
 export interface UpdateUserRolesRequest {
   roleNames: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Identity Providers (per-tenant social-login brokering)
+// ---------------------------------------------------------------------------
+
+/** Provider id string union — keep in lockstep with backend SUPPORTED_PROVIDERS. */
+export type IdentityProviderId = 'google' | 'github';
+
+/** Per-tenant view of a social-login identity provider. */
+export interface IdentityProviderDto {
+  id: IdentityProviderId;
+  displayName: string;
+  /** True iff an IdP instance exists on the tenant realm. */
+  enabled: boolean;
+  /** True iff platform creds for this provider are configured (env vars set). */
+  available: boolean;
+}

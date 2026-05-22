@@ -6,6 +6,8 @@ import type {
   RoleDto,
   CreateRoleRequest,
   UpdateRoleRequest,
+  IdentityProviderDto,
+  IdentityProviderId,
 } from './types';
 
 // The admin-ui is served at /admin/* on every host. The edge maps
@@ -108,5 +110,15 @@ export const api = {
   updateUserRealmRoles: (slug: string, userId: string, roleNames: string[]) =>
     req<User>(`/tenants/${slug}/users/${userId}/roles`, {
       method: 'PUT', body: JSON.stringify({ roleNames })
+    }),
+
+  // -------------------------------------------------------------------------
+  // Identity Providers: per-tenant Google + GitHub social-login toggle
+  // -------------------------------------------------------------------------
+  listIdentityProviders: (slug: string) =>
+    req<IdentityProviderDto[]>(`/tenants/${slug}/identity-providers`),
+  setIdentityProviderEnabled: (slug: string, providerId: IdentityProviderId, enabled: boolean) =>
+    req<IdentityProviderDto>(`/tenants/${slug}/identity-providers/${providerId}`, {
+      method: 'PUT', body: JSON.stringify({ enabled })
     }),
 };

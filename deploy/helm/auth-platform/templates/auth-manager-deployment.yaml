@@ -40,6 +40,35 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-auth-manager
                   key: keycloak-admin-password
+            # Platform-level OAuth provider creds (Google + GitHub).
+            # The `platform-oauth-providers` Secret is created out-of-band by
+            # scripts/setup-oauth-providers.sh. If it does NOT exist these env
+            # vars are simply unset (optional=true) and IdentityProvidersBootstrap
+            # logs a warning + skips IdP configuration.
+            - name: PLATFORM_OAUTH_GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: google.client-id
+                  optional: true
+            - name: PLATFORM_OAUTH_GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: google.client-secret
+                  optional: true
+            - name: PLATFORM_OAUTH_GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: github.client-id
+                  optional: true
+            - name: PLATFORM_OAUTH_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: github.client-secret
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /config
