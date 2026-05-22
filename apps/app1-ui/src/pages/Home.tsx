@@ -1,6 +1,6 @@
 import { useAuth } from 'react-oidc-context';
 import { Link } from 'react-router-dom';
-import { RequireRole, useMeUser } from '@mcpmesh/auth-lib-react';
+import { AutoSignIn, RequireRole, useMeUser } from '@mcpmesh/auth-lib-react';
 
 export default function Home() {
   const auth = useAuth();
@@ -19,21 +19,7 @@ export default function Home() {
   }
 
   if (!auth.isAuthenticated) {
-    return (
-      <div className="text-center py-16 space-y-6">
-        <h1 className="text-4xl font-bold text-indigo-900">App One</h1>
-        <p className="text-lg text-slate-600 max-w-xl mx-auto">
-          Try the demo app. Click below to sign in via your tenant identity
-          provider and view orders.
-        </p>
-        <button
-          onClick={() => auth.signinRedirect()}
-          className="bg-indigo-700 hover:bg-indigo-800 text-white px-6 py-3 rounded-lg text-base font-medium shadow"
-        >
-          Sign in
-        </button>
-      </div>
-    );
+    return <AutoSignIn heading="App One" subtitle="Signing in…" />;
   }
 
   // Prefer /me-derived identity; fall back to OIDC profile while the call is in flight.

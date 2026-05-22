@@ -15,3 +15,5 @@ export {
 } from './permissions';
 export { createOidcConfig } from './oidcConfig';
 export type { CreateOidcConfigOptions, OidcConfig } from './oidcConfig';
+export { AutoSignIn } from './AutoSignIn';
+export type { AutoSignInProps } from './AutoSignIn';

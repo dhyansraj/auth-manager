@@ -1,6 +1,6 @@
 import { Link, NavLink, Route, Routes, BrowserRouter } from 'react-router-dom';
 import { useAuth } from 'react-oidc-context';
-import { MeProvider, useCurrentTenant } from '@mcpmesh/auth-lib-react';
+import { AutoSignIn, MeProvider, useCurrentTenant } from '@mcpmesh/auth-lib-react';
 import Dashboard from './pages/Dashboard';
 import TenantsList from './pages/TenantsList';
 import TenantDetail from './pages/TenantDetail';
@@ -15,26 +15,6 @@ function SplashLoading() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50">
       <div className="text-slate-500 text-sm">Loading…</div>
-    </div>
-  );
-}
-
-function SignInPage() {
-  const auth = useAuth();
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="text-center space-y-6 max-w-md px-6">
-        <div className="space-y-2">
-          <h1 className="text-4xl font-bold text-slate-900 tracking-tight">auth-manager</h1>
-          <p className="text-slate-600 text-lg">Sign in to manage your tenant.</p>
-        </div>
-        <button
-          onClick={() => auth.signinRedirect()}
-          className="bg-slate-900 hover:bg-slate-800 text-white px-10 py-4 rounded-lg shadow text-lg font-medium"
-        >
-          Sign in
-        </button>
-      </div>
     </div>
   );
 }
@@ -95,7 +75,7 @@ function AuthenticatedShell() {
 export default function App() {
   const auth = useAuth();
   if (auth.isLoading) return <SplashLoading />;
-  if (!auth.isAuthenticated) return <SignInPage />;
+  if (!auth.isAuthenticated) return <AutoSignIn heading="auth-manager" subtitle="Signing in to your tenant…" />;
   // MeProvider only mounts after auth — otherwise /me 401s on the splash screen.
   return (
     <MeProvider endpoint="/admin/api/v1/me">
