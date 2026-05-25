@@ -34,7 +34,7 @@ public class UserManagementController {
     }
 
     @GetMapping
-    @PreAuthorize("@tenantSecurity.hasRole(#tenantId, 'tenant-admin') or @tenantSecurity.hasRole(#tenantId, 'user-viewer')")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'USER_LIST')")
     public Map<String, Object> list(
         @PathVariable UUID tenantId,
         @RequestParam(required = false) String search,
@@ -52,13 +52,13 @@ public class UserManagementController {
     }
 
     @GetMapping("/{userId}")
-    @PreAuthorize("@tenantSecurity.hasRole(#tenantId, 'tenant-admin') or @tenantSecurity.hasRole(#tenantId, 'user-viewer')")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'USER_LIST')")
     public UserResponse get(@PathVariable UUID tenantId, @PathVariable String userId) {
         return service.get(tenantId, userId);
     }
 
     @PostMapping
-    @PreAuthorize("@tenantSecurity.hasRole(#tenantId, 'tenant-admin')")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'USER_INVITE')")
     public ResponseEntity<UserResponse> create(
         @PathVariable UUID tenantId,
         @Valid @RequestBody CreateUserRequest req,
@@ -72,7 +72,7 @@ public class UserManagementController {
     }
 
     @DeleteMapping("/{userId}")
-    @PreAuthorize("@tenantSecurity.hasRole(#tenantId, 'tenant-admin')")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'USER_DISABLE')")
     @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
     public void disable(@PathVariable UUID tenantId, @PathVariable String userId,
                         Authentication auth) {
@@ -80,7 +80,7 @@ public class UserManagementController {
     }
 
     @PutMapping("/{userId}/roles")
-    @PreAuthorize("@tenantSecurity.hasRole(#tenantId, 'tenant-admin')")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'USER_REALM_ROLE_ASSIGN')")
     public UserResponse updateRoles(
         @PathVariable UUID tenantId,
         @PathVariable String userId,
@@ -91,7 +91,7 @@ public class UserManagementController {
     }
 
     @PostMapping("/{userId}/invite")
-    @PreAuthorize("@tenantSecurity.hasRole(#tenantId, 'tenant-admin')")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'USER_INVITE')")
     @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
     public void resendInvite(@PathVariable UUID tenantId, @PathVariable String userId,
                               Authentication auth) {

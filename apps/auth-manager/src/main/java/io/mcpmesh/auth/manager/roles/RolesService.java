@@ -3,6 +3,8 @@ package io.mcpmesh.auth.manager.roles;
 import io.mcpmesh.auth.manager.audit.AuditService;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
+import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.Response;
@@ -47,6 +49,29 @@ public class RolesService {
     private static final Logger log = LoggerFactory.getLogger(RolesService.class);
 
     private static final ActorKind ACTOR_KIND = ActorKind.USER;
+
+    /** The KC client that holds the system "user management" client roles. */
+    private static final String USERMANAGEMENT_CLIENT = "usermanagement";
+
+    /**
+     * Baseline system role on the usermanagement client that EVERY active
+     * user must hold (so they can hit /me). The system-role updater always
+     * preserves this regardless of caller input, matching the same invariant
+     * enforced in {@code UserManagementService#updateRoles}.
+     */
+    private static final String BASELINE_SYSTEM_ROLE = "user-viewer";
+
+    /**
+     * System client roles that an admin is allowed to assign / revoke via
+     * the role popover. {@code user-viewer} is hidden (baseline, auto-added).
+     * Anything outside this set in a {@code systemRoles} request payload is
+     * rejected with 400 — callers can't grant arbitrary client roles on the
+     * usermanagement client through this surface.
+     */
+    private static final Set<String> MANAGEABLE_SYSTEM_ROLES = Set.of(
+        "tenant-admin",
+        "tenant-user-manager"
+    );
 
     /** OIDC clients that exist in every tenant realm but never hold app permissions. */
     private static final Set<String> SYSTEM_CLIENTS = Set.of(
@@ -95,11 +120,17 @@ public class RolesService {
     private final Keycloak admin;
     private final TenantService tenants;
     private final AuditService audit;
+    private final KeycloakAdminService keycloak;
+    private final IdentityProvidersBootstrap identityProvidersBootstrap;
 
-    public RolesService(Keycloak admin, TenantService tenants, AuditService audit) {
+    public RolesService(Keycloak admin, TenantService tenants, AuditService audit,
+                        KeycloakAdminService keycloak,
+                        IdentityProvidersBootstrap identityProvidersBootstrap) {
         this.admin = admin;
         this.tenants = tenants;
         this.audit = audit;
+        this.keycloak = keycloak;
+        this.identityProvidersBootstrap = identityProvidersBootstrap;
     }
 
     // -------------------------------------------------------------------------
@@ -155,12 +186,13 @@ public class RolesService {
     public List<RoleDto> list(String slug) {
         Tenant tenant = tenants.getBySlug(slug);
         RealmResource realm = admin.realm(tenant.getRealmName());
+        Set<String> defaults = computeDefaultRoleNames(tenant.getRealmName());
 
         List<RoleRepresentation> allRoles = realm.roles().list();
         List<RoleDto> out = new ArrayList<>();
         for (RoleRepresentation r : allRoles) {
             if (!isVisibleComposite(r, tenant.getRealmName())) continue;
-            out.add(toDto(realm, r));
+            out.add(toDto(realm, r, defaults));
         }
         out.sort((a, b) -> a.name().compareToIgnoreCase(b.name()));
         return out;
@@ -178,7 +210,7 @@ public class RolesService {
         if (!isVisibleComposite(r, tenant.getRealmName())) {
             throw new RoleNotFoundException(roleName);
         }
-        return toDto(realm, r);
+        return toDto(realm, r, computeDefaultRoleNames(tenant.getRealmName()));
     }
 
     public RoleDto create(String slug, CreateRoleRequest req, String actor) {
@@ -410,6 +442,83 @@ public class RolesService {
         return new AssignResult(toAdd, toRemove);
     }
 
+    /**
+     * Atomic-replace the user's <em>system</em> client roles on the
+     * {@code usermanagement} client. The caller's {@code desired} list is
+     * filtered to {@link #MANAGEABLE_SYSTEM_ROLES} -- anything else is a
+     * 400. The {@link #BASELINE_SYSTEM_ROLE} ({@code user-viewer}) is
+     * always preserved regardless of input.
+     *
+     * <p>This is a <em>privileged</em> operation: only tenant-admin /
+     * platform-admin should be able to invoke it (privilege escalation
+     * gate -- tenant-user-manager holders must NOT be able to mint new
+     * tenant-admins). Authorization is enforced by the controller, not
+     * here.
+     *
+     * @return diff of what was added / removed (sorted) for audit + tests
+     */
+    public AssignResult updateUserSystemRoles(String slug, String userId,
+                                              List<String> desired, String actor) {
+        Tenant tenant = tenants.getBySlug(slug);
+        String realmName = tenant.getRealmName();
+
+        // Reject unknown / non-manageable system role names up front so we
+        // never partially apply. user-viewer is hidden from this surface
+        // (always preserved automatically -- callers don't need to send it).
+        Set<String> desiredSet = new java.util.LinkedHashSet<>();
+        for (String n : desired == null ? List.<String>of() : desired) {
+            if (BASELINE_SYSTEM_ROLE.equals(n)) continue;  // silently drop; we re-add below
+            if (!MANAGEABLE_SYSTEM_ROLES.contains(n)) {
+                throw new IllegalArgumentException(
+                    "Unknown or non-manageable system role: " + n);
+            }
+            desiredSet.add(n);
+        }
+        // Effective desired set always includes the baseline.
+        Set<String> effective = new java.util.LinkedHashSet<>(desiredSet);
+        effective.add(BASELINE_SYSTEM_ROLE);
+
+        // Current state on KC. We only diff WITHIN the manageable set + the
+        // baseline; we never touch any other client roles that may exist.
+        Set<String> current = new HashSet<>(
+            keycloak.getUserClientRoles(realmName, userId, USERMANAGEMENT_CLIENT));
+        Set<String> scope = new HashSet<>(MANAGEABLE_SYSTEM_ROLES);
+        scope.add(BASELINE_SYSTEM_ROLE);
+
+        List<String> toAdd = new ArrayList<>();
+        for (String n : effective) if (!current.contains(n)) toAdd.add(n);
+        List<String> toRemove = new ArrayList<>();
+        for (String n : current) {
+            if (!scope.contains(n)) continue;          // never touch out-of-scope roles
+            if (effective.contains(n)) continue;
+            toRemove.add(n);
+        }
+        Collections.sort(toAdd);
+        Collections.sort(toRemove);
+
+        try {
+            for (String r : toRemove) {
+                keycloak.removeClientRoleFromUser(realmName, userId, USERMANAGEMENT_CLIENT, r);
+            }
+            for (String r : toAdd) {
+                keycloak.assignClientRoleToUser(realmName, userId, USERMANAGEMENT_CLIENT, r);
+            }
+        } catch (Exception e) {
+            audit.recordFailure(actor, ACTOR_KIND, tenant.getId(),
+                "user.system_role.update", "user", userId,
+                Map.of("systemRoles", desired == null ? List.of() : desired), e,
+                Map.of("userId", userId, "added", toAdd, "removed", toRemove));
+            throw new RuntimeException("User system-role update failed: " + e.getMessage(), e);
+        }
+
+        audit.recordSuccess(actor, ACTOR_KIND, tenant.getId(),
+            "user.system_role.update", "user", userId,
+            Map.of("systemRoles", desired == null ? List.of() : desired),
+            Map.of("userId", userId, "addedRoles", toAdd, "removedRoles", toRemove));
+
+        return new AssignResult(toAdd, toRemove);
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -457,16 +566,55 @@ public class RolesService {
         return currentVisibleRoles(realm, realmName).keySet();
     }
 
-    private RoleDto toDto(RealmResource realm, RoleRepresentation r) {
+    private RoleDto toDto(RealmResource realm, RoleRepresentation r, Set<String> defaultRoleNames) {
         List<PermissionDto> perms = compositesAsPermissions(realm, r.getName());
         int userCount = safeUserCount(realm.roles().get(r.getName()));
+        boolean isDefault = defaultRoleNames.contains(r.getName());
         return new RoleDto(
             r.getName(),
             r.getDescription(),
             perms,
             userCount,
-            false  // visible composites are by definition not system
+            false,  // visible composites are by definition not system
+            isDefault
         );
+    }
+
+    /**
+     * Returns the set of realm role names that are auto-assigned to new users --
+     * either as members of the {@code default-roles-<realm>} composite, OR via
+     * "Hardcoded Realm Role" IdP mappers on any enabled IdP. The popover uses
+     * this to render those roles as checked + disabled (the user effectively
+     * has them; KC has no per-user "exclude" semantic).
+     *
+     * <p>Computed in one pass to avoid N+1 KC calls per role row.
+     */
+    private Set<String> computeDefaultRoleNames(String realmName) {
+        Set<String> out = new java.util.LinkedHashSet<>();
+        // 1. default-roles-<realm> composite members (realm roles only)
+        try {
+            var defaultRoleName = DEFAULT_ROLES_PREFIX + realmName;
+            var composites = admin.realm(realmName).roles().get(defaultRoleName)
+                .getRealmRoleComposites();
+            if (composites != null) {
+                for (var r : composites) {
+                    if (r.getName() != null) out.add(r.getName());
+                }
+            }
+        } catch (Exception e) {
+            log.debug("computeDefaultRoleNames: default-roles composite read failed on '{}': {}",
+                realmName, e.getMessage());
+        }
+        // 2. Hardcoded Role mappers on every enabled IdP (UNION)
+        try {
+            for (String alias : identityProvidersBootstrap.listEnabledProviders(realmName)) {
+                out.addAll(identityProvidersBootstrap.listHardcodedRoles(realmName, alias));
+            }
+        } catch (Exception e) {
+            log.debug("computeDefaultRoleNames: IdP mapper read failed on '{}': {}",
+                realmName, e.getMessage());
+        }
+        return out;
     }
 
     private List<PermissionDto> compositesAsPermissions(RealmResource realm, String roleName) {

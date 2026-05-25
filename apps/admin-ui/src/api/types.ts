@@ -79,7 +79,7 @@ export interface CreateUserPayload {
   sendInvite?: boolean;
 }
 
-export type UserRole = 'tenant-admin' | 'user-viewer';
+export type UserRole = 'tenant-admin' | 'tenant-user-manager' | 'user-viewer';
 
 export type AuthMode = 'PUBLIC' | 'REQUIRED' | 'OPTIONAL';
 
@@ -118,6 +118,9 @@ export interface RoleDto {
   permissions: PermissionDto[];
   userCount: number;
   system: boolean;
+  /** True if auto-assigned to every new user via default-roles composite or
+   * IdP Hardcoded Role mapper. The popover renders these as checked + disabled. */
+  isDefault: boolean;
 }
 
 export interface CreateRoleRequest {

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useIsPlatformAdmin, useIsTenantAdmin } from '@mcpmesh/auth-lib-react';
-import { api, ApiError, getAccessToken } from '../../api/client';
+import { bffFetch, usePermission } from '@mcpmesh/auth-lib-react';
+import { api, ApiError } from '../../api/client';
 import type { ThemeMeta, ThemeValidationError } from '../../api/types';
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
@@ -11,7 +11,7 @@ interface Props {
 }
 
 export default function BrandingTab({ slug }: Props) {
-  const canManage = useIsTenantAdmin() || useIsPlatformAdmin();
+  const canManage = usePermission('BRANDING_EDIT');
   const qc = useQueryClient();
 
   const meta = useQuery({
@@ -46,13 +46,11 @@ export default function BrandingTab({ slug }: Props) {
   });
 
   function downloadStarter() {
-    // Backend requires Authorization; we can't put the bearer token in a
-    // plain href. Build the request via fetch + blob, then trigger a
-    // synthetic download link.
+    // Backend requires auth; cookies can't be set on a plain <a download>
+    // cross-page navigation reliably, so fetch + blob + synthetic anchor.
+    // bffFetch attaches the session cookie automatically.
     void (async () => {
-      const r = await fetch(api.themeStarterUrl(slug), {
-        headers: getAuthHeaders(),
-      });
+      const r = await bffFetch(api.themeStarterUrl(slug));
       if (!r.ok) throw new Error(`Starter download failed: HTTP ${r.status}`);
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
@@ -296,9 +294,4 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function getAuthHeaders(): HeadersInit {
-  const token = getAccessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }

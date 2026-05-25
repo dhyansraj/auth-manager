@@ -86,12 +86,17 @@ def make_token(
 
 @pytest.fixture
 def settings() -> AuthLibSettings:
+    # NOTE: pinned to UMA so the legacy UMA-based fixtures in test_dependencies.py
+    # (which mock the UMA token endpoint) continue to exercise the UMA path.
+    # The new default in the library is "claims" — covered by dedicated tests
+    # in test_permissions.py and test_dependencies.py.
     return AuthLibSettings(
         issuer_uri=ISSUER,
         client_id=CLIENT_ID,
         audiences=["orders", "invoices"],
         jwks_cache_ttl_seconds=3600,
         permission_cache_ttl_seconds=60,
+        permissions_source="uma",
     )
 
 

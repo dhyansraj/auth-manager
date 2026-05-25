@@ -44,7 +44,7 @@ public class ThemeController {
     }
 
     @GetMapping("/starter")
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
     public ResponseEntity<byte[]> starter(@PathVariable String slug) {
         byte[] zip = service.starterZip(slug);
         return ResponseEntity.ok()
@@ -55,7 +55,7 @@ public class ThemeController {
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("@tenantSecurity.canManageTenant(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'BRANDING_EDIT')")
     public ThemeMeta upload(
         @PathVariable String slug,
         @RequestParam("file") MultipartFile file,
@@ -68,20 +68,20 @@ public class ThemeController {
     }
 
     @GetMapping
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
     public ThemeMeta get(@PathVariable String slug) {
         return service.currentMeta(slug);
     }
 
     @DeleteMapping
-    @PreAuthorize("@tenantSecurity.canManageTenant(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'BRANDING_EDIT')")
     public ResponseEntity<Void> delete(@PathVariable String slug, Authentication auth) {
         service.delete(slug, principal(auth));
         return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
     }
 
     @GetMapping("/status")
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
     public RolloutStatus status(@PathVariable String slug) {
         return service.status(slug);
     }

@@ -1,3 +1,4 @@
+import { bffFetch } from '@mcpmesh/auth-lib-react';
 import type {
   User,
   UserListResponse,
@@ -16,18 +17,6 @@ import type {
 // /admin/api/v1/* → auth-manager (with /admin stripped at the proxy).
 const base = '/admin/api/v1';
 
-// Module-level token holder; set by AuthTokenSync on every auth state change.
-let accessToken: string | null = null;
-
-export function setAccessToken(token: string | null) {
-  accessToken = token;
-}
-
-/** Read the current bearer token (used by callers that need to make raw fetches, e.g. blob downloads). */
-export function getAccessToken(): string | null {
-  return accessToken;
-}
-
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -42,9 +31,8 @@ export class ApiError extends Error {
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json');
-  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
 
-  const r = await fetch(base + path, { ...init, headers });
+  const r = await bffFetch(base + path, { ...init, headers });
   if (!r.ok) {
     const raw = await r.text();
     let parsed: unknown = raw;
@@ -81,10 +69,6 @@ export const api = {
     req<User>(`/tenants/${tenantId}/users`, { method: 'POST', body: JSON.stringify(body) }),
   disableUser:(tenantId: string, userId: string) =>
     req<void>(`/tenants/${tenantId}/users/${userId}`, { method: 'DELETE' }),
-  updateUserRoles: (tenantId: string, userId: string, roles: string[]) =>
-    req<User>(`/tenants/${tenantId}/users/${userId}/roles`, {
-      method: 'PUT', body: JSON.stringify({ roles })
-    }),
   resendInvite: (tenantId: string, userId: string) =>
     req<void>(`/tenants/${tenantId}/users/${userId}/invite`, { method: 'POST' }),
   getRoutes: (slug: string) =>
@@ -113,10 +97,29 @@ export const api = {
   /** Slug-keyed: returns both client `roles` and composite `realmRoles`. */
   getUserBySlug: (slug: string, userId: string) =>
     req<User>(`/tenants/${slug}/users/${userId}`),
-  /** Atomic-replace the user's composite-role assignments. */
-  updateUserRealmRoles: (slug: string, userId: string, roleNames: string[]) =>
+  /**
+   * Atomic-replace the user's role assignments. {@code realmRoles} is the
+   * full desired set of composite (custom) role names. {@code systemRoles}
+   * is OPTIONAL — when present, the manageable system client roles
+   * (tenant-admin, tenant-user-manager) are reconciled too; omit to leave
+   * them untouched. The user-viewer baseline is always preserved by the
+   * backend and is never exposed in the UI.
+   *
+   * <p>Backend authorization: the privileged systemRoles path requires
+   * canManageTenant (tenant-admin or platform-admin); plain realmRoles
+   * updates allow canManageUsersInTenant (also tenant-user-manager).
+   */
+  updateUserRoles: (
+    slug: string,
+    userId: string,
+    payload: { realmRoles: string[]; systemRoles?: string[] }
+  ) =>
     req<User>(`/tenants/${slug}/users/${userId}/roles`, {
-      method: 'PUT', body: JSON.stringify({ roleNames })
+      method: 'PUT',
+      body: JSON.stringify({
+        roleNames: payload.realmRoles,
+        ...(payload.systemRoles !== undefined ? { systemRoles: payload.systemRoles } : {}),
+      }),
     }),
 
   // -------------------------------------------------------------------------
@@ -136,13 +139,12 @@ export const api = {
   themeStarterUrl: (slug: string) => `${base}/tenants/${slug}/theme/starter`,
   getThemeMeta: (slug: string) => req<ThemeMeta>(`/tenants/${slug}/theme`),
   uploadTheme: async (slug: string, file: File): Promise<ThemeMeta> => {
-    const headers = new Headers();
-    if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
     // Do NOT set Content-Type — the browser sets multipart boundary itself.
+    // bffFetch attaches cookies + the X-CSRF-Token header automatically.
     const form = new FormData();
     form.append('file', file);
-    const r = await fetch(`${base}/tenants/${slug}/theme`, {
-      method: 'POST', body: form, headers,
+    const r = await bffFetch(`${base}/tenants/${slug}/theme`, {
+      method: 'POST', body: form,
     });
     if (!r.ok) {
       const raw = await r.text();

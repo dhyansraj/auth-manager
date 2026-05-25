@@ -119,6 +119,14 @@ helm upgrade --install platform-kc bitnami/keycloak \
   --set "extraEnvVars[0].value=$KC_PUBLIC_HOSTNAME" \
   --set "extraEnvVars[1].name=KC_HOSTNAME_STRICT" \
   --set-string "extraEnvVars[1].value=true" \
+  --set "extraEnvVars[2].name=KC_PROXY_HEADERS" \
+  --set "extraEnvVars[2].value=xforwarded" \
+  --set "extraEnvVars[3].name=KC_SPI_THEME_CACHE_THEMES" \
+  --set-string "extraEnvVars[3].value=false" \
+  --set "extraEnvVars[4].name=KC_SPI_THEME_CACHE_TEMPLATES" \
+  --set-string "extraEnvVars[4].value=false" \
+  --set "extraEnvVars[5].name=KC_SPI_THEME_STATIC_MAX_AGE" \
+  --set-string "extraEnvVars[5].value=-1" \
   --set "replicaCount=1" \
   --wait --timeout=300s
 ok "platform-kc"

@@ -5,6 +5,7 @@ import io.mcpmesh.auth.manager.api.dto.CreateAppRequest;
 import io.mcpmesh.auth.manager.service.AppService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -29,6 +30,7 @@ public class AppController {
     }
 
     @PostMapping
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'APPS_EDIT')")
     public ResponseEntity<AppResponse> create(
         @PathVariable UUID tenantId,
         @Valid @RequestBody CreateAppRequest req,
@@ -42,16 +44,19 @@ public class AppController {
     }
 
     @GetMapping
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'APPS_EDIT')")
     public List<AppResponse> list(@PathVariable UUID tenantId) {
         return service.listByTenant(tenantId).stream().map(AppResponse::from).toList();
     }
 
     @GetMapping("/{appId}")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'APPS_EDIT')")
     public AppResponse get(@PathVariable UUID tenantId, @PathVariable UUID appId) {
         return AppResponse.from(service.get(tenantId, appId));
     }
 
     @DeleteMapping("/{appId}")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'APPS_EDIT')")
     @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID tenantId, @PathVariable UUID appId) {
         service.delete(tenantId, appId, "system");

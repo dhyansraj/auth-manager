@@ -1,11 +1,9 @@
 import { Link, NavLink, Route, Routes, BrowserRouter } from 'react-router-dom';
-import { useAuth } from 'react-oidc-context';
-import { AutoSignIn, MeProvider, useCurrentTenant } from '@mcpmesh/auth-lib-react';
+import { BffAutoSignIn, MeProvider, useBffAuth, useCurrentTenant } from '@mcpmesh/auth-lib-react';
 import Dashboard from './pages/Dashboard';
 import TenantsList from './pages/TenantsList';
 import TenantDetail from './pages/TenantDetail';
 import AuditLog from './pages/AuditLog';
-import AuthTokenSync from './auth/AuthTokenSync';
 
 // vite's BASE_URL is '/admin/' here; React Router wants a basename without
 // the trailing slash (so '/admin' for routes like '/admin/tenants').
@@ -37,7 +35,7 @@ function BackToAppLink() {
 }
 
 function AuthenticatedShell() {
-  const auth = useAuth();
+  const auth = useBffAuth();
   return (
     <BrowserRouter basename={basename}>
       <div className="min-h-screen flex flex-col">
@@ -59,7 +57,6 @@ function AuthenticatedShell() {
           </nav>
         </header>
         <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-6">
-          <AuthTokenSync />
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/tenants" element={<TenantsList />} />
@@ -73,12 +70,12 @@ function AuthenticatedShell() {
 }
 
 export default function App() {
-  const auth = useAuth();
+  const auth = useBffAuth();
   if (auth.isLoading) return <SplashLoading />;
-  if (!auth.isAuthenticated) return <AutoSignIn heading="auth-manager" subtitle="Signing in to your tenant…" />;
+  if (!auth.isAuthenticated) return <BffAutoSignIn heading="auth-manager" subtitle="Signing in to your tenant…" />;
   // MeProvider only mounts after auth — otherwise /me 401s on the splash screen.
   return (
-    <MeProvider endpoint="/admin/api/v1/me">
+    <MeProvider endpoint="/admin/api/v1/me" authMode="cookie">
       <AuthenticatedShell />
     </MeProvider>
   );

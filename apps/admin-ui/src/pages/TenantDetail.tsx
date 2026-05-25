@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useIsPlatformAdmin, useIsTenantAdmin } from '@mcpmesh/auth-lib-react';
+import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api } from '../api/client';
 import RoutesTab from '../features/routes/RoutesTab';
 import IdentityProvidersTab from '../features/idp/IdentityProvidersTab';
@@ -12,10 +12,48 @@ import UserRolesPopover from '../features/roles/UserRolesPopover';
 import { useRolesQuery } from '../features/roles/useRolesQuery';
 import { useUserRealmRolesQueries } from '../features/roles/useUserRealmRolesQueries';
 
+type TabKey = 'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'permissions' | 'roles' | 'users' | 'audit';
+
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
-  const [tab, setTab] = useState<'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'permissions' | 'roles' | 'users' | 'audit'>('overview');
+  // Per-tab permission checks. Each tab is independently gated on an
+  // atomic perm from PlatformPermissions; the backend enforces the same
+  // perms via @PreAuthorize so the UI is mirroring authoritative state.
+  const canViewTenant       = usePermission('TENANT_VIEW');
+  const canEditApps         = usePermission('APPS_EDIT');
+  const canEditRoutes       = usePermission('ROUTES_EDIT');
+  const canEditIdp          = usePermission('IDP_EDIT');
+  const canEditBranding     = usePermission('BRANDING_EDIT');
+  const canEditPermissions  = usePermission('PERMISSIONS_EDIT');
+  const canEditRoles        = usePermission('ROLES_EDIT');
+  const canListUsers        = usePermission('USER_LIST');
+  const canViewAudit        = usePermission('AUDIT_VIEW');
+
+  const [tab, setTab] = useState<TabKey>('overview');
   const tenant = useQuery({ queryKey: ['tenant', id], queryFn: () => api.getTenant(id!), enabled: !!id });
+
+  // Build the visible-tab list per-perm. Overview is the landing page and
+  // is shown whenever the caller has access to ANY other tab; this keeps
+  // tenant-user-manager (which holds USER_LIST/AUDIT_VIEW but not
+  // TENANT_VIEW) seeing Overview as today.
+  const visibleTabs: readonly TabKey[] = useMemo(() => {
+    const t: TabKey[] = [];
+    if (canEditApps)         t.push('apps');
+    if (canEditRoutes)       t.push('routes');
+    if (canEditIdp)          t.push('identity-providers');
+    if (canEditBranding)     t.push('branding');
+    if (canEditPermissions)  t.push('permissions');
+    if (canEditRoles)        t.push('roles');
+    if (canListUsers)        t.push('users');
+    if (canViewAudit)        t.push('audit');
+    return t.length > 0 ? ['overview', ...t] : [];
+  }, [canViewTenant, canEditApps, canEditRoutes, canEditIdp, canEditBranding, canEditPermissions, canEditRoles, canListUsers, canViewAudit]);
+
+  // If the selected tab is no longer in the visible set (e.g. /me resolved
+  // late and demoted the caller's tier), snap to the first visible one.
+  useEffect(() => {
+    if (!visibleTabs.includes(tab)) setTab(visibleTabs[0] ?? 'overview');
+  }, [tab, visibleTabs]);
 
   if (tenant.isLoading) return <div>Loading…</div>;
   if (tenant.isError) return <div className="text-red-700">{String(tenant.error)}</div>;
@@ -30,7 +68,7 @@ export default function TenantDetail() {
         <code className="text-xs text-slate-500">{t.slug}</code>
       </div>
       <div className="flex gap-4 border-b">
-        {(['overview', 'apps', 'routes', 'identity-providers', 'branding', 'permissions', 'roles', 'users', 'audit'] as const).map(k => (
+        {visibleTabs.map(k => (
           <button key={k} onClick={() => setTab(k)}
                   className={'pb-2 px-1 text-sm ' + (tab === k ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-900')}>
             {tabLabel(k)}
@@ -178,7 +216,18 @@ function AuditTab({ tenantId }: { tenantId: string }) {
 
 function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
   const qc = useQueryClient();
-  const canManage = useIsTenantAdmin() || useIsPlatformAdmin();
+  // Per-action atomic perm gates. tenant-user-manager holds the user-mgmt
+  // bundle (USER_INVITE / USER_DISABLE / USER_REALM_ROLE_ASSIGN) but NOT
+  // USER_SYSTEM_ROLE_ASSIGN — that one is tenant-admin-only and gates the
+  // System Roles section in the role popover (privilege-escalation guard,
+  // also enforced server-side via @PreAuthorize).
+  const canInvite = usePermission('USER_INVITE');
+  const canDisable = usePermission('USER_DISABLE');
+  const canAssignRealmRoles = usePermission('USER_REALM_ROLE_ASSIGN');
+  // "canManage" here is whether any per-row management affordance should
+  // render (invite button, role-popover open, disable). Any of the
+  // user-mgmt perms is sufficient.
+  const canManage = canInvite || canDisable || canAssignRealmRoles;
   const [search, setSearch] = useState('');
   const [showInvite, setShowInvite] = useState(false);
   const [popoverUser, setPopoverUser] = useState<{ id: string; username: string } | null>(null);
@@ -219,7 +268,7 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
           <input value={search} onChange={e => setSearch(e.target.value)}
                  placeholder="Search by name or email"
                  className="border rounded px-2 py-1 text-sm" />
-          {canManage && (
+          {canInvite && (
             <button onClick={() => setShowInvite(true)}
                     className="bg-slate-900 text-white px-3 py-1 rounded text-sm hover:bg-slate-700">
               + Invite user
@@ -284,7 +333,7 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
                       </button>
                     )}
                     {' '}
-                    {canManage && u.enabled && (
+                    {canDisable && u.enabled && (
                       <button
                         onClick={() => { if (confirm(`Disable ${u.username}?`)) disable.mutate(u.id); }}
                         className="text-red-700 hover:underline ml-2"
@@ -316,10 +365,31 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
 }
 
 /**
+ * Per-chip classname. Distinguishes:
+ *   - tenant-admin           — outlined slate (full admin)
+ *   - tenant-user-manager    — filled blue (user-management only; visually
+ *                              lighter than tenant-admin so the difference
+ *                              is obvious at a glance in the user table)
+ *   - other system roles     — outlined slate (catch-all)
+ *   - composite realm roles  — filled slate
+ */
+function chipClassFor(r: { name: string; system: boolean }): string {
+  if (r.system && r.name === 'tenant-user-manager') {
+    return 'bg-blue-100 text-blue-800 border border-blue-200 text-xs px-2 py-0.5 rounded';
+  }
+  if (r.system) {
+    return 'border border-slate-300 text-slate-700 text-xs px-2 py-0.5 rounded';
+  }
+  return 'bg-slate-100 text-slate-700 text-xs px-2 py-0.5 rounded';
+}
+
+/**
  * Compact role chips for a user row. tenant-admin is shown as an outlined
- * system badge; composite realm roles are shown as filled badges. The
- * user-viewer system role is the universal baseline and is hidden from the
- * UI (every user has it, so showing it would be noise).
+ * system badge; tenant-user-manager as a filled blue badge to mark it as
+ * a distinct lighter-weight tier; composite realm roles are shown as
+ * filled badges. The user-viewer system role is the universal baseline
+ * and is hidden from the UI (every user has it, so showing it would be
+ * noise).
  */
 function RoleBadges({
   systemRoles,
@@ -347,11 +417,7 @@ function RoleBadges({
         <span
           key={(r.system ? 's:' : 'r:') + r.name}
           title={descByName[r.name] ?? (r.system ? 'system role' : r.name)}
-          className={
-            r.system
-              ? 'border border-slate-300 text-slate-700 text-xs px-2 py-0.5 rounded'
-              : 'bg-slate-100 text-slate-700 text-xs px-2 py-0.5 rounded'
-          }
+          className={chipClassFor(r)}
         >
           {r.name}
         </span>
@@ -394,9 +460,12 @@ function InviteUserForm({
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   // user-viewer is a universal baseline granted by the backend on every
-  // user. The only system-role toggle exposed in the invite dialog is the
-  // optional tenant-admin elevation.
+  // user. The system-role toggles exposed in the invite dialog are the
+  // optional tenant-admin elevation and its lighter peer tenant-user-manager
+  // (Users + Audit tabs only). They are mutually exclusive — tenant-admin
+  // is a superset.
   const [grantAdmin, setGrantAdmin] = useState(false);
+  const [grantUserManager, setGrantUserManager] = useState(false);
   // Composite realm-roles (applied via a follow-up PUT after invite succeeds).
   const [composite, setComposite] = useState<Set<string>>(new Set());
 
@@ -411,13 +480,19 @@ function InviteUserForm({
   const invite = useMutation({
     mutationFn: async () => {
       // Always send user-viewer explicitly to keep the request honest, even
-      // though the backend will enforce it regardless.
-      const roles = grantAdmin ? ['user-viewer', 'tenant-admin'] : ['user-viewer'];
+      // though the backend will enforce it regardless. tenant-admin wins
+      // when both are somehow set; the UI also prevents that combo.
+      const roles: string[] = ['user-viewer'];
+      if (grantAdmin) roles.push('tenant-admin');
+      else if (grantUserManager) roles.push('tenant-user-manager');
       const created = await api.createUser(tenantId, {
         email, firstName, lastName, roles,
       });
       if (composite.size > 0) {
-        await api.updateUserRealmRoles(slug, created.id, Array.from(composite));
+        // Omit systemRoles: the invite POST already set the system roles
+        // via the create payload; this follow-up only attaches composite
+        // realm roles, leaving system assignments untouched.
+        await api.updateUserRoles(slug, created.id, { realmRoles: Array.from(composite) });
       }
       return created;
     },
@@ -437,13 +512,31 @@ function InviteUserForm({
                className="border rounded px-2 py-1 text-sm" />
       </div>
 
-      <div>
+      <div className="space-y-1">
         <label className="flex items-center gap-2 text-sm cursor-pointer">
-          <input type="checkbox" checked={grantAdmin} onChange={e => setGrantAdmin(e.target.checked)} />
-          <span>Grant tenant-admin (in addition to baseline view access)</span>
+          <input
+            type="checkbox"
+            checked={grantAdmin}
+            onChange={e => {
+              setGrantAdmin(e.target.checked);
+              if (e.target.checked) setGrantUserManager(false);
+            }}
+          />
+          <span>Grant tenant-admin (full tenant management — Routes, IdP, Branding, Roles, Users)</span>
+        </label>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={grantUserManager}
+            onChange={e => {
+              setGrantUserManager(e.target.checked);
+              if (e.target.checked) setGrantAdmin(false);
+            }}
+          />
+          <span>Grant tenant-user-manager (lighter alternative — Users + Audit only)</span>
         </label>
         <div className="text-xs text-slate-500 mt-0.5 ml-6">
-          All users automatically get baseline view access (user-viewer). Check this to also grant admin rights.
+          All users automatically get baseline view access (user-viewer). Pick at most one elevation.
         </div>
       </div>
 

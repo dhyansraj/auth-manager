@@ -104,8 +104,16 @@ class MeControllerWebMvcTest {
             .andExpect(jsonPath("$.isTenantAdmin").value(false))
             .andExpect(jsonPath("$.user.id").value("platform-admin-sub"))
             .andExpect(jsonPath("$.permissions").value(org.hamcrest.Matchers.containsInAnyOrder(
+                // PLATFORM_PERMS
                 "TENANT_LIST_ALL", "TENANT_CREATE", "TENANT_DELETE",
-                "TENANT_VIEW_ANY", "USER_INVITE_ANY", "AUDIT_VIEW_ALL")));
+                "GLOBAL_AUDIT_VIEW", "SYSTEM_CLIENT_MANAGE",
+                // TENANT_ADMIN_BUNDLE (TENANT_CONFIG_PERMS + TENANT_USER_MGMT_PERMS + TENANT_SYSTEM_ROLE_PERM)
+                "TENANT_VIEW", "TENANT_EDIT", "ROUTES_EDIT", "IDP_EDIT",
+                "BRANDING_EDIT", "PERMISSIONS_EDIT", "ROLES_EDIT", "APPS_EDIT",
+                "MANIFEST_APPLY",
+                "USER_LIST", "USER_INVITE", "USER_DISABLE",
+                "USER_REALM_ROLE_ASSIGN", "AUDIT_VIEW",
+                "USER_SYSTEM_ROLE_ASSIGN")));
     }
 
     @Test
@@ -115,12 +123,19 @@ class MeControllerWebMvcTest {
         when(tenantRepository.findById(APP1_ID)).thenReturn(Optional.of(
             tenantWith(APP1_ID, "app1", "App One")));
 
+        // Simulate KC composite-role expansion: in production, tenant-admin
+        // is a composite that KC flattens into the JWT's
+        // resource_access.usermanagement.roles claim as the atomic perms
+        // (TENANT_ADMIN_BUNDLE) plus the composite name itself.
         mvc.perform(get("/api/v1/me").with(jwt().jwt(j -> j
                 .subject("alice-sub")
                 .claim("email", "alice@app1.test")
                 .claim("preferred_username", "alice@app1.test")
                 .claim("resource_access", Map.of(
-                    "usermanagement", Map.of("roles", List.of("tenant-admin")))))))
+                    "usermanagement", Map.of("roles", List.of(
+                        "tenant-admin",
+                        "TENANT_VIEW", "ROUTES_EDIT",
+                        "USER_INVITE", "AUDIT_VIEW")))))))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.context").value("tenant"))
             .andExpect(jsonPath("$.tenant.id").value(APP1_ID.toString()))
@@ -130,7 +145,7 @@ class MeControllerWebMvcTest {
             .andExpect(jsonPath("$.isPlatformAdmin").value(false))
             .andExpect(jsonPath("$.isTenantAdmin").value(true))
             .andExpect(jsonPath("$.permissions").value(org.hamcrest.Matchers.containsInAnyOrder(
-                "TENANT_VIEW_OWN", "ROUTES_EDIT", "USER_INVITE_OWN", "AUDIT_VIEW_OWN")));
+                "TENANT_VIEW", "ROUTES_EDIT", "USER_INVITE", "AUDIT_VIEW")));
     }
 
     @Test

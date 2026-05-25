@@ -7,7 +7,7 @@ from a ``.env`` file in the working directory).
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,6 +32,13 @@ class AuthLibSettings(BaseSettings):
       * ``AUTH_LIB_PERMISSION_CACHE_TTL_SECONDS``  default 60
       * ``AUTH_LIB_REDIS_URL``  e.g. ``redis://redis:6379/0``. If unset, an
         in-process TTL cache is used.
+      * ``AUTH_LIB_PERMISSIONS_SOURCE``  ``"claims"`` (default) reads atomic
+        permissions from the JWT's ``resource_access.<client>.roles`` claim
+        (auth-manager manifest pattern: composite realm roles bundle client
+        roles, KC role expansion flattens them at token mint). ``"uma"`` calls
+        Keycloak's UMA ticket grant — only needed for legacy tenants that
+        still have KC Authorization Services configured on their backend
+        client.
     """
 
     model_config = SettingsConfigDict(
@@ -51,6 +58,20 @@ class AuthLibSettings(BaseSettings):
     redis_url: Optional[str] = None
     # Connection timeout for outbound calls (JWKS, UMA) in seconds.
     http_timeout_seconds: float = Field(default=5.0)
+    # Where to source atomic permissions from. "claims" reads from the JWT's
+    # resource_access.<client>.roles claim (no Keycloak round-trip); "uma"
+    # calls KC's UMA ticket endpoint. Default is "claims" — the auth-manager
+    # composite-role-of-client-roles pattern surfaces atomic perms in the
+    # token already. Use "uma" only for legacy tenants with KC Authorization
+    # Services configured.
+    permissions_source: Literal["claims", "uma"] = "claims"
+
+    @field_validator("permissions_source", mode="before")
+    @classmethod
+    def _normalize_permissions_source(cls, v):  # type: ignore[override]
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
     @field_validator("audiences", mode="before")
     @classmethod

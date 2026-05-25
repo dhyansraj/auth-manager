@@ -179,3 +179,43 @@ class Permissions:
                     continue
                 out.add(_normalize(f"{rsname}_{scope}"))
         return out
+
+
+class ClaimRolesPermissions(Permissions):
+    """Reads permissions directly from the JWT's ``resource_access.<client>.roles``
+    claim instead of calling Keycloak's UMA endpoint.
+
+    Use this when your KC realm uses composite-role-of-client-roles expansion
+    (the auth-manager manifest pattern) — atomic permissions are already in
+    the token, no round-trip needed.
+
+    Config: ``AUTH_LIB_PERMISSIONS_SOURCE=claims`` (the default).
+
+    The audience clients to read from are configurable via the same
+    ``AUTH_LIB_AUDIENCES`` setting that UMA mode uses; if unset, falls back
+    to ``AUTH_LIB_CLIENT_ID``.
+    """
+
+    def all_for(self, token: str, claims: Optional[Dict[str, Any]] = None) -> Set[str]:
+        if not claims:
+            return set()
+        resource_access = claims.get("resource_access") or {}
+        if not isinstance(resource_access, dict):
+            return set()
+        perms: Set[str] = set()
+        for client_id in self._audience_clients():
+            client_block = resource_access.get(client_id) or {}
+            if not isinstance(client_block, dict):
+                continue
+            roles = client_block.get("roles") or []
+            if not isinstance(roles, list):
+                continue
+            for role in roles:
+                if isinstance(role, str) and role:
+                    perms.add(role)
+        return perms
+
+    def _audience_clients(self) -> List[str]:
+        # Same resolution as UMA mode's audience set: AUTH_LIB_AUDIENCES if
+        # set, else AUTH_LIB_CLIENT_ID.
+        return self._settings.effective_audiences

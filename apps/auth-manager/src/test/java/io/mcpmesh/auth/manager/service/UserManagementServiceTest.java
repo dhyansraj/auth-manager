@@ -15,6 +15,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -147,6 +148,111 @@ class UserManagementServiceTest {
             throw new AssertionError("expected IllegalArgumentException");
         } catch (IllegalArgumentException e) {
             assertThat(e.getMessage()).contains("ghost-role");
+        }
+    }
+
+    // ---- listWithRoles (slug-keyed) ----
+
+    @org.junit.jupiter.api.Nested
+    class ListWithRoles {
+        private static final String SLUG = "app1";
+        private static final String USER_A = "user-a";
+        private static final String USER_B = "user-b";
+
+        @BeforeEach
+        void slugTenant() {
+            Tenant t = mock(Tenant.class);
+            when(t.getRealmName()).thenReturn(REALM);
+            when(tenants.getBySlug(SLUG)).thenReturn(t);
+        }
+
+        @Test
+        void roleFilter_returnsUsersFromRoleMembers_andJoinsRealmRoles() {
+            UserRepresentation a = new UserRepresentation();
+            a.setId(USER_A); a.setUsername("alice"); a.setEmail("alice@app1.test");
+            UserRepresentation b = new UserRepresentation();
+            b.setId(USER_B); b.setUsername("bob"); b.setEmail("bob@app1.test");
+            when(keycloak.listUsersByRealmRole(REALM, "inspector", 0, 50))
+                .thenReturn(List.of(a, b));
+            when(keycloak.getUserClientRoles(REALM, USER_A, CLIENT))
+                .thenReturn(List.of("user-viewer"));
+            when(keycloak.getUserClientRoles(REALM, USER_B, CLIENT))
+                .thenReturn(List.of("user-viewer"));
+            when(keycloak.getUserRealmRoles(REALM, USER_A)).thenReturn(List.of("inspector"));
+            when(keycloak.getUserRealmRoles(REALM, USER_B)).thenReturn(List.of("inspector"));
+
+            var result = svc.listWithRoles(SLUG, "inspector", null, 0, 50, true);
+
+            assertThat(result.items()).hasSize(2);
+            assertThat(result.items().get(0).realmRoles()).containsExactly("inspector");
+            assertThat(result.items().get(1).realmRoles()).containsExactly("inspector");
+            // Default path (listUsers) MUST NOT be invoked when role filter is set.
+            verify(keycloak, never()).listUsers(anyString(), any(), anyInt(), anyInt());
+        }
+
+        @Test
+        void unknownRole_returnsEmptyList() {
+            when(keycloak.listUsersByRealmRole(REALM, "nonexistent", 0, 50))
+                .thenReturn(List.of());
+
+            var result = svc.listWithRoles(SLUG, "nonexistent", null, 0, 50, true);
+
+            assertThat(result.items()).isEmpty();
+            assertThat(result.totalItems()).isZero();
+        }
+
+        @Test
+        void noRoleFilter_usesDefaultListUsers_andJoinsRealmRoles() {
+            UserRepresentation a = new UserRepresentation();
+            a.setId(USER_A); a.setUsername("alice");
+            when(keycloak.listUsers(REALM, null, 0, 50)).thenReturn(List.of(a));
+            when(keycloak.countUsers(REALM, null)).thenReturn(1);
+            when(keycloak.getUserClientRoles(REALM, USER_A, CLIENT))
+                .thenReturn(List.of("user-viewer"));
+            when(keycloak.getUserRealmRoles(REALM, USER_A)).thenReturn(List.of("customer"));
+
+            var result = svc.listWithRoles(SLUG, null, null, 0, 50, true);
+
+            assertThat(result.items()).hasSize(1);
+            assertThat(result.items().get(0).realmRoles()).containsExactly("customer");
+            assertThat(result.totalItems()).isEqualTo(1);
+            verify(keycloak, never()).listUsersByRealmRole(anyString(), anyString(),
+                anyInt(), anyInt());
+        }
+
+        @Test
+        void includeRealmRolesFalse_skipsRealmRolesJoin() {
+            UserRepresentation a = new UserRepresentation();
+            a.setId(USER_A); a.setUsername("alice");
+            when(keycloak.listUsers(REALM, null, 0, 50)).thenReturn(List.of(a));
+            when(keycloak.countUsers(REALM, null)).thenReturn(1);
+            when(keycloak.getUserClientRoles(REALM, USER_A, CLIENT))
+                .thenReturn(List.of("user-viewer"));
+
+            var result = svc.listWithRoles(SLUG, null, null, 0, 50, false);
+
+            assertThat(result.items()).hasSize(1);
+            assertThat(result.items().get(0).realmRoles()).isNull();
+            verify(keycloak, never()).getUserRealmRoles(anyString(), anyString());
+        }
+
+        @Test
+        void roleFilterWithSearch_filtersInMemoryByUsernameOrEmail() {
+            UserRepresentation a = new UserRepresentation();
+            a.setId(USER_A); a.setUsername("alice"); a.setEmail("alice@app1.test");
+            UserRepresentation b = new UserRepresentation();
+            b.setId(USER_B); b.setUsername("bob"); b.setEmail("bob@app1.test");
+            when(keycloak.listUsersByRealmRole(REALM, "inspector", 0, 50))
+                .thenReturn(List.of(a, b));
+            when(keycloak.getUserClientRoles(REALM, USER_A, CLIENT))
+                .thenReturn(List.of("user-viewer"));
+            when(keycloak.getUserRealmRoles(REALM, USER_A))
+                .thenReturn(List.of("inspector"));
+
+            var result = svc.listWithRoles(SLUG, "inspector", "alice", 0, 50, true);
+
+            assertThat(result.items()).hasSize(1);
+            assertThat(result.items().get(0).id()).isEqualTo(USER_A);
         }
     }
 }

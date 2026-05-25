@@ -76,7 +76,9 @@ public class ThemeService {
             "login/messages/messages_en.properties",
             "account/theme.properties",
             "account/resources/css/custom.css",
-            "account/resources/img/logo.svg"
+            "account/resources/img/logo.svg",
+            "email/theme.properties",
+            "email/messages/messages_en.properties"
         );
         for (String name : resources) {
             ClassPathResource cp = new ClassPathResource("themes/starter/" + name);

@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import AuthLibSettings
 from .jwt_validator import JwtValidationError, JwtValidator
-from .permissions import Permissions
+from .permissions import ClaimRolesPermissions, Permissions
 
 logger = logging.getLogger(__name__)
 
@@ -199,8 +199,14 @@ def auth_lib_init(
     resolved = settings or AuthLibSettings()  # type: ignore[call-arg]
     app.state.auth_lib_settings = resolved
     app.state.auth_lib_validator = validator or JwtValidator(resolved)
-    app.state.auth_lib_permissions = permissions or Permissions(resolved)
+    if permissions is None:
+        if resolved.permissions_source == "uma":
+            permissions = Permissions(resolved)
+        else:
+            permissions = ClaimRolesPermissions(resolved)
+    app.state.auth_lib_permissions = permissions
     logger.info(
-        "auth-lib initialised: issuer=%s client_id=%s audiences=%s",
+        "auth-lib initialised: issuer=%s client_id=%s audiences=%s permissions_source=%s",
         resolved.issuer_uri, resolved.client_id, resolved.effective_audiences,
+        resolved.permissions_source,
     )

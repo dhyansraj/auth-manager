@@ -53,6 +53,82 @@ public class UserManagementService {
         return new ListResult(responses, first, max, total);
     }
 
+    /**
+     * Slug-keyed user list intended for tenant-app backends (and the admin UI's
+     * slug-based surface). Optionally filters to users holding a given realm
+     * composite role and, when {@code includeRealmRoles} is true, populates the
+     * {@code realmRoles} field on each {@link UserResponse}.
+     *
+     * <p>Behavior:
+     * <ul>
+     *   <li>If {@code role} is non-null, fetches the page via KC's
+     *       role-members endpoint. KC's role-members endpoint does NOT support
+     *       a search param, so {@code search} is applied in-memory on the
+     *       returned page (substring match on username / email / first / last
+     *       name, case-insensitive).</li>
+     *   <li>If {@code role} refers to a non-existent role, returns an empty
+     *       list (200, not 400) so callers can stay defensive without
+     *       try/catch.</li>
+     *   <li>If {@code role} is null, falls back to the standard search-based
+     *       user list.</li>
+     *   <li>When {@code includeRealmRoles} is true (the default for this
+     *       surface), the response's {@code realmRoles} field is populated
+     *       via a per-user round-trip to KC. This is N+1 against KC and is
+     *       acceptable up to ~200 users per page; caching is on the backlog.</li>
+     * </ul>
+     *
+     * <p>{@code totalItems} reflects the entire candidate set BEFORE search
+     * filtering when {@code role} is set (KC doesn't expose a role-members
+     * count), so callers should rely on {@code items.size()} for the actual
+     * page size in that mode.
+     */
+    @Transactional(readOnly = true)
+    public ListResult listWithRoles(String slug, String role, String search,
+                                     int first, int max, boolean includeRealmRoles) {
+        Tenant t = tenants.getBySlug(slug);
+        String realm = t.getRealmName();
+
+        java.util.List<UserRepresentation> users;
+        int total;
+        if (role != null && !role.isBlank()) {
+            users = keycloak.listUsersByRealmRole(realm, role, first, max);
+            if (search != null && !search.isBlank()) {
+                String needle = search.toLowerCase();
+                users = users.stream()
+                    .filter(u -> matchesSearch(u, needle))
+                    .toList();
+            }
+            // KC doesn't expose a role-members count; approximate with page size.
+            total = users.size();
+        } else {
+            users = keycloak.listUsers(realm, search, first, max);
+            total = keycloak.countUsers(realm, search);
+        }
+
+        var responses = users.stream()
+            .map(u -> {
+                var sysRoles = keycloak.getUserClientRoles(realm, u.getId(), USERMANAGEMENT_CLIENT);
+                if (!includeRealmRoles) {
+                    return UserResponse.from(u, sysRoles);
+                }
+                var realmRoles = keycloak.getUserRealmRoles(realm, u.getId());
+                return UserResponse.from(u, sysRoles, realmRoles);
+            })
+            .toList();
+        return new ListResult(responses, first, max, total);
+    }
+
+    private static boolean matchesSearch(UserRepresentation u, String lowerNeedle) {
+        return contains(u.getUsername(), lowerNeedle)
+            || contains(u.getEmail(), lowerNeedle)
+            || contains(u.getFirstName(), lowerNeedle)
+            || contains(u.getLastName(), lowerNeedle);
+    }
+
+    private static boolean contains(String haystack, String lowerNeedle) {
+        return haystack != null && haystack.toLowerCase().contains(lowerNeedle);
+    }
+
     @Transactional(readOnly = true)
     public UserResponse get(UUID tenantId, String userId) {
         Tenant t = tenants.get(tenantId);

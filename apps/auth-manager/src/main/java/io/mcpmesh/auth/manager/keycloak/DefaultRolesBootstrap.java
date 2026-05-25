@@ -8,6 +8,8 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+import io.mcpmesh.auth.manager.service.PlatformPermissions;
+
 /**
  * Startup backfill: iterates every active tenant realm and ensures the
  * {@code usermanagement:user-viewer} client role is a composite of the realm's
@@ -38,10 +40,14 @@ public class DefaultRolesBootstrap implements ApplicationRunner {
 
     private final KeycloakAdminService keycloak;
     private final TenantRepository tenantRepo;
+    private final UsermanagementBootstrap usermanagementBootstrap;
 
-    public DefaultRolesBootstrap(KeycloakAdminService keycloak, TenantRepository tenantRepo) {
+    public DefaultRolesBootstrap(KeycloakAdminService keycloak,
+                                 TenantRepository tenantRepo,
+                                 UsermanagementBootstrap usermanagementBootstrap) {
         this.keycloak = keycloak;
         this.tenantRepo = tenantRepo;
+        this.usermanagementBootstrap = usermanagementBootstrap;
     }
 
     @Override
@@ -57,7 +63,55 @@ public class DefaultRolesBootstrap implements ApplicationRunner {
                         UsermanagementBootstrap.CLIENT_SLUG,
                         UsermanagementBootstrap.ROLE_USER_VIEWER);
                 } catch (Exception e) {
-                    log.warn("DefaultRolesBootstrap: backfill failed for realm '{}': {}",
+                    log.warn("DefaultRolesBootstrap: user-viewer backfill failed for realm '{}': {}",
+                        realmName, e.getMessage());
+                }
+                // Backfill the tenant-user-manager client role on every existing
+                // tenant realm so operators can promote users to it after this
+                // deploy without re-running tenant bootstrap. Idempotent.
+                try {
+                    keycloak.findClientUuid(realmName, UsermanagementBootstrap.CLIENT_SLUG)
+                        .ifPresent(clientUuid -> keycloak.createClientRole(
+                            realmName, clientUuid, UsermanagementBootstrap.ROLE_TENANT_USER_MANAGER));
+                } catch (Exception e) {
+                    log.warn("DefaultRolesBootstrap: tenant-user-manager backfill failed for realm '{}': {}",
+                        realmName, e.getMessage());
+                }
+                // Backfill the atomic permission catalog (Phase A of the
+                // admin-ui permission migration) onto every existing tenant
+                // realm: create each tenant-level perm as a client role on
+                // usermanagement and wire tenant-admin / tenant-user-manager
+                // as composites containing the appropriate perms. Idempotent.
+                try {
+                    keycloak.findClientUuid(realmName, UsermanagementBootstrap.CLIENT_SLUG)
+                        .ifPresent(clientUuid -> {
+                            for (String perm : PlatformPermissions.TENANT_ADMIN_BUNDLE) {
+                                keycloak.createClientRole(realmName, clientUuid, perm);
+                            }
+                            keycloak.ensureClientRoleComposites(
+                                realmName, clientUuid,
+                                UsermanagementBootstrap.ROLE_TENANT_ADMIN,
+                                PlatformPermissions.TENANT_ADMIN_BUNDLE);
+                            keycloak.ensureClientRoleComposites(
+                                realmName, clientUuid,
+                                UsermanagementBootstrap.ROLE_TENANT_USER_MANAGER,
+                                PlatformPermissions.TENANT_USER_MANAGER_BUNDLE);
+                        });
+                } catch (Exception e) {
+                    log.warn("DefaultRolesBootstrap: atomic-perms backfill failed for realm '{}': {}",
+                        realmName, e.getMessage());
+                }
+                // Backfill the canonical redirect URIs + web origins on every
+                // existing tenant realm's usermanagement client. Overwrites
+                // whatever ad-hoc kcadm scripts have left behind, re-aligning
+                // every realm to the declarative set derived from
+                // {tenant hostnames, platform host, localhost dev}. Idempotent.
+                try {
+                    keycloak.findClientUuid(realmName, UsermanagementBootstrap.CLIENT_SLUG)
+                        .ifPresent(clientUuid ->
+                            usermanagementBootstrap.ensureStandardRedirectUris(t, clientUuid));
+                } catch (Exception e) {
+                    log.warn("DefaultRolesBootstrap: redirect-URI backfill failed for realm '{}': {}",
                         realmName, e.getMessage());
                 }
             }

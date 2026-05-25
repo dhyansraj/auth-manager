@@ -1,12 +1,20 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api } from '../api/client';
 
 export default function TenantsList() {
   const qc = useQueryClient();
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['tenants'], queryFn: api.listTenants });
   const [showCreate, setShowCreate] = useState(false);
+  // Tenant CRUD is platform-admin only. Gate the buttons on the explicit
+  // atomic perms (mirrors the @PreAuthorize annotations on
+  // TenantController). The backend list endpoint already filters by what
+  // the caller is allowed to see, so TENANT_LIST_ALL doesn't need to gate
+  // the page render itself.
+  const canCreate = usePermission('TENANT_CREATE');
+  const canDelete = usePermission('TENANT_DELETE');
 
   const del = useMutation({
     mutationFn: api.deleteTenant,
@@ -17,9 +25,11 @@ export default function TenantsList() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-semibold">Tenants</h1>
-        <button onClick={() => setShowCreate(true)} className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm hover:bg-slate-700">
-          + New tenant
-        </button>
+        {canCreate && (
+          <button onClick={() => setShowCreate(true)} className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm hover:bg-slate-700">
+            + New tenant
+          </button>
+        )}
       </div>
       {showCreate && <CreateTenantForm onClose={() => setShowCreate(false)} />}
       {isLoading && <div>Loading…</div>}
@@ -45,8 +55,10 @@ export default function TenantsList() {
                 <td className="px-3 py-2 font-mono text-xs">{t.realmName ?? '—'}</td>
                 <td className="px-3 py-2 text-slate-500">{new Date(t.createdAt).toLocaleDateString()}</td>
                 <td className="px-3 py-2 text-right">
-                  <button onClick={() => { if (confirm(`Delete tenant ${t.slug}?`)) del.mutate(t.id); }}
-                          className="text-red-700 hover:underline text-xs">Delete</button>
+                  {canDelete && (
+                    <button onClick={() => { if (confirm(`Delete tenant ${t.slug}?`)) del.mutate(t.id); }}
+                            className="text-red-700 hover:underline text-xs">Delete</button>
+                  )}
                 </td>
               </tr>
             ))}

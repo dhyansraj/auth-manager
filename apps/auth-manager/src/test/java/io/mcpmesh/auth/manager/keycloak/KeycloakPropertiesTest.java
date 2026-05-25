@@ -43,6 +43,7 @@ class KeycloakPropertiesTest {
         assertThat(props.platform()).isNotNull();
         assertThat(props.platform().realm()).isEqualTo("dev");
         assertThat(props.platform().role()).isEqualTo("platform-admin");
+        assertThat(props.platform().host()).isEqualTo("auth.mcp-mesh.io");
     }
 
     @Test
@@ -50,10 +51,19 @@ class KeycloakPropertiesTest {
         var props = new KeycloakProperties(
             "http://localhost:8180", "master",
             new KeycloakProperties.Admin("admin-cli", "admin", "admin"),
-            new KeycloakProperties.Platform("admin-realm", "super-admin"),
+            new KeycloakProperties.Platform("admin-realm", "super-admin", "auth.example.com"),
             null, null
         );
         assertThat(props.platform().realm()).isEqualTo("admin-realm");
         assertThat(props.platform().role()).isEqualTo("super-admin");
+        assertThat(props.platform().host()).isEqualTo("auth.example.com");
+    }
+
+    @Test
+    void platformDefaultsHostWhenOnlyRealmAndRoleProvided() {
+        // Defensive: an explicit Platform record built without a host still
+        // gets the canonical default ("auth.mcp-mesh.io").
+        var p = new KeycloakProperties.Platform("admin-realm", "super-admin", null);
+        assertThat(p.host()).isEqualTo("auth.mcp-mesh.io");
     }
 }

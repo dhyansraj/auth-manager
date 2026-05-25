@@ -25,7 +25,7 @@ public record KeycloakProperties(
     public KeycloakProperties {
         if (connectTimeout == null) connectTimeout = Duration.ofSeconds(5);
         if (readTimeout    == null) readTimeout    = Duration.ofSeconds(10);
-        if (platform       == null) platform       = new Platform("dev", "platform-admin");
+        if (platform       == null) platform       = new Platform("dev", "platform-admin", "auth.mcp-mesh.io");
     }
 
     /** Credentials used by the admin client to obtain tokens against {@code keycloak.realm}. */
@@ -38,14 +38,21 @@ public record KeycloakProperties(
     /**
      * Cross-tenant platform-admin realm. A user signed into this realm with
      * the {@link #role()} realm role bypasses per-tenant authorization checks.
+     *
+     * <p>{@link #host()} is the public host where the platform admin-ui +
+     * BFF are served (e.g. {@code auth.mcp-mesh.io}). Used by the redirect-URI
+     * bootstrap so every tenant's usermanagement client trusts the platform
+     * host in addition to its own tenant host.
      */
     public record Platform(
         @NotBlank String realm,
-        @NotBlank String role
+        @NotBlank String role,
+        String host
     ) {
         public Platform {
             if (realm == null || realm.isBlank()) realm = "dev";
             if (role  == null || role.isBlank())  role  = "platform-admin";
+            if (host  == null || host.isBlank()) host  = "auth.mcp-mesh.io";
         }
     }
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useIsPlatformAdmin, useIsTenantAdmin } from '@mcpmesh/auth-lib-react';
+import { usePermission } from '@mcpmesh/auth-lib-react';
 import type { RoleDto } from '../../api/types';
 import { useRolesQuery, useDeleteRoleMutation } from './useRolesQuery';
 import { ApiError } from '../../api/client';
@@ -15,7 +15,7 @@ interface DeleteConflict {
 }
 
 export default function RolesTab({ slug }: Props) {
-  const canManage = useIsTenantAdmin() || useIsPlatformAdmin();
+  const canManage = usePermission('ROLES_EDIT');
   const roles = useRolesQuery(slug);
   const del = useDeleteRoleMutation(slug);
 

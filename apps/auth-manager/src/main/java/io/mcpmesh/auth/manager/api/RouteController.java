@@ -26,13 +26,13 @@ public class RouteController {
     }
 
     @GetMapping
-    @PreAuthorize("@tenantSecurity.hasRoleBySlug(#slug, 'tenant-admin')")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
     public RoutingConfig get(@PathVariable String slug) {
         return service.getForTenant(slug);
     }
 
     @PutMapping
-    @PreAuthorize("@tenantSecurity.hasRoleBySlug(#slug, 'tenant-admin')")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'ROUTES_EDIT')")
     public RoutingConfig replace(
         @PathVariable String slug,
         @Valid @RequestBody RoutingConfig body

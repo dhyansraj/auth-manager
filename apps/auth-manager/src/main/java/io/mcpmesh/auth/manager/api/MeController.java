@@ -3,6 +3,7 @@ package io.mcpmesh.auth.manager.api;
 import io.mcpmesh.auth.manager.api.dto.MeResponse;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
+import io.mcpmesh.auth.manager.service.PlatformPermissions;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -17,35 +18,26 @@ import java.util.Set;
 /**
  * Self-description endpoint for the auth-manager's admin UI. Returns a
  * union of (a) the JWT-derived user, (b) tenant resolution (or {@code null}
- * for platform-admin), and (c) a capability set the UI uses to gate menus.
+ * for platform-admin), and (c) the caller's atomic permissions (Phase A
+ * of the admin-ui permission migration).
  *
- * <p>Unlike the tenant apps, this endpoint does NOT call Keycloak's UMA
- * endpoint: the platform (and dev/master) realms intentionally have no
- * authz services configured, so the capability set is derived from the
- * caller's roles (platform-admin in the platform realm, tenant-admin via
- * the {@code usermanagement} client in the tenant realm).
+ * <p>Permissions are derived from the JWT's
+ * {@code resource_access.usermanagement.roles} claim, filtered to the
+ * known atomic-permission catalog ({@link PlatformPermissions#ALL_KNOWN_PERMS}).
+ * Composite role names (e.g. {@code tenant-admin}, {@code platform-admin})
+ * are excluded -- they're delivery vehicles, not capabilities.
+ *
+ * <p>For platform-admin users (signed into the platform realm) we also
+ * union in the full {@link PlatformPermissions#PLATFORM_PERMS} +
+ * {@link PlatformPermissions#TENANT_ADMIN_BUNDLE} sets unconditionally as
+ * a safety net for realms where KC's composite-role expansion isn't yet
+ * wired (e.g. first deploy before {@code PlatformRoleBootstrap} runs).
  */
 @RestController
 public class MeController {
 
     private static final String USERMANAGEMENT_CLIENT = "usermanagement";
     private static final String TENANT_ADMIN_ROLE = "tenant-admin";
-
-    private static final Set<String> PLATFORM_ADMIN_CAPABILITIES = Set.of(
-        "TENANT_LIST_ALL",
-        "TENANT_CREATE",
-        "TENANT_DELETE",
-        "TENANT_VIEW_ANY",
-        "USER_INVITE_ANY",
-        "AUDIT_VIEW_ALL"
-    );
-
-    private static final Set<String> TENANT_ADMIN_CAPABILITIES = Set.of(
-        "TENANT_VIEW_OWN",
-        "ROUTES_EDIT",
-        "USER_INVITE_OWN",
-        "AUDIT_VIEW_OWN"
-    );
 
     private final TenantSecurity tenantSecurity;
     private final TenantRepository tenantRepository;
@@ -79,11 +71,42 @@ public class MeController {
         boolean isTenantAdmin = hasUsermanagementRole(jwt, TENANT_ADMIN_ROLE);
 
         Set<String> perms = new LinkedHashSet<>();
-        if (platformAdmin) perms.addAll(PLATFORM_ADMIN_CAPABILITIES);
-        if (isTenantAdmin) perms.addAll(TENANT_ADMIN_CAPABILITIES);
+        // Pull all atomic perms from the JWT's resource_access.usermanagement.roles
+        // claim (KC's composite expansion already flattened the bundles here).
+        // Filter to only the recognized catalog so composite role names like
+        // "tenant-admin" / "platform-admin" don't leak into the perm set.
+        perms.addAll(atomicPermsFromJwt(jwt));
+        // Belt-and-braces: platform-admin always sees the full catalog, even
+        // if KC's composite-role wiring hasn't propagated yet on this realm.
+        if (platformAdmin) {
+            perms.addAll(PlatformPermissions.PLATFORM_PERMS);
+            perms.addAll(PlatformPermissions.TENANT_ADMIN_BUNDLE);
+        }
 
         String context = platformAdmin ? "platform" : "tenant";
         return new MeResponse(user, context, tenantData, platformAdmin, isTenantAdmin, perms);
+    }
+
+    /**
+     * Reads {@code resource_access.usermanagement.roles}, filters to the
+     * known atomic-permission catalog, and returns the matches in claim
+     * order. Composite role names (e.g. {@code tenant-admin}) are excluded.
+     */
+    @SuppressWarnings("unchecked")
+    private static Set<String> atomicPermsFromJwt(Jwt jwt) {
+        Map<String, Object> ra = jwt.getClaimAsMap("resource_access");
+        if (ra == null) return Set.of();
+        Object client = ra.get(USERMANAGEMENT_CLIENT);
+        if (!(client instanceof Map<?, ?> clientMap)) return Set.of();
+        Object roles = clientMap.get("roles");
+        if (!(roles instanceof List<?> roleList)) return Set.of();
+        Set<String> out = new LinkedHashSet<>();
+        for (Object r : roleList) {
+            if (r instanceof String name && PlatformPermissions.ALL_KNOWN_PERMS.contains(name)) {
+                out.add(name);
+            }
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

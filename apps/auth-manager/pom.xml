@@ -73,6 +73,17 @@
             <artifactId>keycloak-admin-client</artifactId>
         </dependency>
 
+        <!-- YAML serialization for tenant manifest export. Version managed by
+             Spring Boot's Jackson BOM. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+
         <!-- Fabric8 Kubernetes client: used by ThemeStorage (per-tenant theme
              ConfigMaps) and ThemeApplier (rolling restart of platform-kc
              StatefulSet). Spring Boot 4 doesn't manage this dep, so we pin

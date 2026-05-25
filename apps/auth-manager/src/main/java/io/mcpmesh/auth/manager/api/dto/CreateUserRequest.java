@@ -17,5 +17,5 @@ public record CreateUserRequest(
     /** If true, send a Set-Password invite email after creation. Default true. */
     Boolean sendInvite
 ) {
-    public static final Set<String> ALLOWED_ROLES = Set.of("tenant-admin", "user-viewer");
+    public static final Set<String> ALLOWED_ROLES = Set.of("tenant-admin", "tenant-user-manager", "user-viewer");
 }

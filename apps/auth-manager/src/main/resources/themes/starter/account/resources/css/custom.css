@@ -1,31 +1,55 @@
 /*
- * Tenant theme starter — customise these variables to brand your Keycloak
- * login + account pages. The variable names map to the keycloak.v2 design
- * tokens; override any subset.
+ * Tenant account-console theme — starter CSS.
+ *
+ * PARENT THEME: keycloak.v2.account (set in account/theme.properties).
+ * The account console is NOT traversed by the BFF / OIDC sign-in flow —
+ * users only see it if they navigate to the self-service profile page.
+ * It is rarely customised in practice; ship a minimal stub so tenants
+ * who DO want to style it have selectors to extend.
+ *
+ * Like the login theme, keycloak.v2.account emits PatternFly v5 markup,
+ * so selectors below target pf-v5-c-*. The --pf-v5-global-* design tokens
+ * are read by the PF v5 base styles directly; overriding them is the
+ * cleanest way to recolour large swathes of the console at once.
+ *
+ * `!important` is used defensively to win against PF v5's high-specificity
+ * base rules.
  */
+
 :root {
-  --kc-primary: #0f172a;
-  --kc-primary-hover: #1e293b;
-  --kc-bg: #f8fafc;
-  --kc-card-bg: #ffffff;
-  --kc-text: #0f172a;
-  --kc-text-muted: #64748b;
-  --kc-border: #e2e8f0;
-  --kc-error: #b91c1c;
-  --kc-success: #166534;
+  /* Mirror the login-theme palette so account + login feel like one brand. */
+  --kc-primary: #4f46e5;
+  --kc-primary-hover: #4338ca;
+  --kc-background: #f8fafc;
+  --kc-text-primary: #0f172a;
+  --kc-border: #e5e7eb;
+
+  /* PatternFly v5 design tokens the account console honours directly. */
+  --pf-v5-global--primary-color--100: #4f46e5;
+  --pf-v5-global--primary-color--200: #4338ca;
+  --pf-v5-global--BackgroundColor--100: #f8fafc;
+  --pf-v5-global--link--Color: #4f46e5;
 }
 
-/*
- * Examples (uncomment + edit):
- *
- * .login-pf body { background: var(--kc-bg); }
- * .pf-c-button.pf-m-primary { background: var(--kc-primary); }
- * .pf-c-button.pf-m-primary:hover { background: var(--kc-primary-hover); }
- *
- * Logo (drop your file in resources/img/logo.svg, then):
- *   #kc-header-wrapper {
- *     background: url("../img/logo.svg") no-repeat center;
- *     background-size: contain;
- *     height: 60px;
- *   }
- */
+/* Page background */
+html, body {
+  background: var(--kc-background) !important;
+  color: var(--kc-text-primary);
+}
+
+/* Primary buttons inside the console (Save, Update, etc.) */
+.pf-v5-c-button.pf-m-primary {
+  background: var(--kc-primary) !important;
+  border-color: var(--kc-primary) !important;
+  color: #ffffff !important;
+}
+.pf-v5-c-button.pf-m-primary:hover,
+.pf-v5-c-button.pf-m-primary:focus {
+  background: var(--kc-primary-hover) !important;
+  border-color: var(--kc-primary-hover) !important;
+}
+
+/* Links inside the console */
+.pf-v5-c-content a {
+  color: var(--kc-primary) !important;
+}

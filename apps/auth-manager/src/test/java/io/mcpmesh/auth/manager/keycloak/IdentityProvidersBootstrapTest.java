@@ -9,10 +9,14 @@ import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.resource.IdentityProviderResource;
 import org.keycloak.admin.client.resource.IdentityProvidersResource;
 import org.keycloak.admin.client.resource.RealmResource;
+import org.keycloak.representations.idm.IdentityProviderMapperRepresentation;
 import org.keycloak.representations.idm.IdentityProviderRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.mockito.ArgumentCaptor;
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -207,5 +211,104 @@ class IdentityProvidersBootstrapTest {
         bootstrap.run(null);
         // Never reaches realm interactions.
         verify(tenantRepo, never()).findAllByDeletedAtIsNullOrderByCreatedAtDesc();
+    }
+
+    // -------------------------------------------------------------------------
+    // Hardcoded-role mapper management
+    // -------------------------------------------------------------------------
+
+    private static IdentityProviderMapperRepresentation hardcodedRoleMapper(String id, String roleName) {
+        IdentityProviderMapperRepresentation m = new IdentityProviderMapperRepresentation();
+        m.setId(id);
+        m.setName("hardcoded-role-" + roleName);
+        m.setIdentityProviderAlias("google");
+        m.setIdentityProviderMapper("oidc-hardcoded-role-idp-mapper");
+        Map<String, String> cfg = new HashMap<>();
+        cfg.put("role", roleName);
+        cfg.put("syncMode", "IMPORT");
+        m.setConfig(cfg);
+        return m;
+    }
+
+    @Test
+    void ensureHardcodedRoleMapper_createsMapper_whenMissing() {
+        when(googleResource.getMappers()).thenReturn(List.of());
+        when(googleResource.addMapper(any())).thenAnswer(inv -> createdResponse());
+
+        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        boolean created = bootstrap.ensureHardcodedRoleMapper(REALM, "google", "customer");
+
+        assertThat(created).isTrue();
+        ArgumentCaptor<IdentityProviderMapperRepresentation> cap =
+            ArgumentCaptor.forClass(IdentityProviderMapperRepresentation.class);
+        verify(googleResource, times(1)).addMapper(cap.capture());
+        IdentityProviderMapperRepresentation rep = cap.getValue();
+        assertThat(rep.getName()).isEqualTo("hardcoded-role-customer");
+        assertThat(rep.getIdentityProviderAlias()).isEqualTo("google");
+        assertThat(rep.getIdentityProviderMapper()).isEqualTo("oidc-hardcoded-role-idp-mapper");
+        assertThat(rep.getConfig()).containsEntry("role", "customer");
+        assertThat(rep.getConfig()).containsEntry("syncMode", "IMPORT");
+    }
+
+    @Test
+    void ensureHardcodedRoleMapper_isIdempotent_whenAlreadyPresent() {
+        when(googleResource.getMappers())
+            .thenReturn(List.of(hardcodedRoleMapper("m1", "customer")));
+
+        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        boolean created = bootstrap.ensureHardcodedRoleMapper(REALM, "google", "customer");
+
+        assertThat(created).isFalse();
+        verify(googleResource, never()).addMapper(any());
+    }
+
+    @Test
+    void removeHardcodedRoleMapper_returnsFalse_whenMissing() {
+        when(googleResource.getMappers()).thenReturn(List.of());
+
+        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        boolean removed = bootstrap.removeHardcodedRoleMapper(REALM, "google", "customer");
+
+        assertThat(removed).isFalse();
+        verify(googleResource, never()).delete(any());
+    }
+
+    @Test
+    void removeHardcodedRoleMapper_deletes_whenPresent() {
+        when(googleResource.getMappers())
+            .thenReturn(List.of(hardcodedRoleMapper("m1", "customer")));
+
+        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        boolean removed = bootstrap.removeHardcodedRoleMapper(REALM, "google", "customer");
+
+        assertThat(removed).isTrue();
+        verify(googleResource).delete("m1");
+    }
+
+    @Test
+    void listHardcodedRoles_returnsRoleNames_fromMatchingMappers() {
+        when(googleResource.getMappers()).thenReturn(List.of(
+            hardcodedRoleMapper("m1", "customer"),
+            hardcodedRoleMapper("m2", "provider")
+        ));
+
+        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        Set<String> roles = bootstrap.listHardcodedRoles(REALM, "google");
+
+        assertThat(roles).containsExactlyInAnyOrder("customer", "provider");
+    }
+
+    @Test
+    void listEnabledProviders_returnsAliases_fromFindAll() {
+        IdentityProviderRepresentation g = new IdentityProviderRepresentation();
+        g.setAlias("google");
+        IdentityProviderRepresentation gh = new IdentityProviderRepresentation();
+        gh.setAlias("github");
+        when(idps.findAll()).thenReturn(List.of(g, gh));
+
+        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        Set<String> enabled = bootstrap.listEnabledProviders(REALM);
+
+        assertThat(enabled).containsExactly("google", "github");
     }
 }

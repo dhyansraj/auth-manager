@@ -70,7 +70,7 @@ JSON
 # Host header; we still need per-subdomain CNAMEs at the DNS layer for each
 # hostname that should resolve. "auth" is the platform admin/issuer host;
 # tenant subdomains (app1, etc.) are added as we onboard tenants.
-DNS_HOSTNAMES=(auth app1)
+DNS_HOSTNAMES=(auth app1 safesound-dev)
 
 # Stale CNAMEs to remove (orphaned by ingress rules dropped above).
 DNS_HOSTNAMES_TO_REMOVE=(kc)

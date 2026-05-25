@@ -20,6 +20,12 @@ local cjson = require "cjson.safe"
 local config = require "init"
 local rclient = require "redis_client"
 local matcher = require "matcher"
+local bff     = require "bff"
+
+-- Sentinel backend returned by match_platform for BFF endpoints whose
+-- handler runs entirely in Lua and never falls through to proxy_pass.
+-- It tells the main flow "stop here, response already emitted".
+local BFF_HANDLED = "__bff_handled__"
 
 local function fail(status, msg)
     ngx.status = status
@@ -49,6 +55,44 @@ end
 local function match_platform(path)
     if path == "/.well-known/openid-configuration" then
         return config.platform_kc_target, "PUBLIC", nil
+    end
+    -- BFF (cookie-based browser auth) endpoints. Underscore prefix so they
+    -- cannot collide with tenant routes. Handled entirely in Lua except
+    -- /_bff/me which mutates the request and forwards to admin-api.
+    -- Longest-prefix-first: /_bff/* must be matched before /auth/*.
+    if matcher.match("/_bff/*", path) then
+        if path == "/_bff/login" then
+            bff.handle_login()
+            return BFF_HANDLED, "PUBLIC", nil
+        end
+        if path == "/_bff/callback" then
+            bff.handle_callback()
+            return BFF_HANDLED, "PUBLIC", nil
+        end
+        if path == "/_bff/logout" then
+            bff.handle_logout()
+            return BFF_HANDLED, "PUBLIC", nil
+        end
+        if path == "/_bff/backchannel-logout" then
+            -- PUBLIC: called by KC (server-to-server, no cookies/Bearer).
+            -- The handler validates the logout_token JWT structure + iss.
+            bff.handle_backchannel_logout()
+            return BFF_HANDLED, "PUBLIC", nil
+        end
+        if path == "/_bff/csrf" then
+            bff.handle_csrf()
+            return BFF_HANDLED, "PUBLIC", nil
+        end
+        if path == "/_bff/me" then
+            local ok = bff.prepare_me_proxy()
+            if not ok then
+                return BFF_HANDLED, "PUBLIC", nil
+            end
+            -- Request URI is now /api/v1/me and Authorization is set.
+            -- BFF_BEARER_INJECTED so enforce_auth does not strip the header.
+            return config.platform_admin_api_target, "BFF_BEARER_INJECTED", "/api/v1/me"
+        end
+        return BFF_HANDLED, "PUBLIC", nil  -- unknown /_bff/* path; handler emits 404 if you add one
     end
     if matcher.match("/auth/*", path) then
         -- Strip the "/auth" prefix so Keycloak (which serves /realms/... at root)
@@ -152,6 +196,12 @@ local function load_routes(tenant)
 end
 
 local function enforce_auth(auth_mode, tenant)
+    -- BFF_BEARER_INJECTED: caller (match_platform for /_bff/me) has already
+    -- proven the session and set Authorization: do nothing here, in
+    -- particular do NOT strip the header.
+    if auth_mode == "BFF_BEARER_INJECTED" then
+        return
+    end
     if auth_mode == "PUBLIC" then
         -- Drop any Authorization header so backends can't accidentally
         -- gate on it for a path the platform considers public.
@@ -160,6 +210,17 @@ local function enforce_auth(auth_mode, tenant)
     end
     if auth_mode == "REQUIRED" then
         local hdr = ngx.var.http_authorization
+        local cookie_authed = false
+        if not hdr or hdr == "" then
+            -- BFF cookie path: try to authenticate via bff_sid cookie. On
+            -- success, Authorization is injected and CSRF is enforced for
+            -- non-idempotent methods. On failure, drop through to 401.
+            local ok = bff.try_inject_bearer_from_cookie()
+            if ok then
+                cookie_authed = true
+                hdr = ngx.var.http_authorization
+            end
+        end
         if not hdr or hdr == "" then
             ngx.status = 401
             local realm = tenant or "platform"
@@ -171,9 +232,22 @@ local function enforce_auth(auth_mode, tenant)
             }))
             return ngx.exit(401)
         end
+        if cookie_authed then
+            -- Double-submit CSRF: only on cookie-authed requests. Bearer
+            -- callers (CLI / m2m / native apps) are exempt -- knowing the
+            -- token is itself proof of intent.
+            local ok = bff.enforce_csrf_if_cookie_auth()
+            if not ok then return end  -- response already emitted (403)
+        end
         return
     end
-    -- OPTIONAL: pass through whatever was sent (token or not).
+    -- OPTIONAL: pass through whatever was sent. If a session cookie is
+    -- present, inject Authorization so upstream OPTIONAL code can still
+    -- personalise (e.g. read claims.sub). CSRF NOT enforced on OPTIONAL.
+    local hdr = ngx.var.http_authorization
+    if not hdr or hdr == "" then
+        bff.try_inject_bearer_from_cookie()
+    end
 end
 
 -- ─── Main flow ───────────────────────────────────────────────────────────
@@ -183,6 +257,10 @@ local host = strip_port(ngx.var.http_host or ngx.var.host)
 -- 1. Cross-cutting platform paths first.
 local backend, auth_mode, rewritten = match_platform(path)
 if backend then
+    -- BFF endpoints fully handled in Lua (response already emitted).
+    if backend == BFF_HANDLED then
+        return ngx.exit(ngx.status or 200)
+    end
     enforce_auth(auth_mode, nil)
     if rewritten and rewritten ~= path then
         -- Rewrite the URI in-place so proxy_pass forwards the stripped path.

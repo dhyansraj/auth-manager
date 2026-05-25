@@ -5,12 +5,15 @@ import io.mcpmesh.auth.manager.domain.app.App;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
+import io.mcpmesh.auth.manager.keycloak.KeycloakProperties;
 import io.mcpmesh.auth.manager.persistence.AppRepository;
+import io.mcpmesh.auth.manager.persistence.TenantHostnameRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -33,6 +36,7 @@ public class UsermanagementBootstrap {
     public static final String CLIENT_SLUG = "usermanagement";
     public static final String DISPLAY_NAME = "User Management";
     public static final String ROLE_TENANT_ADMIN = "tenant-admin";
+    public static final String ROLE_TENANT_USER_MANAGER = "tenant-user-manager";
     public static final String ROLE_USER_VIEWER = "user-viewer";
 
     private static final ActorKind SYSTEM_KIND = ActorKind.SERVICE;
@@ -42,13 +46,19 @@ public class UsermanagementBootstrap {
     private final AppRepository appRepo;
     private final AuditService audit;
     private final KeycloakAdminService keycloak;
+    private final TenantHostnameRepository hostnameRepo;
+    private final KeycloakProperties kcProps;
 
     public UsermanagementBootstrap(AppService appService, AppRepository appRepo,
-                                   AuditService audit, KeycloakAdminService keycloak) {
+                                   AuditService audit, KeycloakAdminService keycloak,
+                                   TenantHostnameRepository hostnameRepo,
+                                   KeycloakProperties kcProps) {
         this.appService = appService;
         this.appRepo = appRepo;
         this.audit = audit;
         this.keycloak = keycloak;
+        this.hostnameRepo = hostnameRepo;
+        this.kcProps = kcProps;
     }
 
     @Transactional
@@ -77,8 +87,10 @@ public class UsermanagementBootstrap {
             keycloak.setClientPublic(tenant.getRealmName(), CLIENT_SLUG, true);
 
             // 3. Create client roles directly. Idempotent: keycloak.createClientRole skips if exists.
-            keycloak.createClientRole(tenant.getRealmName(), findClientUuid(tenant), ROLE_TENANT_ADMIN);
-            keycloak.createClientRole(tenant.getRealmName(), findClientUuid(tenant), ROLE_USER_VIEWER);
+            String clientUuid = findClientUuid(tenant);
+            keycloak.createClientRole(tenant.getRealmName(), clientUuid, ROLE_TENANT_ADMIN);
+            keycloak.createClientRole(tenant.getRealmName(), clientUuid, ROLE_TENANT_USER_MANAGER);
+            keycloak.createClientRole(tenant.getRealmName(), clientUuid, ROLE_USER_VIEWER);
 
             // 4. Make user-viewer a composite of the realm's default-roles-<realm>
             //    so every new user (including brokered Google/GitHub users via
@@ -86,6 +98,20 @@ public class UsermanagementBootstrap {
             //    the usermanagement UI. Idempotent.
             keycloak.ensureClientRoleInDefaultRoles(
                 tenant.getRealmName(), CLIENT_SLUG, ROLE_USER_VIEWER);
+
+            // 5. Materialize the atomic permission catalog (Phase A of the
+            //    admin-ui permission migration). Each atomic perm becomes a
+            //    flat client role on the usermanagement client; the existing
+            //    composite roles (tenant-admin / tenant-user-manager) become
+            //    composites that include the appropriate atomic perms so
+            //    KC flattens them into the JWT's resource_access claim.
+            //    Idempotent: all create + wire calls skip when already present.
+            ensureAtomicPermsAndComposites(tenant.getRealmName(), clientUuid);
+
+            // 6. Declare the canonical redirect URIs + web origins for the
+            //    usermanagement client. Replaces any drift introduced by
+            //    ad-hoc kcadm scripts. Idempotent.
+            ensureStandardRedirectUris(tenant, clientUuid);
 
             audit.recordSuccess(actor, SYSTEM_KIND, tenant.getId(),
                 "tenant.bootstrap", "tenant", tenant.getId().toString(),
@@ -106,6 +132,49 @@ public class UsermanagementBootstrap {
     private String findClientUuid(Tenant tenant) {
         return keycloak.findClientUuid(tenant.getRealmName(), CLIENT_SLUG)
             .orElseThrow(() -> new IllegalStateException("usermanagement client missing for " + tenant.getSlug()));
+    }
+
+    /**
+     * Creates each tenant-level atomic permission as a client role on
+     * {@code usermanagement} and wires the existing composite roles
+     * ({@code tenant-admin}, {@code tenant-user-manager}) to include the
+     * appropriate atomic permissions as composites. Package-private so the
+     * startup backfill ({@code DefaultRolesBootstrap}) can re-use the same
+     * code path on already-provisioned realms.
+     *
+     * <p>All steps are idempotent: re-running is a safe no-op.
+     */
+    void ensureAtomicPermsAndComposites(String realmName, String clientUuid) {
+        // Create each atomic perm as a flat client role.
+        for (String perm : PlatformPermissions.TENANT_ADMIN_BUNDLE) {
+            keycloak.createClientRole(realmName, clientUuid, perm);
+        }
+        // Wire composite memberships.
+        keycloak.ensureClientRoleComposites(
+            realmName, clientUuid, ROLE_TENANT_ADMIN,
+            PlatformPermissions.TENANT_ADMIN_BUNDLE);
+        keycloak.ensureClientRoleComposites(
+            realmName, clientUuid, ROLE_TENANT_USER_MANAGER,
+            PlatformPermissions.TENANT_USER_MANAGER_BUNDLE);
+    }
+
+    /**
+     * Resets the {@code usermanagement} client's {@code redirectUris} +
+     * {@code webOrigins} to the canonical set derived from the tenant's
+     * hostnames plus the platform host. Public so the startup backfill
+     * ({@code DefaultRolesBootstrap}, in a different package) can re-use the
+     * same code path on already-provisioned realms.
+     *
+     * <p>Idempotent: same tenant + same KC properties always produces the
+     * same KC state, intentionally so re-runs heal drift.
+     */
+    public void ensureStandardRedirectUris(Tenant tenant, String clientUuid) {
+        List<String> hostnames = hostnameRepo.findByTenantId(tenant.getId()).stream()
+            .map(h -> h.getHostname())
+            .toList();
+        String platformHost = kcProps.platform() == null ? null : kcProps.platform().host();
+        keycloak.setStandardRedirectUris(
+            tenant.getRealmName(), clientUuid, hostnames, platformHost, false);
     }
 
     private void bootstrapAdminUser(Tenant tenant, String email, String actor) {

@@ -2,6 +2,7 @@ package io.mcpmesh.auth.manager.roles;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mcpmesh.auth.manager.api.GlobalExceptionHandler;
+import io.mcpmesh.auth.manager.security.Permissions;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,7 @@ class RolesControllerWebMvcTest {
 
     @MockitoBean RolesService rolesService;
     @MockitoBean(name = "tenantSecurity") TenantSecurity tenantSecurity;
+    @MockitoBean(name = "perms") Permissions perms;
 
     @Autowired WebApplicationContext context;
     @Autowired FilterChainProxy springSecurityFilterChain;
@@ -101,15 +103,14 @@ class RolesControllerWebMvcTest {
 
     @Test
     void permissions_returns_403_whenCantSeeTenant() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(anyString())).thenReturn(false);
+        when(perms.hasOnTenant(anyString(), eq("PERMISSIONS_EDIT"))).thenReturn(false);
         mvc.perform(get("/api/v1/tenants/app1/permissions").with(jwt()))
             .andExpect(status().isForbidden());
     }
 
     @Test
     void create_returns_403_whenCantManageTenant_evenIfCanSee() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(anyString())).thenReturn(true);
-        when(tenantSecurity.canManageTenant(anyString())).thenReturn(false);
+        when(perms.hasOnTenant(anyString(), eq("ROLES_EDIT"))).thenReturn(false);
         mvc.perform(post("/api/v1/tenants/app1/roles")
                 .with(jwt())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -120,7 +121,7 @@ class RolesControllerWebMvcTest {
     @Test
     void crossTenant_isForbidden() throws Exception {
         // Caller is admin of "other"; trying to manage "app1".
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(false);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(false);
         mvc.perform(get("/api/v1/tenants/app1/roles").with(jwt()))
             .andExpect(status().isForbidden());
     }
@@ -129,7 +130,7 @@ class RolesControllerWebMvcTest {
 
     @Test
     void permissions_returns_200_andList() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("PERMISSIONS_EDIT"))).thenReturn(true);
         when(rolesService.listPermissions(eq("app1"))).thenReturn(List.of(
             new PermissionDto("orders", "order:view", "View orders"),
             new PermissionDto("orders", "order:approve", "Approve orders")
@@ -143,10 +144,10 @@ class RolesControllerWebMvcTest {
 
     @Test
     void list_returns_200() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(true);
         when(rolesService.list(eq("app1"))).thenReturn(List.of(
             new RoleDto("Order Manager", "approves orders",
-                List.of(new PermissionDto("orders", "order:approve")), 2, false)
+                List.of(new PermissionDto("orders", "order:approve")), 2, false, false)
         ));
         mvc.perform(get("/api/v1/tenants/app1/roles").with(jwt()))
             .andExpect(status().isOk())
@@ -157,11 +158,10 @@ class RolesControllerWebMvcTest {
 
     @Test
     void create_returns_201_andLocationHeader() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(true);
         when(rolesService.create(eq("app1"), any(CreateRoleRequest.class), anyString()))
             .thenReturn(new RoleDto("Order Manager", "approves",
-                List.of(new PermissionDto("orders", "order:approve")), 0, false));
+                List.of(new PermissionDto("orders", "order:approve")), 0, false, false));
 
         mvc.perform(post("/api/v1/tenants/app1/roles")
                 .with(jwt())
@@ -180,8 +180,7 @@ class RolesControllerWebMvcTest {
 
     @Test
     void create_returns_400_onMissingName() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(true);
         mvc.perform(post("/api/v1/tenants/app1/roles")
                 .with(jwt())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -191,10 +190,9 @@ class RolesControllerWebMvcTest {
 
     @Test
     void update_returns_200() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(true);
         when(rolesService.update(eq("app1"), eq("Order Manager"), any(UpdateRoleRequest.class), anyString()))
-            .thenReturn(new RoleDto("Order Manager", "updated", List.of(), 0, false));
+            .thenReturn(new RoleDto("Order Manager", "updated", List.of(), 0, false, false));
 
         mvc.perform(put("/api/v1/tenants/app1/roles/Order Manager")
                 .with(jwt())
@@ -206,8 +204,7 @@ class RolesControllerWebMvcTest {
 
     @Test
     void delete_returns_204_onSuccess() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(true);
 
         mvc.perform(delete("/api/v1/tenants/app1/roles/Order Manager").with(jwt()))
             .andExpect(status().isNoContent());
@@ -215,8 +212,7 @@ class RolesControllerWebMvcTest {
 
     @Test
     void delete_returns_409_whenRoleInUse() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(true);
         doThrow(new RoleInUseException("Order Manager", 3))
             .when(rolesService).delete(eq("app1"), eq("Order Manager"), anyString());
 
@@ -228,8 +224,7 @@ class RolesControllerWebMvcTest {
 
     @Test
     void delete_returns_404_whenRoleMissing() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("ROLES_EDIT"))).thenReturn(true);
         doThrow(new RoleNotFoundException("Ghost"))
             .when(rolesService).delete(eq("app1"), eq("Ghost"), anyString());
 

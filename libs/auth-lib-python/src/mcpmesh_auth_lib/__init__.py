@@ -28,13 +28,14 @@ from .dependencies import (
 from .jwt_validator import JwtValidationError, JwtValidator
 from .me import build_me_response
 from .models import MeResponse, Tenant, User
-from .permissions import Permissions
+from .permissions import ClaimRolesPermissions, Permissions
 
 __all__ = [
     "AuthLibSettings",
     "JwtValidator",
     "JwtValidationError",
     "Permissions",
+    "ClaimRolesPermissions",
     "MeResponse",
     "User",
     "Tenant",

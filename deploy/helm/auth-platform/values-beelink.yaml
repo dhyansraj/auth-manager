@@ -10,7 +10,7 @@ global:
 authManager:
   image:
     repository: auth-manager
-    tag: "0.1.12"
+    tag: "0.1.26"
   config:
     keycloakUrl: "https://auth.mcp-mesh.io/auth"
     postgresHost: "platform-pg-postgresql"
@@ -30,12 +30,12 @@ keycloak:
 adminUi:
   image:
     repository: admin-ui
-    tag: "0.1.10"
+    tag: "0.1.19"
 
 platformEdge:
   image:
     repository: platform-edge
-    tag: "0.1.6"
+    tag: "0.1.13"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,

@@ -9,26 +9,44 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./bff": {
+      "types": "./dist/bff/index.d.ts",
+      "import": "./dist/bff/index.js"
+    },
+    "./pkce": {
+      "types": "./dist/pkce/index.d.ts",
+      "import": "./dist/pkce/index.js"
+    },
+    "./vite-preset": {
+      "types": "./dist/vite-preset/index.d.ts",
+      "import": "./dist/vite-preset/index.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --external react --external react-oidc-context --external @tanstack/react-query",
-    "dev": "tsup src/index.ts --format esm --dts --watch --external react --external react-oidc-context --external @tanstack/react-query"
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run"
   },
   "peerDependencies": {
+    "@tanstack/react-query": ">=5",
     "react": ">=18",
-    "react-oidc-context": ">=3",
-    "@tanstack/react-query": ">=5"
+    "react-oidc-context": ">=3"
   },
   "devDependencies": {
+    "@tanstack/react-query": "^5",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^18",
+    "jsdom": "^29.1.1",
+    "react": "^18",
+    "react-dom": "^18.3.1",
+    "react-oidc-context": "^3",
     "tsup": "^8",
     "typescript": "^5",
-    "react": "^18",
-    "react-oidc-context": "^3",
-    "@tanstack/react-query": "^5",
-    "@types/react": "^18"
+    "vitest": "^4.1.7"
   }
 }

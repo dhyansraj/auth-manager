@@ -32,13 +32,13 @@ public class IdentityProvidersController {
     }
 
     @GetMapping
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
     public List<IdentityProviderDto> list(@PathVariable String slug) {
         return service.list(slug);
     }
 
     @PutMapping("/{providerId}")
-    @PreAuthorize("@tenantSecurity.canManageTenant(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'IDP_EDIT')")
     public IdentityProviderDto update(
         @PathVariable String slug,
         @PathVariable String providerId,

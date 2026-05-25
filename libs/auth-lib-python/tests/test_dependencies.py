@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 
 from mcpmesh_auth_lib import (
     AuthLibSettings,
+    ClaimRolesPermissions,
+    Permissions,
     Tenant,
     auth_lib_init,
     build_me_response,
@@ -142,6 +144,67 @@ def test_require_role_realm_match(app, rsa_keypair):
     with TestClient(app) as client:
         r = client.get("/api/realm-admin", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# auth_lib_init: permissions-source selection
+# ---------------------------------------------------------------------------
+
+
+def test_auth_lib_init_defaults_to_claims_based_permissions():
+    s = AuthLibSettings(issuer_uri=ISSUER, client_id=CLIENT_ID)
+    a = FastAPI()
+    auth_lib_init(a, s)
+    assert isinstance(a.state.auth_lib_permissions, ClaimRolesPermissions)
+
+
+def test_auth_lib_init_uma_setting_yields_uma_permissions():
+    s = AuthLibSettings(
+        issuer_uri=ISSUER, client_id=CLIENT_ID, permissions_source="uma",
+    )
+    a = FastAPI()
+    auth_lib_init(a, s)
+    assert isinstance(a.state.auth_lib_permissions, Permissions)
+    assert not isinstance(a.state.auth_lib_permissions, ClaimRolesPermissions)
+
+
+def test_auth_lib_init_claims_setting_yields_claims_permissions():
+    s = AuthLibSettings(
+        issuer_uri=ISSUER, client_id=CLIENT_ID, permissions_source="claims",
+    )
+    a = FastAPI()
+    auth_lib_init(a, s)
+    assert isinstance(a.state.auth_lib_permissions, ClaimRolesPermissions)
+
+
+def test_auth_lib_init_env_default_is_claims(monkeypatch):
+    monkeypatch.setenv("AUTH_LIB_ISSUER_URI", ISSUER)
+    monkeypatch.setenv("AUTH_LIB_CLIENT_ID", CLIENT_ID)
+    monkeypatch.delenv("AUTH_LIB_PERMISSIONS_SOURCE", raising=False)
+    a = FastAPI()
+    auth_lib_init(a)
+    assert isinstance(a.state.auth_lib_permissions, ClaimRolesPermissions)
+
+
+def test_auth_lib_init_env_uma(monkeypatch):
+    monkeypatch.setenv("AUTH_LIB_ISSUER_URI", ISSUER)
+    monkeypatch.setenv("AUTH_LIB_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setenv("AUTH_LIB_PERMISSIONS_SOURCE", "uma")
+    a = FastAPI()
+    auth_lib_init(a)
+    assert isinstance(a.state.auth_lib_permissions, Permissions)
+    assert not isinstance(a.state.auth_lib_permissions, ClaimRolesPermissions)
+
+
+def test_auth_lib_init_explicit_permissions_overrides_env(monkeypatch):
+    monkeypatch.setenv("AUTH_LIB_ISSUER_URI", ISSUER)
+    monkeypatch.setenv("AUTH_LIB_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setenv("AUTH_LIB_PERMISSIONS_SOURCE", "claims")
+    s = AuthLibSettings()  # picks up env
+    explicit = Permissions(s)  # caller forces UMA despite claims default
+    a = FastAPI()
+    auth_lib_init(a, s, permissions=explicit)
+    assert a.state.auth_lib_permissions is explicit
 
 
 def test_me_includes_permissions(app, rsa_keypair, respx_mock):

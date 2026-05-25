@@ -6,6 +6,7 @@ import jakarta.ws.rs.core.Response;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.resource.IdentityProviderResource;
 import org.keycloak.admin.client.resource.RealmResource;
+import org.keycloak.representations.idm.IdentityProviderMapperRepresentation;
 import org.keycloak.representations.idm.IdentityProviderRepresentation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,10 +14,12 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Per-realm Keycloak IdP brokering bootstrap for platform-level OAuth
@@ -186,6 +189,98 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
         } catch (Exception e) {
             log.debug("isEnabled({}, {}) probe failed: {}", realmName, providerId, e.getMessage());
             return false;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Mapper management (Hardcoded Realm Role IdP mappers)
+    // -------------------------------------------------------------------------
+
+    /** Returns the set of IdP aliases currently enabled on the realm. */
+    public Set<String> listEnabledProviders(String realmName) {
+        try {
+            return admin.realm(realmName).identityProviders().findAll().stream()
+                .map(IdentityProviderRepresentation::getAlias)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        } catch (Exception e) {
+            log.warn("listEnabledProviders({}) failed: {}", realmName, e.getMessage());
+            return Set.of();
+        }
+    }
+
+    /**
+     * Idempotently ensures a Hardcoded Realm Role IdP mapper on the given
+     * provider that assigns the given realm role at first broker login.
+     * Returns true if a new mapper was created; false if it already existed.
+     * Sync mode IMPORT: role added only on first broker login, mutable
+     * per-user thereafter.
+     */
+    public boolean ensureHardcodedRoleMapper(String realmName, String providerAlias, String roleName) {
+        IdentityProviderResource ipr = admin.realm(realmName).identityProviders().get(providerAlias);
+        String mapperName = "hardcoded-role-" + roleName;
+        for (IdentityProviderMapperRepresentation m : ipr.getMappers()) {
+            if (mapperName.equals(m.getName())
+                && "oidc-hardcoded-role-idp-mapper".equals(m.getIdentityProviderMapper())
+                && m.getConfig() != null
+                && roleName.equals(m.getConfig().get("role"))) {
+                return false;
+            }
+        }
+        IdentityProviderMapperRepresentation rep = new IdentityProviderMapperRepresentation();
+        rep.setName(mapperName);
+        rep.setIdentityProviderAlias(providerAlias);
+        rep.setIdentityProviderMapper("oidc-hardcoded-role-idp-mapper");
+        Map<String, String> cfg = new HashMap<>();
+        cfg.put("role", roleName);
+        cfg.put("syncMode", "IMPORT");
+        rep.setConfig(cfg);
+        try (jakarta.ws.rs.core.Response resp = ipr.addMapper(rep)) {
+            if (resp.getStatus() >= 300) {
+                log.warn("ensureHardcodedRoleMapper({}, {}, {}) failed: HTTP {}",
+                    realmName, providerAlias, roleName, resp.getStatus());
+                return false;
+            }
+        }
+        log.info("ensureHardcodedRoleMapper: added '{}' on IdP '{}' in realm '{}'",
+            mapperName, providerAlias, realmName);
+        return true;
+    }
+
+    /**
+     * Idempotently removes the Hardcoded Role mapper assigning the given role
+     * on the given IdP. Returns true if it was present and removed.
+     */
+    public boolean removeHardcodedRoleMapper(String realmName, String providerAlias, String roleName) {
+        IdentityProviderResource ipr = admin.realm(realmName).identityProviders().get(providerAlias);
+        for (IdentityProviderMapperRepresentation m : ipr.getMappers()) {
+            if ("oidc-hardcoded-role-idp-mapper".equals(m.getIdentityProviderMapper())
+                && m.getConfig() != null
+                && roleName.equals(m.getConfig().get("role"))) {
+                ipr.delete(m.getId());
+                log.info("removeHardcodedRoleMapper: dropped role '{}' mapper on IdP '{}' in realm '{}'",
+                    roleName, providerAlias, realmName);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Returns the set of realm role names assigned by Hardcoded Role mappers on the given IdP. */
+    public Set<String> listHardcodedRoles(String realmName, String providerAlias) {
+        try {
+            IdentityProviderResource ipr = admin.realm(realmName).identityProviders().get(providerAlias);
+            Set<String> out = new LinkedHashSet<>();
+            for (IdentityProviderMapperRepresentation m : ipr.getMappers()) {
+                if ("oidc-hardcoded-role-idp-mapper".equals(m.getIdentityProviderMapper())
+                    && m.getConfig() != null) {
+                    String r = m.getConfig().get("role");
+                    if (r != null && !r.isBlank()) out.add(r);
+                }
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("listHardcodedRoles({}, {}) failed: {}", realmName, providerAlias, e.getMessage());
+            return Set.of();
         }
     }
 

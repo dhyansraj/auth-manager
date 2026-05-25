@@ -5,6 +5,7 @@ import jakarta.ws.rs.core.Response;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.resource.AuthorizationResource;
 import org.keycloak.admin.client.resource.ClientResource;
+import org.keycloak.admin.client.resource.RealmResource;
 import org.keycloak.admin.client.resource.RoleResource;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
@@ -145,6 +146,133 @@ public class KeycloakAdminService {
     }
 
     /**
+     * Creates a public OIDC client suitable for browser/PKCE flows (no
+     * client_secret, no service account, no direct access grants). Returns
+     * the KC internal client UUID.
+     *
+     * <p>Used by {@code PlatformRoleBootstrap} to materialise the dev realm's
+     * {@code usermanagement} client on fresh deployments without operators
+     * having to click through the admin console. Callers are expected to
+     * follow up with {@link #setStandardRedirectUris} and
+     * {@link #setClientAttributes} to install the canonical config.
+     */
+    public String createPublicClient(String realmName, String clientId, String displayName) {
+        ClientRepresentation client = new ClientRepresentation();
+        client.setClientId(clientId);
+        client.setName(displayName);
+        client.setProtocol("openid-connect");
+        client.setPublicClient(true);
+        client.setStandardFlowEnabled(true);
+        client.setDirectAccessGrantsEnabled(false);
+        client.setServiceAccountsEnabled(false);
+        client.setFullScopeAllowed(true);
+        client.setRedirectUris(java.util.List.of());
+        client.setWebOrigins(java.util.List.of());
+
+        try (Response response = admin.realm(realmName).clients().create(client)) {
+            if (response.getStatus() < 200 || response.getStatus() >= 300) {
+                throw new RuntimeException(
+                    "Keycloak public client create failed: HTTP " + response.getStatus()
+                    + " " + response.getStatusInfo().getReasonPhrase());
+            }
+            String location = response.getHeaderString("Location");
+            if (location == null) {
+                throw new RuntimeException("Keycloak public client create returned no Location header");
+            }
+            return location.substring(location.lastIndexOf('/') + 1);
+        }
+    }
+
+    /**
+     * Merges the given {@code attributes} into the client's existing
+     * {@code attributes} map. Existing keys not in the input are preserved;
+     * keys present in the input are overwritten. Idempotent: re-running with
+     * the same values is a silent no-op (the update still round-trips but KC
+     * state is unchanged).
+     *
+     * <p>Used to install KC client-level toggles that don't have first-class
+     * setters on {@link ClientRepresentation} (e.g.
+     * {@code backchannel.logout.url}, {@code pkce.code.challenge.method},
+     * {@code client.use.lightweight.access.token.enabled}).
+     */
+    public void setClientAttributes(String realmName, String clientUuid,
+                                    java.util.Map<String, String> attributes) {
+        if (attributes == null || attributes.isEmpty()) return;
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        ClientRepresentation rep = clientResource.toRepresentation();
+        java.util.Map<String, String> attrs = rep.getAttributes();
+        if (attrs == null) {
+            attrs = new java.util.HashMap<>();
+        }
+        attrs.putAll(attributes);
+        rep.setAttributes(attrs);
+        clientResource.update(rep);
+    }
+
+    /**
+     * Replaces a client's {@code redirectUris} and {@code webOrigins} with the
+     * canonical set for the {@code usermanagement} client on a realm:
+     *
+     * <ul>
+     *   <li>{@code https://<host>/admin/*} — admin-ui at every tenant host
+     *       (and platform host)</li>
+     *   <li>{@code https://<host>/_bff/callback} — BFF callback at every
+     *       tenant host (and platform host)</li>
+     *   <li>{@code http://localhost:5173/admin/*} — local dev (Vite)</li>
+     * </ul>
+     *
+     * <p>The {@code dev} (platform) realm gets only the platform host +
+     * localhost variants ({@code tenantHostnames} is ignored if
+     * {@code isDevRealm} is true, since dev has no tenant hosts).
+     *
+     * <p>The {@code webOrigins} list is the origin (scheme://host) for each
+     * trusted host so CORS preflight requests succeed; KC also accepts {@code
+     * "+"} to mean "all redirect-URI origins", but we list them explicitly so
+     * the wildcard intent is auditable.
+     *
+     * <p>Idempotent: the new lists overwrite whatever was there. Same input
+     * always produces the same KC state, intentionally so backfill runs can
+     * repair drift introduced by ad-hoc kcadm scripts.
+     */
+    public void setStandardRedirectUris(String realmName, String clientUuid,
+                                        List<String> tenantHostnames,
+                                        String platformHost, boolean isDevRealm) {
+        Set<String> redirectUris = new java.util.LinkedHashSet<>();
+        Set<String> webOrigins   = new java.util.LinkedHashSet<>();
+
+        // Platform host -- present in BOTH dev and tenant realms so an admin
+        // signed in via auth.<host> can land back on the platform admin-ui.
+        if (platformHost != null && !platformHost.isBlank()) {
+            redirectUris.add("https://" + platformHost + "/admin/*");
+            redirectUris.add("https://" + platformHost + "/_bff/callback");
+            webOrigins.add("https://" + platformHost);
+        }
+
+        // Per-tenant hosts -- only on tenant realms; dev has none.
+        if (!isDevRealm && tenantHostnames != null) {
+            for (String h : tenantHostnames) {
+                if (h == null || h.isBlank()) continue;
+                redirectUris.add("https://" + h + "/admin/*");
+                redirectUris.add("https://" + h + "/_bff/callback");
+                webOrigins.add("https://" + h);
+            }
+        }
+
+        // Local Vite dev server -- on every realm so devs can hit any tenant
+        // from their laptop without per-realm KC config drift.
+        redirectUris.add("http://localhost:5173/admin/*");
+        webOrigins.add("http://localhost:5173");
+
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        ClientRepresentation rep = clientResource.toRepresentation();
+        rep.setRedirectUris(new java.util.ArrayList<>(redirectUris));
+        rep.setWebOrigins(new java.util.ArrayList<>(webOrigins));
+        clientResource.update(rep);
+        log.info("setStandardRedirectUris: realm '{}' client {} now trusts {} redirect URIs / {} web origins",
+            realmName, clientUuid, redirectUris.size(), webOrigins.size());
+    }
+
+    /**
      * Switches a client between confidential and public. For public, the
      * client_secret is removed and clientAuthenticatorType is cleared. Use
      * for UI / SPA clients that should use PKCE flow.
@@ -228,6 +356,161 @@ public class KeycloakAdminService {
         RoleRepresentation role = new RoleRepresentation();
         role.setName(roleName);
         clientResource.roles().create(role);
+    }
+
+    /**
+     * Ensures a client role on the given client is a composite that includes
+     * each of {@code childRoleNames} (also client roles on the same client).
+     * Diff-based: only the missing children are added. Idempotent re-runs
+     * are silent no-ops.
+     *
+     * <p>If the parent role doesn't exist, throws {@link IllegalStateException}
+     * -- callers should have created it first via {@link #createClientRole}.
+     * Missing children are logged + skipped (best-effort) so a single bad
+     * name doesn't poison the whole bundle.
+     *
+     * <p>Used by the platform-permission bootstrap to wire
+     * {@code tenant-admin} / {@code tenant-user-manager} as composites of the
+     * atomic permission client roles defined by
+     * {@code PlatformPermissions}.
+     *
+     * @return the number of newly-added composite memberships (0 if all
+     *         already present)
+     */
+    public int ensureClientRoleComposites(String realmName, String clientUuid,
+                                          String parentRoleName,
+                                          List<String> childRoleNames) {
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        RoleResource parentResource;
+        try {
+            parentResource = clientResource.roles().get(parentRoleName);
+            parentResource.toRepresentation();  // throws NotFoundException if missing
+        } catch (NotFoundException e) {
+            throw new IllegalStateException(
+                "ensureClientRoleComposites: parent client role '" + parentRoleName
+                + "' missing on client " + clientUuid + " in realm " + realmName);
+        }
+
+        // Snapshot existing composites; key by (containerId, name) so we only
+        // count same-client matches as duplicates.
+        Set<String> existingKeys = new HashSet<>();
+        try {
+            Set<RoleRepresentation> existing = parentResource.getRoleComposites();
+            if (existing != null) {
+                for (RoleRepresentation r : existing) {
+                    if (Boolean.TRUE.equals(r.getClientRole())
+                        && clientUuid.equals(r.getContainerId())) {
+                        existingKeys.add(r.getName());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("ensureClientRoleComposites: failed to list composites of '{}' on client {} in realm '{}': {}",
+                parentRoleName, clientUuid, realmName, e.getMessage());
+            return 0;
+        }
+
+        List<RoleRepresentation> toAdd = new java.util.ArrayList<>();
+        for (String child : childRoleNames) {
+            if (existingKeys.contains(child)) continue;
+            try {
+                RoleRepresentation childRep = clientResource.roles().get(child).toRepresentation();
+                toAdd.add(childRep);
+            } catch (NotFoundException e) {
+                log.warn("ensureClientRoleComposites: child role '{}' missing on client {} in realm '{}' — skipping",
+                    child, clientUuid, realmName);
+            }
+        }
+        if (toAdd.isEmpty()) {
+            log.debug("ensureClientRoleComposites: '{}' on client {} in realm '{}' already has all {} children",
+                parentRoleName, clientUuid, realmName, childRoleNames.size());
+            return 0;
+        }
+        parentResource.addComposites(toAdd);
+        log.info("ensureClientRoleComposites: added {} children to '{}' on client {} in realm '{}'",
+            toAdd.size(), parentRoleName, clientUuid, realmName);
+        return toAdd.size();
+    }
+
+    /**
+     * Ensures a realm role is a composite that includes each of the given
+     * client roles on {@code clientUuid}. Diff-based: only the missing
+     * children are added. Idempotent re-runs are no-ops.
+     *
+     * <p>Used by the platform-admin bootstrap to wire the cross-tenant
+     * realm role to include all platform-level + tenant-level atomic
+     * permissions defined on the dev realm's {@code usermanagement} client.
+     *
+     * <p>If the realm role doesn't exist, throws {@link IllegalStateException}.
+     * Missing children are logged + skipped.
+     *
+     * @return the number of newly-added composite memberships (0 if all
+     *         already present)
+     */
+    public int ensureRealmRoleClientComposites(String realmName, String realmRoleName,
+                                                String clientUuid,
+                                                List<String> childRoleNames) {
+        RealmResource realm = admin.realm(realmName);
+        RoleResource realmRoleResource;
+        try {
+            realmRoleResource = realm.roles().get(realmRoleName);
+            realmRoleResource.toRepresentation();
+        } catch (NotFoundException e) {
+            throw new IllegalStateException(
+                "ensureRealmRoleClientComposites: realm role '" + realmRoleName
+                + "' missing in realm " + realmName);
+        }
+
+        Set<String> existingKeys = new HashSet<>();
+        try {
+            Set<RoleRepresentation> existing = realmRoleResource.getRoleComposites();
+            if (existing != null) {
+                for (RoleRepresentation r : existing) {
+                    if (Boolean.TRUE.equals(r.getClientRole())
+                        && clientUuid.equals(r.getContainerId())) {
+                        existingKeys.add(r.getName());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("ensureRealmRoleClientComposites: failed to list composites of realm role '{}' in realm '{}': {}",
+                realmRoleName, realmName, e.getMessage());
+            return 0;
+        }
+
+        ClientResource clientResource = realm.clients().get(clientUuid);
+        List<RoleRepresentation> toAdd = new java.util.ArrayList<>();
+        for (String child : childRoleNames) {
+            if (existingKeys.contains(child)) continue;
+            try {
+                RoleRepresentation childRep = clientResource.roles().get(child).toRepresentation();
+                toAdd.add(childRep);
+            } catch (NotFoundException e) {
+                log.warn("ensureRealmRoleClientComposites: child client role '{}' missing on client {} in realm '{}' — skipping",
+                    child, clientUuid, realmName);
+            }
+        }
+        if (toAdd.isEmpty()) {
+            log.debug("ensureRealmRoleClientComposites: realm role '{}' in '{}' already has all {} children",
+                realmRoleName, realmName, childRoleNames.size());
+            return 0;
+        }
+        realmRoleResource.addComposites(toAdd);
+        // KC requires the parent realm role to be flagged composite=true; set it
+        // if it wasn't already (cheap idempotent re-set).
+        try {
+            RoleRepresentation parentRep = realmRoleResource.toRepresentation();
+            if (!Boolean.TRUE.equals(parentRep.isComposite())) {
+                parentRep.setComposite(true);
+                realmRoleResource.update(parentRep);
+            }
+        } catch (Exception e) {
+            log.warn("ensureRealmRoleClientComposites: failed to flag '{}' composite=true in '{}': {}",
+                realmRoleName, realmName, e.getMessage());
+        }
+        log.info("ensureRealmRoleClientComposites: added {} children to realm role '{}' in '{}'",
+            toAdd.size(), realmRoleName, realmName);
+        return toAdd.size();
     }
 
     /**
@@ -478,6 +761,33 @@ public class KeycloakAdminService {
         return search == null || search.isBlank()
             ? admin.realm(realmName).users().count()
             : admin.realm(realmName).users().count(search);
+    }
+
+    /**
+     * Lists users that hold the given realm role (composite-membership
+     * lookup via {@code GET /admin/realms/{realm}/roles/{roleName}/users}).
+     *
+     * <p>Returns an empty list (NOT a 404) when the role doesn't exist so
+     * callers can stay defensive without try/catch. KC's role-members
+     * endpoint does NOT support a free-text search param -- callers that need
+     * search filtering should apply it in-memory on the returned page.
+     */
+    public java.util.List<UserRepresentation> listUsersByRealmRole(
+        String realmName, String roleName, int first, int max
+    ) {
+        try {
+            var members = admin.realm(realmName).roles().get(roleName)
+                .getUserMembers(first, max);
+            return members == null ? java.util.List.of() : members;
+        } catch (NotFoundException e) {
+            return java.util.List.of();
+        }
+    }
+
+    /** Realm-level role names currently assigned to a user. */
+    public java.util.List<String> getUserRealmRoles(String realmName, String userId) {
+        var assigned = admin.realm(realmName).users().get(userId).roles().realmLevel().listAll();
+        return assigned.stream().map(RoleRepresentation::getName).toList();
     }
 
     /** Single user representation (basic fields). */

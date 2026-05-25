@@ -36,25 +36,25 @@ public class RolesController {
     }
 
     @GetMapping("/permissions")
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'PERMISSIONS_EDIT')")
     public List<PermissionDto> permissions(@PathVariable String slug) {
         return service.listPermissions(slug);
     }
 
     @GetMapping("/roles")
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'ROLES_EDIT')")
     public List<RoleDto> list(@PathVariable String slug) {
         return service.list(slug);
     }
 
     @GetMapping("/roles/{roleName}")
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'ROLES_EDIT')")
     public RoleDto get(@PathVariable String slug, @PathVariable String roleName) {
         return service.get(slug, roleName);
     }
 
     @PostMapping("/roles")
-    @PreAuthorize("@tenantSecurity.canManageTenant(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'ROLES_EDIT')")
     public ResponseEntity<RoleDto> create(
         @PathVariable String slug,
         @Valid @RequestBody CreateRoleRequest req,
@@ -68,7 +68,7 @@ public class RolesController {
     }
 
     @PutMapping("/roles/{roleName}")
-    @PreAuthorize("@tenantSecurity.canManageTenant(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'ROLES_EDIT')")
     public RoleDto update(
         @PathVariable String slug,
         @PathVariable String roleName,
@@ -79,7 +79,7 @@ public class RolesController {
     }
 
     @DeleteMapping("/roles/{roleName}")
-    @PreAuthorize("@tenantSecurity.canManageTenant(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'ROLES_EDIT')")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(
         @PathVariable String slug,

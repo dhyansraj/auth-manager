@@ -57,7 +57,7 @@ class TenantSecurityTest {
         props = new KeycloakProperties(
             KC_URL, "master",
             new KeycloakProperties.Admin("admin-cli", "admin", "admin"),
-            new KeycloakProperties.Platform(PLATFORM_REALM, PLATFORM_ROLE),
+            new KeycloakProperties.Platform(PLATFORM_REALM, PLATFORM_ROLE, null),
             null, null
         );
         tenantSecurity = new TenantSecurity(tenants, tenantRepository, props);
@@ -75,6 +75,7 @@ class TenantSecurityTest {
             .thenReturn(Optional.of(app1));
         when(tenantRepository.findBySlugAndDeletedAtIsNull(APP1_SLUG))
             .thenReturn(Optional.of(app1));
+        when(tenants.getBySlug(APP1_SLUG)).thenReturn(app1);
 
         Tenant app2 = mock(Tenant.class);
         when(app2.getId()).thenReturn(APP2_ID);
@@ -84,6 +85,7 @@ class TenantSecurityTest {
             .thenReturn(Optional.of(app2));
         when(tenantRepository.findBySlugAndDeletedAtIsNull(APP2_SLUG))
             .thenReturn(Optional.of(app2));
+        when(tenants.getBySlug(APP2_SLUG)).thenReturn(app2);
     }
 
     @AfterEach
@@ -303,6 +305,115 @@ class TenantSecurityTest {
     void isPlatformAdmin_isTrue_forPlatformRealmCallerWithRole() {
         setContext(jwtFromPlatformRealmWithRoles(List.of(PLATFORM_ROLE)));
         assertThat(tenantSecurity.isPlatformAdmin()).isTrue();
+    }
+
+    // ----- canManageUsersInTenant(slug) -------------------------------------
+
+    @Test
+    void canManageUsersInTenant_isTrue_forPlatformAdmin() {
+        setContext(jwtFromPlatformRealmWithRoles(List.of(PLATFORM_ROLE)));
+        assertThat(tenantSecurity.canManageUsersInTenant(APP1_SLUG)).isTrue();
+    }
+
+    @Test
+    void canManageUsersInTenant_isTrue_forTenantAdmin() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of("resource_access", Map.of(
+                "usermanagement", Map.of("roles", List.of("tenant-admin"))
+            )),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canManageUsersInTenant(APP1_SLUG)).isTrue();
+    }
+
+    @Test
+    void canManageUsersInTenant_isTrue_forTenantUserManager() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of("resource_access", Map.of(
+                "usermanagement", Map.of("roles", List.of("tenant-user-manager"))
+            )),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canManageUsersInTenant(APP1_SLUG)).isTrue();
+    }
+
+    @Test
+    void canManageUsersInTenant_isFalse_whenNeitherRolePresent() {
+        // Caller is a plain user-viewer in the right realm: no manage rights.
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of("resource_access", Map.of(
+                "usermanagement", Map.of("roles", List.of("user-viewer"))
+            )),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canManageUsersInTenant(APP1_SLUG)).isFalse();
+    }
+
+    @Test
+    void canManageUsersInTenant_isFalse_forTenantUserManagerOfDifferentTenant() {
+        // Caller is tenant-user-manager in app1 but asking about app2.
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + APP1_REALM,
+            Map.of("resource_access", Map.of(
+                "usermanagement", Map.of("roles", List.of("tenant-user-manager"))
+            )),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canManageUsersInTenant(APP2_SLUG)).isFalse();
+    }
+
+    // ----- canManageUsersInTenantId(uuid) -----------------------------------
+
+    @Test
+    void canManageUsersInTenantId_isTrue_forPlatformAdmin() {
+        setContext(jwtFromPlatformRealmWithRoles(List.of(PLATFORM_ROLE)));
+        assertThat(tenantSecurity.canManageUsersInTenantId(TENANT_ID)).isTrue();
+    }
+
+    @Test
+    void canManageUsersInTenantId_isTrue_forTenantAdmin() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + TENANT_REALM,
+            Map.of("resource_access", Map.of(
+                "usermanagement", Map.of("roles", List.of("tenant-admin"))
+            )),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canManageUsersInTenantId(TENANT_ID)).isTrue();
+    }
+
+    @Test
+    void canManageUsersInTenantId_isTrue_forTenantUserManager() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + TENANT_REALM,
+            Map.of("resource_access", Map.of(
+                "usermanagement", Map.of("roles", List.of("tenant-user-manager"))
+            )),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canManageUsersInTenantId(TENANT_ID)).isTrue();
+    }
+
+    @Test
+    void canManageUsersInTenantId_isFalse_whenNeitherRolePresent() {
+        Jwt jwt = jwt(
+            KC_URL + "/realms/" + TENANT_REALM,
+            Map.of("resource_access", Map.of(
+                "usermanagement", Map.of("roles", List.of("user-viewer"))
+            )),
+            null
+        );
+        setContext(jwt);
+        assertThat(tenantSecurity.canManageUsersInTenantId(TENANT_ID)).isFalse();
     }
 
     // ----- helpers -----------------------------------------------------------

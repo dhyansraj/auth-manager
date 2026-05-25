@@ -49,7 +49,7 @@ public class TenantController {
     }
 
     @PostMapping
-    @PreAuthorize("@tenantSecurity.isPlatformAdmin()")
+    @PreAuthorize("@perms.has('TENANT_CREATE')")
     public ResponseEntity<TenantResponse> create(
         @Valid @RequestBody CreateTenantRequest req,
         UriComponentsBuilder uriBuilder
@@ -93,28 +93,28 @@ public class TenantController {
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("@tenantSecurity.canSeeTenant(#id)")
+    @PreAuthorize("@perms.hasOnTenantId(#id, 'TENANT_VIEW')")
     public TenantResponse get(@PathVariable UUID id) {
         var t = service.get(id);
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 
     @GetMapping("/by-slug/{slug}")
-    @PreAuthorize("@tenantSecurity.canSeeTenantBySlug(#slug)")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
     public TenantResponse getBySlug(@PathVariable String slug) {
         var t = service.getBySlug(slug);
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("@tenantSecurity.isPlatformAdmin()")
+    @PreAuthorize("@perms.has('TENANT_DELETE')")
     @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
     public void delete(@PathVariable UUID id) {
         service.softDelete(id, "system");  // TODO(security): real actor
     }
 
     @PostMapping("/{id}/retry")
-    @PreAuthorize("@tenantSecurity.isPlatformAdmin()")
+    @PreAuthorize("@perms.has('TENANT_CREATE')")
     public TenantResponse retry(@PathVariable UUID id) {
         // TODO(security): replace "system" with the authenticated principal.
         var t = service.retryProvisioning(id, "system");
@@ -129,7 +129,7 @@ public class TenantController {
     }
 
     @GetMapping("/{id}/audit")
-    @PreAuthorize("@tenantSecurity.canSeeTenant(#id)")
+    @PreAuthorize("@perms.hasOnTenantId(#id, 'AUDIT_VIEW')")
     public PageResponse<AuditEventResponse> audit(
         @PathVariable UUID id,
         @RequestParam(defaultValue = "0")  int page,

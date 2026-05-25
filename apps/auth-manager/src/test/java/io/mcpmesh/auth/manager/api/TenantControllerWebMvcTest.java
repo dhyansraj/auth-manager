@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
+import io.mcpmesh.auth.manager.security.Permissions;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.UsermanagementBootstrap;
@@ -35,6 +36,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -76,6 +78,7 @@ class TenantControllerWebMvcTest {
     @MockitoBean UsermanagementBootstrap bootstrap;
     @MockitoBean IdentityProvidersBootstrap idpBootstrap;
     @MockitoBean(name = "tenantSecurity") TenantSecurity tenantSecurity;
+    @MockitoBean(name = "perms") Permissions perms;
 
     @Autowired WebApplicationContext context;
     @Autowired FilterChainProxy springSecurityFilterChain;
@@ -142,8 +145,8 @@ class TenantControllerWebMvcTest {
 
     @Test
     void getBySlug_returns_403_when_caller_cannot_see_tenant() throws Exception {
-        // tenant-admin of app1 trying to fetch app2 — TenantSecurity returns false.
-        when(tenantSecurity.canSeeTenantBySlug("app2")).thenReturn(false);
+        // tenant-admin of app1 trying to fetch app2 — Permissions returns false.
+        when(perms.hasOnTenant(eq("app2"), eq("TENANT_VIEW"))).thenReturn(false);
 
         mvc.perform(get("/api/v1/tenants/by-slug/app2").with(jwt()))
             .andExpect(status().isForbidden());
@@ -151,7 +154,7 @@ class TenantControllerWebMvcTest {
 
     @Test
     void getBySlug_returns_200_when_caller_can_see_tenant() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug("app1")).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("TENANT_VIEW"))).thenReturn(true);
         Tenant app1 = tenantWith(APP1_ID, "app1", "App 1");
         when(tenantService.getBySlug("app1")).thenReturn(app1);
 
@@ -162,7 +165,7 @@ class TenantControllerWebMvcTest {
 
     @Test
     void getById_returns_403_when_caller_cannot_see_tenant() throws Exception {
-        when(tenantSecurity.canSeeTenant(APP2_ID)).thenReturn(false);
+        when(perms.hasOnTenantId(eq(APP2_ID), eq("TENANT_VIEW"))).thenReturn(false);
 
         mvc.perform(get("/api/v1/tenants/{id}", APP2_ID).with(jwt()))
             .andExpect(status().isForbidden());
@@ -170,7 +173,7 @@ class TenantControllerWebMvcTest {
 
     @Test
     void getById_returns_200_when_caller_can_see_tenant() throws Exception {
-        when(tenantSecurity.canSeeTenant(APP1_ID)).thenReturn(true);
+        when(perms.hasOnTenantId(eq(APP1_ID), eq("TENANT_VIEW"))).thenReturn(true);
         Tenant app1 = tenantWith(APP1_ID, "app1", "App 1");
         when(tenantService.get(APP1_ID)).thenReturn(app1);
 

@@ -1,6 +1,6 @@
 import { useAuth } from 'react-oidc-context';
 import { Link } from 'react-router-dom';
-import { AutoSignIn, RequireRole, useMeUser } from '@mcpmesh/auth-lib-react';
+import { AutoSignIn, RequirePermission, useMeUser } from '@mcpmesh/auth-lib-react';
 
 export default function Home() {
   const auth = useAuth();
@@ -45,19 +45,20 @@ export default function Home() {
           View orders
         </Link>
         {/*
-         * UX-only gating: tenant-admins see a Manage users link that deep-links
-         * to the admin-ui on this same host. The admin-ui detects the tenant
-         * realm from window.location.hostname so SSO carries over. Backend
-         * enforces actual authorisation; this is just a hint.
+         * UX-only gating: users with USER_LIST perm (tenant-admin or
+         * tenant-user-manager) see a Manage users link that deep-links to the
+         * admin-ui on this same host. The admin-ui detects the tenant realm
+         * from window.location.hostname so SSO carries over. Backend enforces
+         * actual authorisation; this is just a hint.
          */}
-        <RequireRole role="tenant-admin">
+        <RequirePermission permission="USER_LIST">
           <a
             href={`${window.location.origin}/admin/`}
             className="bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2 rounded shadow-sm"
           >
             Manage users
           </a>
-        </RequireRole>
+        </RequirePermission>
         <button
           onClick={() => auth.signoutRedirect()}
           className="bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 px-4 py-2 rounded"

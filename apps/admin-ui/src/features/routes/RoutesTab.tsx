@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useIsPlatformAdmin, useIsTenantAdmin } from '@mcpmesh/auth-lib-react';
+import { usePermission } from '@mcpmesh/auth-lib-react';
 import type { RoutingConfig, RoutingRule } from '../../api/types';
 import { useReplaceRoutesMutation, useRoutesQuery } from './useRoutesQuery';
 import { deepEqual, validate } from './validate';
@@ -25,10 +25,11 @@ function entriesToTargets(entries: TargetEntry[]): Record<string, string> {
 }
 
 export default function RoutesTab({ slug }: Props) {
-  // Edit mode is granted when the user is either a tenant-admin of this
-  // tenant OR a platform-admin (super-admin bypass). Mirrors TenantSecurity
-  // on the backend, which is still the authoritative gate.
-  const isTenantAdmin = useIsTenantAdmin() || useIsPlatformAdmin();
+  // Edit mode is gated on the ROUTES_EDIT atomic perm. platform-admin
+  // holds every perm (including ROUTES_EDIT on every tenant) and
+  // tenant-admin holds it on its own tenant. Mirrors the @PreAuthorize on
+  // the backend RouteController, which is still the authoritative gate.
+  const canManage = usePermission('ROUTES_EDIT');
   const query = useRoutesQuery(slug);
   const mutation = useReplaceRoutesMutation(slug);
 
@@ -70,7 +71,7 @@ export default function RoutesTab({ slug }: Props) {
   const hasChanges = query.data ? !deepEqual(currentConfig, query.data) : false;
   const hasDuplicateTargets = duplicateTargetKeys.size > 0;
   const canSave =
-    isTenantAdmin &&
+    canManage &&
     validation.valid &&
     !hasDuplicateTargets &&
     hasChanges &&
@@ -97,13 +98,13 @@ export default function RoutesTab({ slug }: Props) {
 
   return (
     <div className="space-y-4 pb-20">
-      {!isTenantAdmin && (
+      {!canManage && (
         <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-900">
           You're viewing in read-only mode. Tenant-admins can edit.
         </div>
       )}
 
-      {isTenantAdmin && hasChanges && (validation.errors.length > 0 || hasDuplicateTargets) && (
+      {canManage && hasChanges && (validation.errors.length > 0 || hasDuplicateTargets) && (
         <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-900">
           <div className="font-medium mb-1">Fix these before saving:</div>
           <ul className="list-disc ml-5">
@@ -130,7 +131,7 @@ export default function RoutesTab({ slug }: Props) {
         rules={rules}
         targetKeys={targetKeys}
         ruleErrors={validation.ruleErrors}
-        readOnly={!isTenantAdmin}
+        readOnly={!canManage}
         onChange={setRules}
       />
 
@@ -138,11 +139,11 @@ export default function RoutesTab({ slug }: Props) {
         targets={targetEntries}
         duplicateKeys={duplicateTargetKeys}
         targetErrors={validation.targetErrors}
-        readOnly={!isTenantAdmin}
+        readOnly={!canManage}
         onChange={setTargetEntries}
       />
 
-      {isTenantAdmin && (
+      {canManage && (
         <div className="sticky bottom-0 bg-white border-t -mx-6 px-6 py-3 flex items-center justify-between">
           <div className="text-xs text-slate-500">
             {hasChanges ? 'Unsaved changes' : 'No changes'}

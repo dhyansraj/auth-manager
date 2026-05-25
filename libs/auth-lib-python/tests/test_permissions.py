@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from mcpmesh_auth_lib import AuthLibSettings, Permissions
+from mcpmesh_auth_lib import AuthLibSettings, ClaimRolesPermissions, Permissions
 from mcpmesh_auth_lib.permissions import _audience_hash, _normalize
 
 from .conftest import ISSUER, TOKEN_URL
@@ -139,6 +139,122 @@ def test_cache_expires_after_ttl():
     time.sleep(1.2)
     perms.all_for("tok", {"sub": "alice"})
     assert route.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# ClaimRolesPermissions (the new default — reads from JWT claims, no UMA call)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def claims_settings_single():
+    return AuthLibSettings(
+        issuer_uri=ISSUER,
+        client_id="orders",
+        permissions_source="claims",
+    )
+
+
+@pytest.fixture
+def claims_settings_multi():
+    return AuthLibSettings(
+        issuer_uri=ISSUER,
+        client_id="orders",
+        audiences=["orders", "invoices"],
+        permissions_source="claims",
+    )
+
+
+def test_claims_empty_claims_returns_empty_set(claims_settings_single):
+    perms = ClaimRolesPermissions(claims_settings_single)
+    assert perms.all_for("tok", None) == set()
+    assert perms.all_for("tok", {}) == set()
+
+
+def test_claims_reads_roles_from_resource_access(claims_settings_single):
+    perms = ClaimRolesPermissions(claims_settings_single)
+    claims = {
+        "sub": "alice",
+        "resource_access": {
+            "orders": {"roles": ["ORDER_VIEW", "ORDER_APPROVE"]},
+        },
+    }
+    assert perms.all_for("tok", claims) == {"ORDER_VIEW", "ORDER_APPROVE"}
+
+
+def test_claims_multi_audience_union(claims_settings_multi):
+    perms = ClaimRolesPermissions(claims_settings_multi)
+    claims = {
+        "sub": "alice",
+        "resource_access": {
+            "orders": {"roles": ["ORDER_VIEW"]},
+            "invoices": {"roles": ["INVOICE_VIEW", "INVOICE_PAY"]},
+            # this client is NOT in AUTH_LIB_AUDIENCES -> ignored
+            "shipments": {"roles": ["SHIPMENT_VIEW"]},
+        },
+    }
+    assert perms.all_for("tok", claims) == {
+        "ORDER_VIEW", "INVOICE_VIEW", "INVOICE_PAY",
+    }
+
+
+def test_claims_empty_roles_array_returns_empty(claims_settings_single):
+    perms = ClaimRolesPermissions(claims_settings_single)
+    claims = {"resource_access": {"orders": {"roles": []}}}
+    assert perms.all_for("tok", claims) == set()
+
+
+def test_claims_non_string_entries_filtered(claims_settings_single):
+    perms = ClaimRolesPermissions(claims_settings_single)
+    claims = {
+        "resource_access": {
+            "orders": {"roles": ["ORDER_VIEW", None, 42, "", "ORDER_APPROVE", {"x": 1}]},
+        },
+    }
+    assert perms.all_for("tok", claims) == {"ORDER_VIEW", "ORDER_APPROVE"}
+
+
+def test_claims_missing_client_block_returns_empty(claims_settings_single):
+    perms = ClaimRolesPermissions(claims_settings_single)
+    # resource_access exists but no entry for 'orders'
+    claims = {"resource_access": {"shipments": {"roles": ["SHIPMENT_VIEW"]}}}
+    assert perms.all_for("tok", claims) == set()
+
+
+def test_claims_audience_fallback_to_client_id(claims_settings_single):
+    # No AUTH_LIB_AUDIENCES set -> effective_audiences == [client_id] == ["orders"]
+    perms = ClaimRolesPermissions(claims_settings_single)
+    assert perms._audience_clients() == ["orders"]
+
+
+def test_claims_malformed_resource_access_safe(claims_settings_single):
+    perms = ClaimRolesPermissions(claims_settings_single)
+    # resource_access is not a dict
+    assert perms.all_for("tok", {"resource_access": "nope"}) == set()
+    # client block not a dict
+    assert perms.all_for("tok", {"resource_access": {"orders": "nope"}}) == set()
+    # roles not a list
+    assert perms.all_for("tok", {"resource_access": {"orders": {"roles": "nope"}}}) == set()
+
+
+def test_claims_has_helper(claims_settings_single):
+    perms = ClaimRolesPermissions(claims_settings_single)
+    claims = {"resource_access": {"orders": {"roles": ["ORDER_VIEW"]}}}
+    assert perms.has("tok", claims, "ORDER_VIEW") is True
+    assert perms.has("tok", claims, "ORDER_DELETE") is False
+
+
+def test_claims_makes_no_http_call(respx_mock, claims_settings_multi):
+    # respx in strict mode would raise if any HTTP went out. We just assert
+    # the call completes purely from claims with no token endpoint mocked.
+    perms = ClaimRolesPermissions(claims_settings_multi)
+    claims = {
+        "resource_access": {
+            "orders": {"roles": ["ORDER_VIEW"]},
+            "invoices": {"roles": ["INVOICE_PAY"]},
+        },
+    }
+    assert perms.all_for("tok", claims) == {"ORDER_VIEW", "INVOICE_PAY"}
 
 
 @respx.mock

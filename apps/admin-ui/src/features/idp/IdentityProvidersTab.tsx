@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useIsPlatformAdmin, useIsTenantAdmin } from '@mcpmesh/auth-lib-react';
+import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api, ApiError } from '../../api/client';
 import type { IdentityProviderDto, IdentityProviderId } from '../../api/types';
 
@@ -8,7 +8,7 @@ interface Props {
 }
 
 export default function IdentityProvidersTab({ slug }: Props) {
-  const canManage = useIsTenantAdmin() || useIsPlatformAdmin();
+  const canManage = usePermission('IDP_EDIT');
   const qc = useQueryClient();
 
   const providers = useQuery({
@@ -152,8 +152,8 @@ function Toggle({
       />
       <span
         className={
-          'relative w-10 h-5 rounded-full bg-slate-300 transition-colors ' +
-          (checked ? 'bg-emerald-500' : '')
+          'relative w-10 h-5 rounded-full transition-colors ' +
+          (checked ? 'bg-emerald-600' : 'bg-slate-300')
         }
       >
         <span

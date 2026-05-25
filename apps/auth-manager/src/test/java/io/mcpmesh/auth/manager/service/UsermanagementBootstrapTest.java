@@ -179,4 +179,122 @@ class UsermanagementBootstrapTest {
         assertThat(added).isFalse();
         verify(realm, never()).roles();
     }
+
+    // ----- setStandardRedirectUris -----------------------------------------
+
+    @Test
+    void setStandardRedirectUris_tenantRealm_includesPlatformAndTenantHosts() {
+        // Tenant realm with two hostnames + platform host -> 5 redirect URIs
+        // (2x tenant-host pairs + 1x platform-host pair + localhost dev) and
+        // 4 web origins.
+        when(clientsResource.get(CLIENT_UUID)).thenReturn(clientResource);
+        ClientRepresentation rep = new ClientRepresentation();
+        rep.setClientId(CLIENT_ID);
+        when(clientResource.toRepresentation()).thenReturn(rep);
+
+        service.setStandardRedirectUris(
+            REALM, CLIENT_UUID,
+            List.of("app1.example.com", "app1-staging.example.com"),
+            "auth.mcp-mesh.io",
+            false);
+
+        ArgumentCaptor<ClientRepresentation> cap = ArgumentCaptor.forClass(ClientRepresentation.class);
+        verify(clientResource).update(cap.capture());
+        ClientRepresentation updated = cap.getValue();
+
+        assertThat(updated.getRedirectUris()).containsExactlyInAnyOrder(
+            "https://auth.mcp-mesh.io/admin/*",
+            "https://auth.mcp-mesh.io/_bff/callback",
+            "https://app1.example.com/admin/*",
+            "https://app1.example.com/_bff/callback",
+            "https://app1-staging.example.com/admin/*",
+            "https://app1-staging.example.com/_bff/callback",
+            "http://localhost:5173/admin/*"
+        );
+        assertThat(updated.getWebOrigins()).containsExactlyInAnyOrder(
+            "https://auth.mcp-mesh.io",
+            "https://app1.example.com",
+            "https://app1-staging.example.com",
+            "http://localhost:5173"
+        );
+    }
+
+    @Test
+    void setStandardRedirectUris_devRealm_ignoresTenantHostnames() {
+        // isDevRealm=true: tenantHostnames should be IGNORED; only platform
+        // host + localhost dev should appear.
+        when(clientsResource.get(CLIENT_UUID)).thenReturn(clientResource);
+        ClientRepresentation rep = new ClientRepresentation();
+        rep.setClientId(CLIENT_ID);
+        when(clientResource.toRepresentation()).thenReturn(rep);
+
+        service.setStandardRedirectUris(
+            REALM, CLIENT_UUID,
+            List.of("should-be-ignored.example.com"),  // ignored for dev
+            "auth.mcp-mesh.io",
+            true);
+
+        ArgumentCaptor<ClientRepresentation> cap = ArgumentCaptor.forClass(ClientRepresentation.class);
+        verify(clientResource).update(cap.capture());
+        ClientRepresentation updated = cap.getValue();
+
+        assertThat(updated.getRedirectUris()).containsExactlyInAnyOrder(
+            "https://auth.mcp-mesh.io/admin/*",
+            "https://auth.mcp-mesh.io/_bff/callback",
+            "http://localhost:5173/admin/*"
+        );
+        assertThat(updated.getWebOrigins()).containsExactlyInAnyOrder(
+            "https://auth.mcp-mesh.io",
+            "http://localhost:5173"
+        );
+    }
+
+    @Test
+    void setStandardRedirectUris_emptyTenantHostnames_stillAddsPlatformAndLocalhost() {
+        when(clientsResource.get(CLIENT_UUID)).thenReturn(clientResource);
+        ClientRepresentation rep = new ClientRepresentation();
+        rep.setClientId(CLIENT_ID);
+        when(clientResource.toRepresentation()).thenReturn(rep);
+
+        service.setStandardRedirectUris(
+            REALM, CLIENT_UUID,
+            List.of(),
+            "auth.mcp-mesh.io",
+            false);
+
+        ArgumentCaptor<ClientRepresentation> cap = ArgumentCaptor.forClass(ClientRepresentation.class);
+        verify(clientResource).update(cap.capture());
+        ClientRepresentation updated = cap.getValue();
+
+        // No tenant hostnames -> only platform host + localhost.
+        assertThat(updated.getRedirectUris()).containsExactlyInAnyOrder(
+            "https://auth.mcp-mesh.io/admin/*",
+            "https://auth.mcp-mesh.io/_bff/callback",
+            "http://localhost:5173/admin/*"
+        );
+    }
+
+    @Test
+    void setStandardRedirectUris_isIdempotent_sameInputProducesSameKcState() {
+        // Calling twice with identical inputs should produce two identical
+        // PUTs to KC -- this is how the backfill heals drift (always rewrites
+        // to the canonical set).
+        when(clientsResource.get(CLIENT_UUID)).thenReturn(clientResource);
+        when(clientResource.toRepresentation())
+            .thenReturn(new ClientRepresentation())
+            .thenReturn(new ClientRepresentation());
+
+        service.setStandardRedirectUris(
+            REALM, CLIENT_UUID, List.of("app.example.com"), "auth.mcp-mesh.io", false);
+        service.setStandardRedirectUris(
+            REALM, CLIENT_UUID, List.of("app.example.com"), "auth.mcp-mesh.io", false);
+
+        ArgumentCaptor<ClientRepresentation> cap = ArgumentCaptor.forClass(ClientRepresentation.class);
+        verify(clientResource, times(2)).update(cap.capture());
+
+        var firstCall = cap.getAllValues().get(0);
+        var secondCall = cap.getAllValues().get(1);
+        assertThat(firstCall.getRedirectUris()).isEqualTo(secondCall.getRedirectUris());
+        assertThat(firstCall.getWebOrigins()).isEqualTo(secondCall.getWebOrigins());
+    }
 }

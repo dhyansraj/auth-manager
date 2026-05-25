@@ -29,6 +29,30 @@ Requires Python 3.11+.
 | `AUTH_LIB_PERMISSION_CACHE_TTL_SECONDS`| no       | `60`    | UMA permission cache TTL                                           |
 | `AUTH_LIB_REDIS_URL`                   | no       | `None`  | e.g. `redis://redis:6379/0`. If set, permissions cache uses Redis. |
 | `AUTH_LIB_HTTP_TIMEOUT_SECONDS`        | no       | `5.0`   | HTTP timeout for JWKS + UMA calls.                                 |
+| `AUTH_LIB_PERMISSIONS_SOURCE`          | no       | `claims`| `claims` reads perms from JWT `resource_access.<client>.roles`; `uma` calls KC's UMA endpoint. See below. |
+
+### `AUTH_LIB_PERMISSIONS_SOURCE`
+
+Controls where atomic permissions come from when `Permissions.all_for(token, claims)`
+is called.
+
+- **`claims` (default)** — reads from the JWT's `resource_access.<client>.roles`
+  claim for each configured audience (`AUTH_LIB_AUDIENCES`, falling back to
+  `AUTH_LIB_CLIENT_ID`). This is the auth-manager pattern: atomic permissions
+  are KC client roles on the backend client, composite realm roles bundle them,
+  and KC's role expansion flattens them into the token at mint time. No
+  round-trip to KC is needed — the perms are already in the token. Typical
+  when you've onboarded the tenant with `manifest:apply` and have a permission
+  catalog defined.
+- **`uma`** — calls Keycloak's UMA ticket-grant endpoint (the original
+  `Permissions` behavior). Only needed for legacy tenants that still have KC
+  Authorization Services (resources/scopes/policies/permissions) configured
+  on their backend client. UMA is being phased out across the platform; a
+  matching Java auth-lib migration is on the backlog.
+
+The selection is wired up by `auth_lib_init(app)`. Pass an explicit
+`permissions=` instance to override (e.g., a custom subclass).
+
 
 ## Quickstart
 
@@ -75,7 +99,8 @@ from mcpmesh_auth_lib import (
     require_any_permission, # Depends-factory: require_any_permission("ORDER_VIEW", "ORDER_APPROVE")
     require_role,           # Depends-factory: require_role("tenant-admin", client="usermanagement")
 
-    Permissions,            # service: .all_for(token, claims) -> Set[str]
+    Permissions,            # service: UMA-based .all_for(token, claims) -> Set[str]
+    ClaimRolesPermissions,  # service: claims-based (default); reads resource_access.<client>.roles
     JwtValidator,           # service: .decode_and_verify(token) -> dict
     JwtValidationError,
 

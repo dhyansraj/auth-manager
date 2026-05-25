@@ -447,7 +447,7 @@ public class ThemeValidator {
             return;
         }
 
-        String sanitized = svgSanitizer.sanitize(svg);
+        String sanitized = closeVoidSvgElements(svgSanitizer.sanitize(svg));
         // The sanitizer treats input as HTML; it will lowercase tag names + drop
         // anything not on the allowlist. If sanitization stripped content, warn
         // but allow.
@@ -463,6 +463,88 @@ public class ThemeValidator {
             if (end > 0) prefix = svg.substring(0, end + 2) + "\n";
         }
         b.file(path, (prefix + sanitized).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** SVG void elements that OWASP HTML Sanitizer renders as open tags but
+     *  must be self-closing to avoid swallowing subsequent siblings. */
+    private static final List<String> VOID_SVG_ELEMENTS = List.of(
+        "circle", "rect", "path", "line", "ellipse", "polyline",
+        "polygon", "use", "stop", "image"
+    );
+
+    /**
+     * Fixes OWASP HTML Sanitizer output so void SVG elements are emitted as
+     * truly self-closing tags with no stray matching close tag. OWASP treats
+     * SVG void elements as HTML containers, so it produces patterns like
+     * {@code <circle .../><text>x</text></circle>} where, by HTML parsing
+     * rules, the {@code <text>} ends up nested inside {@code <circle>}.
+     *
+     * <p>This method walks the input and, for each void-SVG opener, rewrites
+     * it to canonical self-closing form ({@code <circle .../>}) AND deletes
+     * the first subsequent matching {@code </TAG>} when one exists, lifting
+     * the wrongly-nested siblings back out.
+     */
+    static String closeVoidSvgElements(String html) {
+        if (html == null || html.isEmpty()) return html;
+        String result = html;
+        for (String tag : VOID_SVG_ELEMENTS) {
+            // Match either <tag ...> or <tag .../> -- captured attrs group
+            // excludes the optional trailing '/'.
+            java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "<" + tag + "((?:[^>]*?))/?>");
+            java.util.regex.Matcher m = p.matcher(result);
+            StringBuilder sb = new StringBuilder();
+            String closeTag = "</" + tag + ">";
+            int cursor = 0;
+            while (m.find()) {
+                sb.append(result, cursor, m.start());
+                String attrs = m.group(1);
+                String trimmedAttrs = attrs.replaceFirst("\\s+$", "");
+                int afterOpener = m.end();
+                int closeIdx = indexOfIgnoreCase(result, closeTag, afterOpener);
+                // Decide: is this an empty container we should leave alone,
+                // or one with wrongly-nested siblings we need to lift out?
+                boolean leaveAlone = false;
+                if (closeIdx >= 0) {
+                    String between = result.substring(afterOpener, closeIdx);
+                    if (between.trim().isEmpty()) {
+                        // Empty (or whitespace-only) container -- preserve
+                        // the original opener + close tag pair as-is.
+                        leaveAlone = true;
+                    }
+                }
+                if (leaveAlone) {
+                    // Re-emit the original opener verbatim.
+                    sb.append(result, m.start(), m.end());
+                    cursor = m.end();
+                } else {
+                    // Rewrite opener as self-closing.
+                    sb.append('<').append(tag);
+                    if (!trimmedAttrs.isEmpty()) sb.append(trimmedAttrs);
+                    sb.append("/>");
+                    cursor = afterOpener;
+                    if (closeIdx >= 0) {
+                        // Lift the wrongly-nested content back out: keep
+                        // everything between opener and close, drop the close.
+                        sb.append(result, cursor, closeIdx);
+                        cursor = closeIdx + closeTag.length();
+                    }
+                }
+            }
+            sb.append(result, cursor, result.length());
+            result = sb.toString();
+        }
+        return result;
+    }
+
+    private static int indexOfIgnoreCase(String haystack, String needle, int from) {
+        int max = haystack.length() - needle.length();
+        for (int i = from; i <= max; i++) {
+            if (haystack.regionMatches(true, i, needle, 0, needle.length())) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     // ---- properties ---------------------------------------------------------

@@ -2,6 +2,8 @@ package io.mcpmesh.auth.manager.roles;
 
 import io.mcpmesh.auth.manager.audit.AuditService;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
+import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import jakarta.ws.rs.NotFoundException;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +56,8 @@ class RolesServiceTest {
     private Keycloak admin;
     private TenantService tenants;
     private AuditService audit;
+    private KeycloakAdminService keycloak;
+    private IdentityProvidersBootstrap identityProvidersBootstrap;
     private RealmResource realm;
     private RolesResource realmRoles;
     private ClientsResource clientsResource;
@@ -65,6 +69,8 @@ class RolesServiceTest {
         admin = mock(Keycloak.class);
         tenants = mock(TenantService.class);
         audit = mock(AuditService.class);
+        keycloak = mock(KeycloakAdminService.class);
+        identityProvidersBootstrap = mock(IdentityProvidersBootstrap.class);
         realm = mock(RealmResource.class);
         realmRoles = mock(RolesResource.class);
         clientsResource = mock(ClientsResource.class);
@@ -78,7 +84,12 @@ class RolesServiceTest {
         when(realm.roles()).thenReturn(realmRoles);
         when(realm.clients()).thenReturn(clientsResource);
 
-        service = new RolesService(admin, tenants, audit);
+        // Default stubs for computeDefaultRoleNames: no default-roles composite
+        // members + no enabled IdPs. Tests that need isDefault=true override
+        // these per-test.
+        when(identityProvidersBootstrap.listEnabledProviders(anyString())).thenReturn(Set.of());
+
+        service = new RolesService(admin, tenants, audit, keycloak, identityProvidersBootstrap);
     }
 
     // ---- listPermissions filtering ----
@@ -154,6 +165,32 @@ class RolesServiceTest {
         assertThat(only.permissions()).isEmpty();
         assertThat(only.userCount()).isEqualTo(2);
         assertThat(only.system()).isFalse();
+    }
+
+    @Test
+    void list_marksRoleAsDefault_whenInDefaultRolesComposite() {
+        when(clientsResource.findAll()).thenReturn(List.of());
+        RoleRepresentation customer = realmRole("customer", "Auto-assigned at signup", false);
+        when(realmRoles.list()).thenReturn(List.of(customer));
+
+        // customer is visible; stub composites + user-count lookups
+        RoleResource customerResource = mock(RoleResource.class);
+        when(realmRoles.get("customer")).thenReturn(customerResource);
+        when(customerResource.getRoleComposites()).thenReturn(Set.of());
+        when(customerResource.getRoleUserMembers()).thenReturn(Set.of());
+
+        // default-roles-<realm> composite includes "customer"
+        RoleResource defaultRolesResource = mock(RoleResource.class);
+        when(realmRoles.get("default-roles-" + REALM)).thenReturn(defaultRolesResource);
+        RoleRepresentation customerRef = new RoleRepresentation();
+        customerRef.setName("customer");
+        when(defaultRolesResource.getRealmRoleComposites()).thenReturn(Set.of(customerRef));
+
+        var out = service.list(SLUG);
+
+        assertThat(out).hasSize(1);
+        assertThat(out.get(0).name()).isEqualTo("customer");
+        assertThat(out.get(0).isDefault()).isTrue();
     }
 
     // ---- create ----
@@ -386,6 +423,94 @@ class RolesServiceTest {
             service.updateUserRoles(SLUG, "user-1", List.of("tenant-admin"), "alice"))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("tenant-admin");
+    }
+
+    // ---- updateUserSystemRoles ----
+
+    @Test
+    void updateUserSystemRoles_addsTenantUserManager_andPreservesUserViewer() {
+        // Current: just baseline user-viewer. Desired: + tenant-user-manager.
+        when(keycloak.getUserClientRoles(REALM, "user-1", "usermanagement"))
+            .thenReturn(new ArrayList<>(List.of("user-viewer")));
+
+        var result = service.updateUserSystemRoles(SLUG, "user-1",
+            List.of("tenant-user-manager"), "alice");
+
+        assertThat(result.added()).containsExactly("tenant-user-manager");
+        assertThat(result.removed()).isEmpty();
+        verify(keycloak).assignClientRoleToUser(REALM, "user-1", "usermanagement", "tenant-user-manager");
+        // user-viewer must NOT be removed even though caller didn't send it.
+        verify(keycloak, never()).removeClientRoleFromUser(REALM, "user-1", "usermanagement", "user-viewer");
+    }
+
+    @Test
+    void updateUserSystemRoles_emptyList_clearsManageableButKeepsUserViewer() {
+        // Current: user-viewer + tenant-admin. Desired: clear all (empty list).
+        when(keycloak.getUserClientRoles(REALM, "user-1", "usermanagement"))
+            .thenReturn(new ArrayList<>(List.of("user-viewer", "tenant-admin")));
+
+        var result = service.updateUserSystemRoles(SLUG, "user-1", List.of(), "alice");
+
+        assertThat(result.added()).isEmpty();
+        assertThat(result.removed()).containsExactly("tenant-admin");
+        verify(keycloak).removeClientRoleFromUser(REALM, "user-1", "usermanagement", "tenant-admin");
+        verify(keycloak, never()).removeClientRoleFromUser(REALM, "user-1", "usermanagement", "user-viewer");
+    }
+
+    @Test
+    void updateUserSystemRoles_bothRoles_setsBoth_noExclusivityEnforcement() {
+        // Backend permits the combo; the UI hints exclusivity but the API
+        // doesn't enforce it.
+        when(keycloak.getUserClientRoles(REALM, "user-1", "usermanagement"))
+            .thenReturn(new ArrayList<>(List.of("user-viewer")));
+
+        var result = service.updateUserSystemRoles(SLUG, "user-1",
+            List.of("tenant-admin", "tenant-user-manager"), "alice");
+
+        assertThat(result.added()).containsExactlyInAnyOrder("tenant-admin", "tenant-user-manager");
+        assertThat(result.removed()).isEmpty();
+        verify(keycloak).assignClientRoleToUser(REALM, "user-1", "usermanagement", "tenant-admin");
+        verify(keycloak).assignClientRoleToUser(REALM, "user-1", "usermanagement", "tenant-user-manager");
+    }
+
+    @Test
+    void updateUserSystemRoles_unrecognizedRole_throws400() {
+        // No KC call should happen — we reject before touching KC.
+        assertThatThrownBy(() ->
+            service.updateUserSystemRoles(SLUG, "user-1", List.of("realm-admin"), "alice"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("realm-admin");
+        verify(keycloak, never()).assignClientRoleToUser(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void updateUserSystemRoles_explicitUserViewerSilentlyDropped() {
+        // Caller sending user-viewer alongside a managed role should not 400
+        // and should not produce a duplicate add (we silently re-add it
+        // because it's the baseline).
+        when(keycloak.getUserClientRoles(REALM, "user-1", "usermanagement"))
+            .thenReturn(new ArrayList<>(List.of("user-viewer")));
+
+        service.updateUserSystemRoles(SLUG, "user-1",
+            List.of("user-viewer", "tenant-admin"), "alice");
+
+        verify(keycloak).assignClientRoleToUser(REALM, "user-1", "usermanagement", "tenant-admin");
+        verify(keycloak, never()).assignClientRoleToUser(REALM, "user-1", "usermanagement", "user-viewer");
+    }
+
+    @Test
+    void updateUserSystemRoles_doesNotTouchOutOfScopeClientRoles() {
+        // KC says the user holds some unrelated client role on usermanagement
+        // (e.g. left over from earlier provisioning). The updater must leave
+        // it alone — it's outside the manageable scope.
+        when(keycloak.getUserClientRoles(REALM, "user-1", "usermanagement"))
+            .thenReturn(new ArrayList<>(List.of("user-viewer", "some-other-role")));
+
+        service.updateUserSystemRoles(SLUG, "user-1",
+            List.of("tenant-admin"), "alice");
+
+        verify(keycloak).assignClientRoleToUser(REALM, "user-1", "usermanagement", "tenant-admin");
+        verify(keycloak, never()).removeClientRoleFromUser(REALM, "user-1", "usermanagement", "some-other-role");
     }
 
     // ---- helpers ----

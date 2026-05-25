@@ -25,6 +25,11 @@ export function decodeAccessToken(token: string | undefined): AccessTokenClaims 
   }
 }
 
+/**
+ * @deprecated Role-name check on a specific client. Prefer JWT permission
+ * checks via `usePermission(<perm>)`. Kept for back-compat (e.g.
+ * cross-client admin link visibility in app1).
+ */
 export function hasClientRole(
   claims: AccessTokenClaims | null,
   client: string,
@@ -33,6 +38,10 @@ export function hasClientRole(
   return claims?.resource_access?.[client]?.roles?.includes(role) ?? false;
 }
 
+/**
+ * @deprecated Realm role-name check. Prefer permission checks via
+ * `usePermission(<perm>)`. Kept for back-compat.
+ */
 export function hasRealmRole(claims: AccessTokenClaims | null, role: string): boolean {
   return claims?.realm_access?.roles?.includes(role) ?? false;
 }

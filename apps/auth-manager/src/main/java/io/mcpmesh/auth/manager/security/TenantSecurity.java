@@ -17,8 +17,13 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Exposed as the SpEL bean {@code tenantSecurity} so controllers can write:
- * {@code @PreAuthorize("@tenantSecurity.hasRole(#tenantId, 'tenant-admin')")}
+ * Exposed as the SpEL bean {@code tenantSecurity} -- the role-based authority
+ * helpers used historically by {@code @PreAuthorize} annotations. As of
+ * Phase B those annotations were migrated to atomic-permission checks
+ * against the {@link Permissions} bean (@code @perms.*); this class stays
+ * in place because admin-ui (Phase C) still references it indirectly and
+ * may be invoked directly by future controllers needing role-shape rather
+ * than perm-shape gates.
  *
  * <p>Verifies (a) the caller has a JWT, (b) that JWT was issued by the
  * target tenant's realm, and (c) the JWT's {@code resource_access.usermanagement.roles}
@@ -161,6 +166,29 @@ public class TenantSecurity {
      */
     public boolean canManageTenant(String slug) {
         return hasRoleBySlug(slug, "tenant-admin");
+    }
+
+    /**
+     * True when the caller is allowed to manage users in the given tenant.
+     * Granted to: platform-admin (anywhere), tenant-admin of this tenant,
+     * tenant-user-manager of this tenant. Lighter-weight than
+     * {@link #canManageTenant(String)} which also covers Routes/IdP/Branding/
+     * Permissions/Roles config.
+     */
+    public boolean canManageUsersInTenant(String slug) {
+        if (isPlatformAdmin()) return true;
+        if (hasRoleBySlug(slug, "tenant-admin")) return true;
+        return hasRoleBySlug(slug, "tenant-user-manager");
+    }
+
+    /**
+     * UUID-keyed twin of {@link #canManageUsersInTenant(String)}, for the
+     * UUID-keyed user-management controller.
+     */
+    public boolean canManageUsersInTenantId(UUID tenantId) {
+        if (isPlatformAdmin()) return true;
+        if (hasRole(tenantId, "tenant-admin")) return true;
+        return hasRole(tenantId, "tenant-user-manager");
     }
 
     /**

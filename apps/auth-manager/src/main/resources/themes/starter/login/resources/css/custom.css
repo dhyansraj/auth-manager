@@ -1,31 +1,292 @@
 /*
- * Tenant theme starter — customise these variables to brand your Keycloak
- * login + account pages. The variable names map to the keycloak.v2 design
- * tokens; override any subset.
+ * Tenant sign-in theme — starter CSS.
+ *
+ * PARENT THEME: keycloak.v2 (set in login/theme.properties).
+ * keycloak.v2 emits PatternFly v5 markup, so the live DOM uses pf-v5-c-*
+ * classes. Selectors below target THAT rendered DOM (verified against KC
+ * 26.3.3). PatternFly-v4 selectors like `.pf-c-*` or `.card-pf` are NOT
+ * emitted by keycloak.v2 and styling them is a no-op.
+ *
+ * The --kc-* custom properties below are SCOPED TO THIS FILE. The parent
+ * theme does not read them; the selectors in this file read them via
+ * var(--kc-*). Treat them as a brand-token convenience local to this CSS.
+ *
+ * `!important` is used defensively throughout because PatternFly v5 ships
+ * very specific base styles (e.g. `.pf-v5-c-form-control` carries explicit
+ * border + background) and tenants who don't want to fight specificity
+ * battles need overrides that just win.
+ *
+ * LAYOUT NOTE: keycloak.v2 places branding (logo / .pf-v5-c-login__header)
+ * in a narrow right-hand column on wider viewports. CSS alone cannot widen
+ * that column without overriding the parent FTL template (blocked by the
+ * upload validator). Design logos to fit a narrow vertical strip (square /
+ * vertical layouts; avoid wide landscape wordmarks).
+ *
+ * To preview: upload via the admin-ui Branding tab, then open an incognito
+ * window on your tenant hostname.
  */
+
 :root {
-  --kc-primary: #0f172a;
-  --kc-primary-hover: #1e293b;
-  --kc-bg: #f8fafc;
-  --kc-card-bg: #ffffff;
-  --kc-text: #0f172a;
+  /* Primary brand colour — used for the submit button + focus rings + links */
+  --kc-primary: #4f46e5;
+  --kc-primary-hover: #4338ca;
+
+  /* Page background (outside the card) */
+  --kc-background: #f8fafc;
+
+  /* Login-card surface */
+  --kc-card-background: #ffffff;
+
+  /* Text */
+  --kc-text-primary: #0f172a;
   --kc-text-muted: #64748b;
-  --kc-border: #e2e8f0;
-  --kc-error: #b91c1c;
-  --kc-success: #166534;
+
+  /* Borders + status */
+  --kc-border: #e5e7eb;
+  --kc-error: #dc2626;
+
+  /* Radii (inputs square-ish, buttons pill-shaped) */
+  --kc-radius-input: 8px;
+  --kc-radius-button: 999px;
+
+  /* Font stack */
+  --kc-font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-/*
- * Examples (uncomment + edit):
- *
- * .login-pf body { background: var(--kc-bg); }
- * .pf-c-button.pf-m-primary { background: var(--kc-primary); }
- * .pf-c-button.pf-m-primary:hover { background: var(--kc-primary-hover); }
- *
- * Logo (drop your file in resources/img/logo.svg, then):
- *   #kc-header-wrapper {
- *     background: url("../img/logo.svg") no-repeat center;
- *     background-size: contain;
- *     height: 60px;
- *   }
+/* ===== Page background + base font ====================================
+ * `.login-pf` is the body class keycloak.v2 sets on the document body.
+ * Override it (with html/body) so the area outside the card matches.
  */
+html, body, .login-pf {
+  background: var(--kc-background) !important;
+  font-family: var(--kc-font-family);
+  color: var(--kc-text-primary);
+}
+
+/* ===== Login card surface =============================================
+ * keycloak.v2's main card is .pf-v5-c-login__main; container/header are
+ * outer wrappers. Set background on all so any tenant-supplied background
+ * image bleeds correctly behind the card.
+ */
+.pf-v5-c-login,
+.pf-v5-c-login__container,
+.pf-v5-c-login__main,
+.pf-v5-c-login__main-body,
+.pf-v5-c-login__main-header,
+.pf-v5-c-login__main-footer,
+.pf-v5-c-login__header {
+  background: var(--kc-card-background) !important;
+  color: var(--kc-text-primary) !important;
+}
+
+/* Card padding + border + shadow */
+.pf-v5-c-login__main {
+  border: 1px solid var(--kc-border);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.08);
+  padding: 1.5rem 1.25rem !important;
+}
+
+/* ===== Logo (pseudo-element on the header) ============================
+ * keycloak.v2 renders an empty .pf-v5-c-login__header above the form;
+ * inject the logo there as a ::before background image. max-width keeps it
+ * sane inside the narrow right-column layout (see LAYOUT NOTE above).
+ */
+.pf-v5-c-login__header {
+  text-align: center;
+  padding: 1.25rem 0 0.75rem !important;
+}
+.pf-v5-c-login__header::before {
+  content: "";
+  display: block;
+  background: url("../img/logo.svg") no-repeat center;
+  background-size: contain;
+  height: 96px;
+  max-width: 160px;
+  margin: 0 auto 0.5rem;
+}
+
+/* ===== Title ==========================================================
+ * .pf-v5-c-title is the generic title element; .pf-m-3xl is the size
+ * modifier the login screens use. Override both so tenant titles inherit
+ * the brand colour.
+ */
+.pf-v5-c-title,
+.pf-v5-c-title.pf-m-3xl {
+  color: var(--kc-text-primary) !important;
+  font-weight: 700 !important;
+}
+
+/* ===== Form labels ====================================================
+ * Two selectors because KC's form group sometimes wraps the label text in
+ * a span and sometimes attaches the style to the group's label container.
+ */
+.pf-v5-c-form__label-text,
+.pf-v5-c-form__group-label {
+  color: var(--kc-text-primary) !important;
+  font-weight: 500;
+}
+
+/* ===== Inputs + focus =================================================
+ * .pf-v5-c-form-control is the input shell; some KC variants render the
+ * actual <input> as `input.pf-v5-c-form-control` directly. The input-group
+ * selector covers password fields where the show/hide button is appended.
+ */
+.pf-v5-c-form-control,
+input.pf-v5-c-form-control,
+.pf-v5-c-input-group .pf-v5-c-form-control {
+  background: var(--kc-card-background) !important;
+  color: var(--kc-text-primary) !important;
+  border: 1px solid var(--kc-border) !important;
+  border-radius: var(--kc-radius-input) !important;
+}
+.pf-v5-c-form-control:focus,
+.pf-v5-c-form-control:focus-within,
+input.pf-v5-c-form-control:focus {
+  border-color: var(--kc-primary) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18) !important;
+}
+
+/* ===== Password show/hide button ======================================
+ * .pf-m-control is the button-modifier KC uses for the show/hide control
+ * inside the password input-group. Keep it neutral (don't compete with
+ * the primary submit button visually).
+ */
+.pf-v5-c-button.pf-m-control {
+  background: var(--kc-card-background) !important;
+  color: var(--kc-text-muted) !important;
+  border: 1px solid var(--kc-border) !important;
+}
+
+/* ===== Primary submit button ==========================================
+ * Sign-in / Continue. Pill-shaped to match the social buttons below.
+ */
+.pf-v5-c-button.pf-m-primary {
+  background: var(--kc-primary) !important;
+  color: #ffffff !important;
+  border: 0 !important;
+  border-radius: var(--kc-radius-button) !important;
+  padding: 0.75rem 1.5rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.02em;
+  transition: background 0.15s ease;
+}
+.pf-v5-c-button.pf-m-primary:hover,
+.pf-v5-c-button.pf-m-primary:focus {
+  background: var(--kc-primary-hover) !important;
+}
+
+/* ===== Secondary + IdP buttons ========================================
+ * "Continue with Google", "Continue with GitHub", etc. KC renders these
+ * as .pf-v5-c-button.pf-m-secondary in the social section. min-height:0
+ * undoes PF v5's tall default so the button hugs its content.
+ */
+.pf-v5-c-button.pf-m-secondary {
+  background: var(--kc-card-background) !important;
+  color: var(--kc-text-primary) !important;
+  border: 1px solid var(--kc-border) !important;
+  border-radius: var(--kc-radius-button) !important;
+  padding: 0.6rem 1rem !important;
+  font-weight: 600 !important;
+  min-height: 0 !important;
+}
+.pf-v5-c-button.pf-m-secondary:hover {
+  background: #f1f5f9 !important;
+  border-color: var(--kc-primary) !important;
+}
+
+/* ===== Social IdP icon sizing — CRITICAL =============================
+ * KC renders the IdP icon inside the secondary button as a .pf-v5-c-brand
+ * element (sometimes wrapping an <img>, sometimes a background-image div).
+ * Without an explicit cap the icon renders at its natural size and pushes
+ * the button to full card width. Multiple selectors + !important because
+ * the rendered element type varies across KC IdP plugins.
+ */
+.pf-v5-c-button.pf-m-secondary .pf-v5-c-brand,
+.pf-v5-c-button .pf-v5-c-brand,
+.pf-v5-c-brand {
+  width: 20px !important;
+  height: 20px !important;
+  max-width: 20px !important;
+  max-height: 20px !important;
+  object-fit: contain;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.pf-v5-c-button.pf-m-secondary img,
+.pf-v5-c-button img {
+  width: 20px !important;
+  height: 20px !important;
+  max-width: 20px !important;
+  max-height: 20px !important;
+  object-fit: contain;
+}
+
+/* ===== Links ==========================================================
+ * "Forgot password?", "Don't have an account?", etc. Scope to the login
+ * card so we don't accidentally restyle links in tenant-supplied
+ * marketing chrome above/below the form.
+ */
+.pf-v5-c-login a,
+.pf-v5-c-login__main a,
+.pf-v5-c-form a {
+  color: var(--kc-primary) !important;
+  text-decoration: underline;
+}
+.pf-v5-c-login a:hover,
+.pf-v5-c-login__main a:hover,
+.pf-v5-c-form a:hover {
+  color: var(--kc-primary-hover) !important;
+}
+
+/* ===== Footer band ====================================================
+ * The footer-band carries "Try another way" / locale switch links below
+ * the card. Muted text by default.
+ */
+.pf-v5-c-login__main-footer-band,
+.pf-v5-c-login__main-footer-band-item {
+  color: var(--kc-text-muted) !important;
+}
+
+/* ===== Helper / error text ============================================
+ * helper-text__item-text is the generic field-helper text node;
+ * .pf-m-error is the modifier applied when validation fails.
+ */
+.pf-v5-c-helper-text__item-text {
+  color: var(--kc-text-muted);
+}
+.pf-v5-c-form__helper-text .pf-m-error,
+.pf-m-error .pf-v5-c-helper-text__item-text {
+  color: var(--kc-error) !important;
+}
+
+/* ===== OPT-IN: right-column branding for logo-with-wordmark designs =====
+ * Use this section if your logo SVG already contains a wordmark (so the
+ * keycloak.v2 "Welcome to <realm>" header text becomes redundant) and you
+ * want the logo larger than the 96x160 default above.
+ *
+ * Two things happen here:
+ *   1. The wrapping .pf-v5-c-brand title inside .pf-v5-c-login__header gets
+ *      hidden. Scoped to the header — IdP icons elsewhere also use
+ *      .pf-v5-c-brand, so an unscoped rule would hide social icons too.
+ *   2. The header ::before logo placeholder is enlarged (200x140) and uses
+ *      background-size: contain so a 1:1 or landscape SVG renders cleanly.
+ *
+ * Delete this whole block if you want the icon-only layout (small ::before
+ * logo + KC's "Welcome to <realm>" title).
+ */
+.pf-v5-c-login__header > .pf-v5-c-brand,
+header.pf-v5-c-login__header .pf-v5-c-brand {
+  display: none !important;
+}
+.pf-v5-c-login__header::before {
+  height: 140px !important;
+  width: 200px !important;
+  max-width: 200px !important;
+  margin: 0 auto 0.25rem !important;
+  background-size: contain !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+}

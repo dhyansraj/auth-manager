@@ -5,6 +5,7 @@ import io.mcpmesh.auth.manager.routing.RoutingConfigService;
 import io.mcpmesh.auth.manager.routing.model.AuthMode;
 import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
 import io.mcpmesh.auth.manager.routing.model.RoutingRule;
+import io.mcpmesh.auth.manager.security.Permissions;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,6 +70,7 @@ class RouteControllerWebMvcTest {
 
     @MockitoBean RoutingConfigService routingService;
     @MockitoBean(name = "tenantSecurity") TenantSecurity tenantSecurity;
+    @MockitoBean(name = "perms") Permissions perms;
 
     @Autowired WebApplicationContext context;
     @Autowired FilterChainProxy springSecurityFilterChain;
@@ -99,14 +101,14 @@ class RouteControllerWebMvcTest {
 
     @Test
     void get_returns_403_for_non_admin() throws Exception {
-        when(tenantSecurity.hasRoleBySlug(anyString(), eq("tenant-admin"))).thenReturn(false);
+        when(perms.hasOnTenant(anyString(), eq("TENANT_VIEW"))).thenReturn(false);
         mvc.perform(get("/api/v1/tenants/acme/routes").with(jwt()))
             .andExpect(status().isForbidden());
     }
 
     @Test
     void put_returns_403_for_non_admin() throws Exception {
-        when(tenantSecurity.hasRoleBySlug(anyString(), eq("tenant-admin"))).thenReturn(false);
+        when(perms.hasOnTenant(anyString(), eq("ROUTES_EDIT"))).thenReturn(false);
         mvc.perform(put("/api/v1/tenants/acme/routes")
                 .with(jwt())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -116,7 +118,7 @@ class RouteControllerWebMvcTest {
 
     @Test
     void get_returns_200_for_admin() throws Exception {
-        when(tenantSecurity.hasRoleBySlug(eq("acme"), eq("tenant-admin"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("acme"), eq("TENANT_VIEW"))).thenReturn(true);
         when(routingService.getForTenant("acme")).thenReturn(sampleConfig());
 
         mvc.perform(get("/api/v1/tenants/acme/routes").with(jwt()))
@@ -128,7 +130,7 @@ class RouteControllerWebMvcTest {
 
     @Test
     void put_returns_200_for_admin_happy_path() throws Exception {
-        when(tenantSecurity.hasRoleBySlug(eq("acme"), eq("tenant-admin"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("acme"), eq("ROUTES_EDIT"))).thenReturn(true);
         when(routingService.replaceForTenant(eq("acme"), any(RoutingConfig.class)))
             .thenAnswer(inv -> inv.getArgument(1));
 
@@ -142,7 +144,7 @@ class RouteControllerWebMvcTest {
 
     @Test
     void put_returns_400_for_missing_catch_all() throws Exception {
-        when(tenantSecurity.hasRoleBySlug(eq("acme"), eq("tenant-admin"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("acme"), eq("ROUTES_EDIT"))).thenReturn(true);
 
         // Hand-rolled JSON to bypass the record's constructor-side validation
         // and exercise the HTTP-boundary error path.
@@ -163,7 +165,7 @@ class RouteControllerWebMvcTest {
 
     @Test
     void put_returns_400_for_empty_rules() throws Exception {
-        when(tenantSecurity.hasRoleBySlug(eq("acme"), eq("tenant-admin"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("acme"), eq("ROUTES_EDIT"))).thenReturn(true);
 
         String body = """
             {

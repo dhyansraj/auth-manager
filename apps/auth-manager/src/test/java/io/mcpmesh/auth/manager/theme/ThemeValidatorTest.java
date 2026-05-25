@@ -189,6 +189,17 @@ class ThemeValidatorTest {
         assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
     }
 
+    @Test
+    void emailThemeWithKeycloakParent_isAccepted() throws Exception {
+        byte[] zip = zip(Map.of(
+            "email/theme.properties", "parent=keycloak\nimport=common/keycloak\n".getBytes(),
+            "email/messages/messages_en.properties",
+                "# emailVerificationSubject=Verify your email\n".getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+    }
+
     // ---- extension allowlist -----------------------------------------------
 
     @Test
@@ -343,6 +354,90 @@ class ThemeValidatorTest {
         ValidationResult r = validator.validateZip(zip);
         assertThat(r.isValid()).isFalse();
         assertThat(r.errors()).extracting(ValidationResult.Error::code).contains("svg_remote_href");
+    }
+
+    @Test
+    void svgWithSelfClosingCircle_keepsCircleSelfClosing() throws Exception {
+        String svg = "<?xml version=\"1.0\"?>"
+            + "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\">"
+            + "<circle cx=\"50\" cy=\"50\" r=\"40\" fill=\"red\"/>"
+            + "<text x=\"50\" y=\"55\" text-anchor=\"middle\">A</text>"
+            + "</svg>";
+        byte[] zip = zip(Map.of(
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.svg", svg.getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+        String out = new String(r.extractedFiles().get("login/resources/img/logo.svg"), StandardCharsets.UTF_8);
+        // Critical: text must NOT be nested inside circle. Either form is OK:
+        //   <circle ... /> or <circle ...></circle>
+        // What's NOT OK: <circle ...><text>...</text></circle>
+        // Verify by checking that text appears as a SIBLING of circle, not as a child.
+        int circleStart = out.toLowerCase().indexOf("<circle");
+        int textStart = out.toLowerCase().indexOf("<text");
+        int circleClose = out.toLowerCase().indexOf("</circle>");
+        assertThat(circleStart).isGreaterThan(-1);
+        assertThat(textStart).isGreaterThan(circleStart);
+        // Either circle is self-closing (no </circle> at all) OR </circle> appears BEFORE <text>
+        boolean circleSelfClosing = circleClose == -1;
+        boolean textIsAfterCircleClose = circleClose >= 0 && textStart > circleClose;
+        assertThat(circleSelfClosing || textIsAfterCircleClose)
+            .as("text element must not be nested inside circle. output: %s", out)
+            .isTrue();
+    }
+
+    @Test
+    void svgWithMultipleSelfClosingVoidElements_allStayClosed() throws Exception {
+        String svg = "<?xml version=\"1.0\"?>"
+            + "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\">"
+            + "<rect x=\"0\" y=\"0\" width=\"50\" height=\"50\" fill=\"blue\"/>"
+            + "<path d=\"M10 10 L20 20\" stroke=\"red\"/>"
+            + "<line x1=\"0\" y1=\"0\" x2=\"100\" y2=\"100\" stroke=\"green\"/>"
+            + "<text x=\"50\" y=\"50\">Hi</text>"
+            + "</svg>";
+        byte[] zip = zip(Map.of(
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.svg", svg.getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+        String out = new String(r.extractedFiles().get("login/resources/img/logo.svg"), StandardCharsets.UTF_8);
+        // text must not be nested inside ANY of the void elements above.
+        int textStart = out.toLowerCase().indexOf("<text");
+        // Find the last </rect>, </path>, </line> if any -- text must come after the last one.
+        int lastClose = -1;
+        for (String tag : java.util.List.of("</rect>", "</path>", "</line>")) {
+            int idx = out.toLowerCase().lastIndexOf(tag);
+            if (idx > lastClose) lastClose = idx;
+        }
+        // If any close tags exist, text must come after them; otherwise the void elements were self-closing.
+        if (lastClose >= 0) {
+            assertThat(textStart).isGreaterThan(lastClose);
+        }
+    }
+
+    @Test
+    void svgWithExplicitlyClosedCircle_isUnchangedSemantics() throws Exception {
+        // Belt + suspenders: input already uses explicit close tags. Output should
+        // not have a regression where we wrap the contents in a new circle pair.
+        String svg = "<?xml version=\"1.0\"?>"
+            + "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\">"
+            + "<circle cx=\"50\" cy=\"50\" r=\"40\" fill=\"red\"></circle>"
+            + "<text x=\"50\" y=\"50\">A</text>"
+            + "</svg>";
+        byte[] zip = zip(Map.of(
+            "login/theme.properties", "parent=keycloak.v2\n".getBytes(),
+            "login/resources/img/logo.svg", svg.getBytes()
+        ));
+        ValidationResult r = validator.validateZip(zip);
+        assertThat(r.isValid()).as("errors: %s", r.errors()).isTrue();
+        String out = new String(r.extractedFiles().get("login/resources/img/logo.svg"), StandardCharsets.UTF_8);
+        int circleClose = out.toLowerCase().indexOf("</circle>");
+        int textStart = out.toLowerCase().indexOf("<text");
+        // Must still be valid: text is outside circle.
+        assertThat(circleClose).isGreaterThan(-1);
+        assertThat(textStart).isGreaterThan(circleClose);
     }
 
     // ---- properties --------------------------------------------------------

@@ -25,3 +25,32 @@ def test_defaults():
     assert s.jwks_cache_ttl_seconds == 3600
     assert s.permission_cache_ttl_seconds == 60
     assert s.redis_url is None
+    # New default: claims-based permission reading (UMA is opt-in).
+    assert s.permissions_source == "claims"
+
+
+def test_permissions_source_env_uma(monkeypatch):
+    monkeypatch.setenv("AUTH_LIB_ISSUER_URI", "http://kc/realms/t")
+    monkeypatch.setenv("AUTH_LIB_CLIENT_ID", "orders")
+    monkeypatch.setenv("AUTH_LIB_PERMISSIONS_SOURCE", "uma")
+    s = AuthLibSettings()
+    assert s.permissions_source == "uma"
+
+
+def test_permissions_source_env_case_insensitive(monkeypatch):
+    monkeypatch.setenv("AUTH_LIB_ISSUER_URI", "http://kc/realms/t")
+    monkeypatch.setenv("AUTH_LIB_CLIENT_ID", "orders")
+    monkeypatch.setenv("AUTH_LIB_PERMISSIONS_SOURCE", "  UMA  ")
+    s = AuthLibSettings()
+    assert s.permissions_source == "uma"
+
+
+def test_permissions_source_invalid_value_rejected(monkeypatch):
+    import pytest
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("AUTH_LIB_ISSUER_URI", "http://kc/realms/t")
+    monkeypatch.setenv("AUTH_LIB_CLIENT_ID", "orders")
+    monkeypatch.setenv("AUTH_LIB_PERMISSIONS_SOURCE", "bogus")
+    with pytest.raises(ValidationError):
+        AuthLibSettings()

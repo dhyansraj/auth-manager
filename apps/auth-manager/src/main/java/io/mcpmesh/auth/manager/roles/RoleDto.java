@@ -12,11 +12,18 @@ import java.util.List;
  * (used by the UI + the delete-guard). {@code system=true} marks roles
  * managed by the platform (e.g. {@code tenant-admin}); those are hidden from
  * the composite-role CRUD surface.
+ *
+ * <p>{@code isDefault=true} marks roles auto-assigned to every new user at
+ * signup -- either as a member of the {@code default-roles-<realm>} composite
+ * OR via a "Hardcoded Realm Role" IdP mapper on any enabled IdP. The popover
+ * uses this to render the checkbox as checked + disabled (the user
+ * effectively has the role; KC has no per-user "exclude" semantic).
  */
 public record RoleDto(
     String name,
     String description,
     List<PermissionDto> permissions,
     int userCount,
-    boolean system
+    boolean system,
+    boolean isDefault
 ) {}

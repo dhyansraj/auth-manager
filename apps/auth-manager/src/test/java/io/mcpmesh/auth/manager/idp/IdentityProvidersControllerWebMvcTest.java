@@ -1,6 +1,7 @@
 package io.mcpmesh.auth.manager.idp;
 
 import io.mcpmesh.auth.manager.api.GlobalExceptionHandler;
+import io.mcpmesh.auth.manager.security.Permissions;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,7 @@ class IdentityProvidersControllerWebMvcTest {
 
     @MockitoBean IdentityProvidersService service;
     @MockitoBean(name = "tenantSecurity") TenantSecurity tenantSecurity;
+    @MockitoBean(name = "perms") Permissions perms;
 
     @Autowired WebApplicationContext context;
     @Autowired FilterChainProxy springSecurityFilterChain;
@@ -88,15 +90,15 @@ class IdentityProvidersControllerWebMvcTest {
 
     @Test
     void list_returns_403_whenCantSeeTenant() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(anyString())).thenReturn(false);
+        when(perms.hasOnTenant(anyString(), eq("TENANT_VIEW"))).thenReturn(false);
         mvc.perform(get("/api/v1/tenants/app1/identity-providers").with(jwt()))
             .andExpect(status().isForbidden());
     }
 
     @Test
     void update_returns_403_whenCantManageTenant() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(false);
+        when(perms.hasOnTenant(eq("app1"), eq("TENANT_VIEW"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("IDP_EDIT"))).thenReturn(false);
         mvc.perform(put("/api/v1/tenants/app1/identity-providers/google")
                 .with(jwt())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -108,7 +110,7 @@ class IdentityProvidersControllerWebMvcTest {
 
     @Test
     void list_returns_200_andProviderList() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("TENANT_VIEW"))).thenReturn(true);
         when(service.list(eq("app1"))).thenReturn(List.of(
             new IdentityProviderDto("google", "Google", false, false),
             new IdentityProviderDto("github", "GitHub", false, false)
@@ -125,8 +127,7 @@ class IdentityProvidersControllerWebMvcTest {
 
     @Test
     void update_returns_200_onEnable_whenAvailable() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("IDP_EDIT"))).thenReturn(true);
         when(service.setEnabled(eq("app1"), eq("google"), eq(true), anyString()))
             .thenReturn(new IdentityProviderDto("google", "Google", true, true));
 
@@ -141,8 +142,7 @@ class IdentityProvidersControllerWebMvcTest {
 
     @Test
     void update_returns_422_whenEnablingUnavailableProvider() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("IDP_EDIT"))).thenReturn(true);
         doThrow(new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "creds missing"))
             .when(service).setEnabled(eq("app1"), eq("google"), eq(true), anyString());
 
@@ -155,8 +155,7 @@ class IdentityProvidersControllerWebMvcTest {
 
     @Test
     void update_returns_400_forUnsupportedProvider() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("IDP_EDIT"))).thenReturn(true);
         doThrow(new IllegalArgumentException("Unsupported provider: facebook"))
             .when(service).setEnabled(eq("app1"), eq("facebook"), eq(true), anyString());
 
@@ -169,8 +168,7 @@ class IdentityProvidersControllerWebMvcTest {
 
     @Test
     void update_returns_400_whenBodyMissingEnabledField() throws Exception {
-        when(tenantSecurity.canSeeTenantBySlug(eq("app1"))).thenReturn(true);
-        when(tenantSecurity.canManageTenant(eq("app1"))).thenReturn(true);
+        when(perms.hasOnTenant(eq("app1"), eq("IDP_EDIT"))).thenReturn(true);
         mvc.perform(put("/api/v1/tenants/app1/identity-providers/google")
                 .with(jwt())
                 .contentType(MediaType.APPLICATION_JSON)
