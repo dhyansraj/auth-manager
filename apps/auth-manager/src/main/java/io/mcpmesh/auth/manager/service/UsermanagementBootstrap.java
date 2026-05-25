@@ -1,5 +1,7 @@
 package io.mcpmesh.auth.manager.service;
 
+import io.mcpmesh.auth.manager.api.dto.CreateAppRequest;
+import io.mcpmesh.auth.manager.api.dto.CreateAppRequest.AppProfile;
 import io.mcpmesh.auth.manager.audit.AuditService;
 import io.mcpmesh.auth.manager.domain.app.App;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
@@ -72,7 +74,9 @@ public class UsermanagementBootstrap {
                     .orElseThrow(() -> new IllegalStateException("App row vanished mid-bootstrap"));
                 log.info("usermanagement app row already exists for tenant {}, ensuring KC state…", tenant.getSlug());
             } else {
-                var result = appService.create(tenant.getId(), CLIENT_SLUG, DISPLAY_NAME, actor);
+                var req = new CreateAppRequest(CLIENT_SLUG, DISPLAY_NAME,
+                    AppProfile.CONFIDENTIAL_BACKEND, null);
+                var result = appService.create(tenant.getId(), req, actor);
                 app = result.app();
             }
 

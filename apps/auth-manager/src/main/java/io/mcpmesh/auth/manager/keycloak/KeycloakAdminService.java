@@ -8,6 +8,7 @@ import org.keycloak.admin.client.resource.ClientResource;
 import org.keycloak.admin.client.resource.RealmResource;
 import org.keycloak.admin.client.resource.RoleResource;
 import org.keycloak.representations.idm.ClientRepresentation;
+import org.keycloak.representations.idm.ProtocolMapperRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
@@ -306,6 +307,86 @@ public class KeycloakAdminService {
     public java.util.Optional<String> findClientUuid(String realmName, String clientId) {
         var matches = admin.realm(realmName).clients().findByClientId(clientId);
         return matches.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(matches.get(0).getId());
+    }
+
+    /**
+     * Sets the three top-level OAuth2 flow flags on a client (standardFlow,
+     * directGrants, serviceAccounts). Used by app-creation profiles to flip a
+     * freshly-created client into the right shape (SPA / service-account-only)
+     * without needing a separate kcadm script. Idempotent.
+     */
+    public void setClientFlowFlags(String realmName, String clientUuid,
+                                   boolean standardFlow,
+                                   boolean directGrants,
+                                   boolean serviceAccounts) {
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        ClientRepresentation rep = clientResource.toRepresentation();
+        rep.setStandardFlowEnabled(standardFlow);
+        rep.setDirectAccessGrantsEnabled(directGrants);
+        rep.setServiceAccountsEnabled(serviceAccounts);
+        clientResource.update(rep);
+    }
+
+    /**
+     * Idempotently ensures an oidc-audience-mapper on the given client, adding
+     * the named audience client to access_token's "aud" claim.
+     * Returns true if a mapper was newly created; false if it already existed.
+     */
+    public boolean ensureAudienceMapper(String realmName, String clientUuid, String audience) {
+        ClientResource clientRes = admin.realm(realmName).clients().get(clientUuid);
+        String mapperName = "audience-" + audience;
+        var existing = clientRes.getProtocolMappers().getMappersPerProtocol("openid-connect");
+        if (existing != null) {
+            for (ProtocolMapperRepresentation m : existing) {
+                if (mapperName.equals(m.getName())
+                    && "oidc-audience-mapper".equals(m.getProtocolMapper())
+                    && m.getConfig() != null
+                    && audience.equals(m.getConfig().get("included.client.audience"))) {
+                    return false;
+                }
+            }
+        }
+        ProtocolMapperRepresentation rep = new ProtocolMapperRepresentation();
+        rep.setName(mapperName);
+        rep.setProtocol("openid-connect");
+        rep.setProtocolMapper("oidc-audience-mapper");
+        java.util.Map<String, String> cfg = new java.util.LinkedHashMap<>();
+        cfg.put("included.client.audience", audience);
+        cfg.put("id.token.claim", "false");
+        cfg.put("access.token.claim", "true");
+        rep.setConfig(cfg);
+        try (Response resp = clientRes.getProtocolMappers().createMapper(rep)) {
+            if (resp.getStatus() >= 300) {
+                log.warn("ensureAudienceMapper({}, {}, {}) failed: HTTP {}",
+                    realmName, clientUuid, audience, resp.getStatus());
+                return false;
+            }
+        }
+        log.info("ensureAudienceMapper: added '{}' on client {} in realm '{}'",
+            mapperName, clientUuid, realmName);
+        return true;
+    }
+
+    /** Returns the service-account user UUID for the given client, or empty if serviceAccountsEnabled is false. */
+    public java.util.Optional<String> findServiceAccountUserId(String realmName, String clientUuid) {
+        try {
+            var user = admin.realm(realmName).clients().get(clientUuid).getServiceAccountUser();
+            return user == null ? java.util.Optional.empty() : java.util.Optional.of(user.getId());
+        } catch (Exception e) {
+            log.debug("findServiceAccountUserId({}, {}): {}", realmName, clientUuid, e.getMessage());
+            return java.util.Optional.empty();
+        }
+    }
+
+    /** Returns the names of every client role defined on the given client. */
+    public List<String> listClientRoleNames(String realmName, String clientUuid) {
+        try {
+            return admin.realm(realmName).clients().get(clientUuid).roles().list()
+                .stream().map(RoleRepresentation::getName).toList();
+        } catch (Exception e) {
+            log.warn("listClientRoleNames({}, {}) failed: {}", realmName, clientUuid, e.getMessage());
+            return List.of();
+        }
     }
 
     // -----------------------------------------------------------------------
