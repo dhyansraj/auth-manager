@@ -106,7 +106,7 @@ jobs:
 
       - name: Override version in package.json
         working-directory: libs/auth-lib-react
-        run: npm version ${{ github.event.inputs.version }} --no-git-tag-version
+        run: npm version ${{ github.event.inputs.version }} --no-git-tag-version --allow-same-version
 
       - name: Build
         run: npm run build -w libs/auth-lib-react
