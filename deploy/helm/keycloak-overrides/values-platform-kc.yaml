@@ -112,3 +112,30 @@ initContainers:
       limits:
         cpu: "200m"
         memory: "128Mi"
+
+# ===== Clustering: pod anti-affinity =====
+# When replicaCount > 1, KC pods MUST spread across nodes — otherwise a
+# single-node failure kills all replicas (defeats the whole point of HA).
+# Hard requirement: refuse to schedule if no other node has room. Our
+# cluster has 5 nodes so this is always satisfiable.
+#
+# Note: with replicaCount=1 this is a no-op (only one pod to schedule),
+# but we land it now so it's in place before scaling to 2+.
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values: [keycloak]
+        topologyKey: kubernetes.io/hostname
+
+# ===== PodDisruptionBudget =====
+# Prevents k8s from voluntarily evicting too many KC pods at once during
+# node drain / upgrade. minAvailable=1 means we always keep at least one
+# pod up. After replicaCount=3 is stable, tightening to minAvailable=2
+# is the right move (separate follow-up).
+pdb:
+  create: true
+  minAvailable: 1

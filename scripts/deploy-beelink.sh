@@ -127,6 +127,14 @@ helm upgrade --install platform-kc bitnami/keycloak \
   --set-string "extraEnvVars[4].value=false" \
   --set "extraEnvVars[5].name=KC_SPI_THEME_STATIC_MAX_AGE" \
   --set-string "extraEnvVars[5].value=-1" \
+  # Distributed cache (Infinispan) over JGroups using the kubernetes stack:
+  # auto-configured DNS_PING against the headless service. Required for
+  # multi-replica clustering; harmless at replicaCount=1 (forms a 1-node
+  # "cluster" which Infinispan handles fine).
+  --set "extraEnvVars[6].name=KC_CACHE" \
+  --set "extraEnvVars[6].value=ispn" \
+  --set "extraEnvVars[7].name=KC_CACHE_STACK" \
+  --set "extraEnvVars[7].value=kubernetes" \
   --set "replicaCount=1" \
   --wait --timeout=300s
 ok "platform-kc"
