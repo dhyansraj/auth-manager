@@ -46,13 +46,50 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   listTenants:   () => req<import('./types').Tenant[]>('/tenants'),
   getTenant:     (id: string) => req<import('./types').Tenant>(`/tenants/${id}`),
-  createTenant:  (body: { slug: string; displayName: string; hostnames?: import('./types').HostnameAssignment[] }) =>
+  createTenant:  (body: {
+    slug: string;
+    displayName: string;
+    adminEmail?: string;
+    hostnames?: import('./types').HostnameAssignment[];
+  }) =>
     req<import('./types').Tenant>('/tenants', { method: 'POST', body: JSON.stringify(body) }),
   deleteTenant:  (id: string) => req<void>(`/tenants/${id}`, { method: 'DELETE' }),
   retryTenant:   (id: string) => req<import('./types').Tenant>(`/tenants/${id}/retry`, { method: 'POST' }),
   listApps:      (tenantId: string) => req<import('./types').App[]>(`/tenants/${tenantId}/apps`),
-  createApp:     (tenantId: string, body: { slug: string; displayName: string }) =>
-    req<import('./types').App>(`/tenants/${tenantId}/apps`, { method: 'POST', body: JSON.stringify(body) }),
+  createApp:     (tenantId: string, body: {
+    slug: string;
+    displayName: string;
+    profile?: 'CONFIDENTIAL_BACKEND' | 'SPA_PKCE' | 'SERVICE_ACCOUNT_ONLY';
+    audience?: string[];
+  }) =>
+    req<import('./types').App & { clientSecret?: string | null }>(
+      `/tenants/${tenantId}/apps`,
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
+  updateServiceAccountPermissions: (tenantId: string, appId: string, permissions: string[]) =>
+    req<{ permissions: string[] }>(
+      `/tenants/${tenantId}/apps/${appId}/service-account/permissions`,
+      { method: 'PUT', body: JSON.stringify({ permissions }) }
+    ),
+  applyManifest: async (slug: string, yamlBody: string) => {
+    const r = await bffFetch(base + `/tenants/${slug}/manifest:apply?applyRoles=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/yaml' },
+      body: yamlBody,
+    });
+    if (!r.ok) {
+      const raw = await r.text();
+      let parsed: unknown = raw;
+      try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+      throw new ApiError(r.status, r.statusText, parsed, raw);
+    }
+    return r.json();
+  },
+  updateRoutes: (slug: string, body: { targets: Record<string, string>; rules: Array<{ path: string; authMode: 'PUBLIC' | 'REQUIRED' | 'OPTIONAL'; target: string }> }) =>
+    req<import('./types').RoutingConfig>(`/tenants/${slug}/routes`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   deleteApp:     (tenantId: string, appId: string) => req<void>(`/tenants/${tenantId}/apps/${appId}`, { method: 'DELETE' }),
   globalAudit:   (page = 0, size = 50) => req<import('./types').PageResponse<import('./types').AuditEvent>>(`/audit?page=${page}&size=${size}`),
   tenantAudit:   (tenantId: string, page = 0, size = 50) =>

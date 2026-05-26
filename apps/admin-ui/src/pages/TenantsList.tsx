@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermission } from '@mcpmesh/auth-lib-react';
@@ -7,7 +6,6 @@ import { api } from '../api/client';
 export default function TenantsList() {
   const qc = useQueryClient();
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['tenants'], queryFn: api.listTenants });
-  const [showCreate, setShowCreate] = useState(false);
   // Tenant CRUD is platform-admin only. Gate the buttons on the explicit
   // atomic perms (mirrors the @PreAuthorize annotations on
   // TenantController). The backend list endpoint already filters by what
@@ -26,12 +24,11 @@ export default function TenantsList() {
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-semibold">Tenants</h1>
         {canCreate && (
-          <button onClick={() => setShowCreate(true)} className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm hover:bg-slate-700">
+          <Link to="/tenants/new" className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm hover:bg-slate-700">
             + New tenant
-          </button>
+          </Link>
         )}
       </div>
-      {showCreate && <CreateTenantForm onClose={() => setShowCreate(false)} />}
       {isLoading && <div>Loading…</div>}
       {isError && <div className="text-red-700">Error: {String(error)}</div>}
       {data && (
@@ -78,40 +75,4 @@ function StatusBadge({ status }: { status: string }) {
             : status === 'FAILED' ? 'bg-red-100 text-red-800'
             : 'bg-slate-100 text-slate-700';
   return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{status}</span>;
-}
-
-function CreateTenantForm({ onClose }: { onClose: () => void }) {
-  const qc = useQueryClient();
-  const [slug, setSlug] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const create = useMutation({
-    mutationFn: api.createTenant,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); onClose(); },
-  });
-
-  return (
-    <form onSubmit={e => { e.preventDefault(); create.mutate({ slug, displayName }); }}
-          className="bg-white border rounded p-4 space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        <label className="block">
-          <div className="text-xs text-slate-600 mb-1">Slug (dns-safe)</div>
-          <input value={slug} onChange={e => setSlug(e.target.value)} pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" required
-                 className="w-full border rounded px-2 py-1 font-mono text-sm" />
-        </label>
-        <label className="block">
-          <div className="text-xs text-slate-600 mb-1">Display name</div>
-          <input value={displayName} onChange={e => setDisplayName(e.target.value)} required
-                 className="w-full border rounded px-2 py-1 text-sm" />
-        </label>
-      </div>
-      {create.isError && <div className="text-red-700 text-xs">{String(create.error)}</div>}
-      <div className="flex gap-2">
-        <button type="submit" disabled={create.isPending}
-                className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm hover:bg-slate-700 disabled:opacity-50">
-          {create.isPending ? 'Creating…' : 'Create'}
-        </button>
-        <button type="button" onClick={onClose} className="text-sm text-slate-600 hover:text-slate-900">Cancel</button>
-      </div>
-    </form>
-  );
 }

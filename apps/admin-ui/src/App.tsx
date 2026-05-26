@@ -2,6 +2,7 @@ import { Link, NavLink, Route, Routes, BrowserRouter } from 'react-router-dom';
 import { BffAutoSignIn, MeProvider, useBffAuth, useCurrentTenant } from '@mcpmesh/auth-lib-react';
 import Dashboard from './pages/Dashboard';
 import TenantsList from './pages/TenantsList';
+import TenantWizard from './pages/TenantWizard';
 import TenantDetail from './pages/TenantDetail';
 import AuditLog from './pages/AuditLog';
 
@@ -60,6 +61,7 @@ function AuthenticatedShell() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/tenants" element={<TenantsList />} />
+            <Route path="/tenants/new" element={<TenantWizard />} />
             <Route path="/tenants/:id" element={<TenantDetail />} />
             <Route path="/audit" element={<AuditLog />} />
           </Routes>
