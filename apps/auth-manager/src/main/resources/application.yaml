@@ -42,3 +42,11 @@ logging:
     io.mcpmesh.auth: DEBUG
     org.flywaydb: INFO
     org.springframework.web: INFO
+
+# Cloudflare API credentials for tenant-hostname auto-provisioning. When unset
+# (no `cloudflare-api` Secret present) CloudflareTunnelService logs a WARN and
+# skips — operator can fall back to scripts/cf-setup-tunnel.sh.
+cloudflare:
+  api-token: ${CF_API_TOKEN:}
+  account-id: ${CF_ACCOUNT_ID:}
+  tunnel-id: ${CF_TUNNEL_ID:}

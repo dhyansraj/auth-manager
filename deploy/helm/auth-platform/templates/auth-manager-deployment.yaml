@@ -77,6 +77,31 @@ spec:
                   name: platform-oauth-providers
                   key: github.client-secret
                   optional: true
+            # Cloudflare API creds for per-tenant DNS + tunnel-ingress auto-
+            # provisioning (CloudflareTunnelService, called from TenantService
+            # on create/delete). The `cloudflare-api` Secret is created out-of-
+            # band by the operator (see scripts/deploy-beelink.sh step). When
+            # the Secret is absent these env vars stay unset (optional=true) and
+            # CloudflareTunnelService logs a WARN + skips — operator falls back
+            # to scripts/cf-setup-tunnel.sh for manual setup.
+            - name: CF_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-api
+                  key: api-token
+                  optional: true
+            - name: CF_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-api
+                  key: account-id
+                  optional: true
+            - name: CF_TUNNEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-api
+                  key: tunnel-id
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /config

@@ -140,6 +140,19 @@ ssh "$BUILD_HOST" "cd '$REPO_REMOTE_PATH' && \
   docker push '$REGISTRY/platform-edge:0.1.6'"
 ok "platform-edge:0.1.6 pushed to $REGISTRY"
 
+step "6b. Cloudflare API Secret (optional — enables auth-manager DNS auto-provisioning)"
+if ! kubectl get secret cloudflare-api -n "$NAMESPACE" >/dev/null 2>&1; then
+  echo "  cloudflare-api Secret not present. To enable, run:"
+  echo "    kubectl create secret generic cloudflare-api -n $NAMESPACE \\"
+  echo "      --from-literal=api-token=<CF_API_TOKEN> \\"
+  echo "      --from-literal=account-id=<CF_ACCOUNT_ID> \\"
+  echo "      --from-literal=tunnel-id=<CF_TUNNEL_ID>"
+  echo "  Then kubectl rollout restart deployment/auth-platform-auth-manager."
+  echo "  (Without it, scripts/cf-setup-tunnel.sh stays the manual fallback.)"
+else
+  ok "cloudflare-api Secret present"
+fi
+
 step "7. auth-manager + admin-ui + platform-edge"
 helm upgrade --install auth-platform deploy/helm/auth-platform \
   --namespace "$NAMESPACE" \

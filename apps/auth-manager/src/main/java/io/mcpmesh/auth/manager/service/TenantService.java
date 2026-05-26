@@ -2,6 +2,7 @@ package io.mcpmesh.auth.manager.service;
 
 import io.mcpmesh.auth.manager.api.dto.HostnameAssignment;
 import io.mcpmesh.auth.manager.audit.AuditService;
+import io.mcpmesh.auth.manager.cloudflare.CloudflareTunnelService;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.domain.tenant.TenantHostname;
@@ -37,6 +38,7 @@ public class TenantService {
     private final RoutingTableService routingTable;
     private final RoutingConfigService routingConfig;
     private final AuditService audit;
+    private final CloudflareTunnelService cloudflare;
 
     public TenantService(
         TenantRepository repo,
@@ -44,7 +46,8 @@ public class TenantService {
         KeycloakAdminService keycloak,
         RoutingTableService routingTable,
         RoutingConfigService routingConfig,
-        AuditService audit
+        AuditService audit,
+        CloudflareTunnelService cloudflare
     ) {
         this.repo = repo;
         this.hostnameRepo = hostnameRepo;
@@ -52,6 +55,7 @@ public class TenantService {
         this.routingTable = routingTable;
         this.routingConfig = routingConfig;
         this.audit = audit;
+        this.cloudflare = cloudflare;
     }
 
     /**
@@ -151,6 +155,16 @@ public class TenantService {
             log.error("Routing config publish failed for new tenant {}; recoverable via PUT /routes",
                       slug, e);
         }
+
+        // Cloudflare provisioning: only for ACTIVE tenants. Best-effort —
+        // CloudflareTunnelService swallows all CF errors. Hostnames live in DB
+        // independently; CF state can be reconciled later (manual rerun, or
+        // resurrection of the tenant).
+        if (after.getStatus() == TenantStatus.ACTIVE && hostnames != null) {
+            for (HostnameAssignment h : hostnames) {
+                cloudflare.ensureHostname(h.host(), slug);
+            }
+        }
         return after;
     }
 
@@ -229,6 +243,11 @@ public class TenantService {
         // Drop the route:<slug> cache so OpenResty stops serving the tenant
         // immediately. The DB row keeps routing_config for resurrect.
         routingConfig.deleteForTenant(t.getSlug());
+        // Cloudflare cleanup: even though hostname rows persist for audit, the
+        // public DNS + tunnel ingress should stop routing. Best-effort.
+        for (var h : hostnames) {
+            cloudflare.removeHostname(h.getHostname(), t.getSlug());
+        }
         t.softDelete();
         audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, t.getId(),
             "tenant.delete", "tenant", t.getId().toString(),

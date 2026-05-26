@@ -10,7 +10,7 @@ global:
 authManager:
   image:
     repository: auth-manager
-    tag: "0.1.27"
+    tag: "0.1.28"
   config:
     keycloakUrl: "https://auth.mcp-mesh.io/auth"
     postgresHost: "platform-pg-postgresql"
