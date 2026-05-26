@@ -1,0 +1,120 @@
+name: Release libs
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.1.0). Used as Maven/PyPI/npm version override.'
+        required: true
+        default: '0.1.0'
+      libs:
+        description: 'Which libs to publish'
+        type: choice
+        required: true
+        default: 'all'
+        options: [all, java-only, python-only, npm-only]
+
+jobs:
+  publish-maven:
+    if: github.event.inputs.libs == 'all' || github.event.inputs.libs == 'java-only'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 21 + Maven settings + GPG
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+          server-id: central
+          server-username: SONATYPE_USERNAME
+          server-password: SONATYPE_TOKEN
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+
+      - name: Set version (if different from pom)
+        working-directory: libs/auth-lib
+        run: |
+          mvn -q versions:set -DnewVersion=${{ github.event.inputs.version }} -DgenerateBackupPoms=false
+
+      - name: Build + sign + publish to Maven Central
+        working-directory: libs/auth-lib
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_TOKEN: ${{ secrets.SONATYPE_TOKEN }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        # `central-publishing-maven-plugin` uploads + auto-publishes (autoPublish=true);
+        # waitUntil=published blocks until it's live on Central.
+        run: mvn -B -Prelease clean deploy -DskipTests
+
+  publish-pypi:
+    if: github.event.inputs.libs == 'all' || github.event.inputs.libs == 'python-only'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # for trusted-publisher (PyPI OIDC); also accepts api-token via 'password' below
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Override version in pyproject.toml
+        working-directory: libs/auth-lib-python
+        run: |
+          python -c "
+          import re, pathlib
+          p = pathlib.Path('pyproject.toml')
+          s = p.read_text()
+          s = re.sub(r'^version\s*=.*', 'version = \"${{ github.event.inputs.version }}\"', s, count=1, flags=re.M)
+          p.write_text(s)
+          print('version set to ${{ github.event.inputs.version }}')
+          "
+
+      - name: Install build tooling
+        run: pip install build twine
+
+      - name: Build wheel + sdist
+        working-directory: libs/auth-lib-python
+        run: |
+          python -m build
+          twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: libs/auth-lib-python/dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-npm:
+    if: github.event.inputs.libs == 'all' || github.event.inputs.libs == 'npm-only'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # for npm provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install (workspace root)
+        run: npm ci
+
+      - name: Override version in package.json
+        working-directory: libs/auth-lib-react
+        run: npm version ${{ github.event.inputs.version }} --no-git-tag-version
+
+      - name: Build
+        run: npm run build -w libs/auth-lib-react
+
+      - name: Publish
+        working-directory: libs/auth-lib-react
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # --access public is required on first publish under a scoped name; harmless on re-publish.
+        # --provenance generates a verifiable build attestation (requires id-token: write on the job).
+        run: npm publish --access public --provenance

@@ -3,7 +3,7 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mcpmesh-auth-lib"
+name = "mcp-mesh-auth-lib"
 version = "0.1.0"
 description = "FastAPI client library for the mcp-mesh auth platform (JWT + UMA permission aggregation)."
 readme = "README.md"
@@ -29,6 +29,11 @@ dependencies = [
     "redis>=5.0",
     "cachetools>=5.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/dhyansraj/auth-manager"
+Repository = "https://github.com/dhyansraj/auth-manager"
+Issues = "https://github.com/dhyansraj/auth-manager/issues"
 
 [project.optional-dependencies]
 dev = [

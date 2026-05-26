@@ -5,21 +5,54 @@
                              https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!-- DELIBERATELY independent of the repo's auth-platform-parent so this
+         module is publishable to Maven Central without forcing consumers to
+         depend on or resolve our internal parent pom. We inherit directly
+         from spring-boot-starter-parent. -->
     <parent>
-        <groupId>io.mcpmesh.auth</groupId>
-        <artifactId>auth-platform-parent</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
-        <relativePath>../../pom.xml</relativePath>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.0.6</version>
+        <relativePath/>
     </parent>
 
-    <groupId>io.mcpmesh.auth</groupId>
-    <artifactId>auth-lib</artifactId>
-    <version>2.0.0-SNAPSHOT</version>
-    <name>auth-lib</name>
-    <description>Reusable Spring Boot library: JWT validation + permission enforcement against Keycloak</description>
+    <groupId>io.mcp-mesh</groupId>
+    <artifactId>mcp-mesh-auth-lib</artifactId>
+    <version>0.1.0</version>
+    <name>mcp-mesh-auth-lib</name>
+    <description>Reusable Spring Boot library: JWT validation + permission enforcement against Keycloak for the mcp-mesh auth platform</description>
+    <url>https://github.com/dhyansraj/auth-manager</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>dhyansraj</id>
+            <name>Dhyan Raj</name>
+            <url>https://github.com/dhyansraj</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/dhyansraj/auth-manager.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/dhyansraj/auth-manager.git</developerConnection>
+        <url>https://github.com/dhyansraj/auth-manager</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
 
     <dependencies>
-        <!-- Core Spring Security + OAuth2 Resource Server (real JWT validation). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
@@ -28,34 +61,23 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
         </dependency>
-
-        <!-- Web (needed by SecurityFilterChain in consumer apps; declared so library autoconfig
-             can wire SecurityFilterChain. Consumer apps will already have this transitively. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-
-        <!-- Redis for permission caching. Optional for now (lib functions without it). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
-
-        <!-- Annotation processor for @ConfigurationProperties metadata (IDE hints in consumers). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-configuration-processor</artifactId>
             <optional>true</optional>
         </dependency>
-
-        <!-- Validation for @ConfigurationProperties. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
-
-        <!-- Test scope -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -67,4 +89,72 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <!-- Release-only profile: generates sources + javadoc JARs, GPG-signs everything,
+         and publishes to Sonatype Central Portal. Activated with -Prelease at CI time. -->
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals><goal>jar-no-fork</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.10.0</version>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals><goal>jar</goal></goals>
+                                <configuration>
+                                    <!-- Don't fail on lint; we want the artifact even if javadoc is incomplete. -->
+                                    <doclint>none</doclint>
+                                    <failOnError>false</failOnError>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.7</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals><goal>sign</goal></goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.7.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

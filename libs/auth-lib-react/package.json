@@ -1,7 +1,23 @@
 {
   "name": "@mcpmesh/auth-lib-react",
   "version": "0.1.0",
-  "private": true,
+  "description": "React + BFF + PKCE hooks/components for the mcp-mesh auth platform",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhyansraj/auth-manager.git",
+    "directory": "libs/auth-lib-react"
+  },
+  "homepage": "https://github.com/dhyansraj/auth-manager#readme",
+  "bugs": {
+    "url": "https://github.com/dhyansraj/auth-manager/issues"
+  },
+  "keywords": ["keycloak", "oauth2", "oidc", "pkce", "bff", "react", "mcp-mesh"],
+  "author": "Dhyan Raj",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
