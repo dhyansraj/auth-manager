@@ -12,6 +12,8 @@ import type {
   ThemeMeta,
   ThemeRolloutStatus,
   BrandingConfig,
+  DatabaseStatus,
+  DatabaseProvisionResult,
 } from './types';
 
 // The admin-ui is served at /admin/* on every host. The edge maps
@@ -235,6 +237,16 @@ export const api = {
     req<BrandingConfig>(`/tenants/${slug}/branding`, {
       method: 'PUT', body: JSON.stringify(body),
     }),
+
+  // -------------------------------------------------------------------------
+  // Data Services / Managed Postgres
+  // -------------------------------------------------------------------------
+  getDatabaseStatus: (tenantId: string) =>
+    req<DatabaseStatus>(`/tenants/${tenantId}/data/postgres`),
+  provisionDatabase: (tenantId: string) =>
+    req<DatabaseProvisionResult>(`/tenants/${tenantId}/data/postgres`, { method: 'POST' }),
+  deprovisionDatabase: (tenantId: string) =>
+    req<void>(`/tenants/${tenantId}/data/postgres`, { method: 'DELETE' }),
 
   // -------------------------------------------------------------------------
   // Onboarding bundle (.zip handoff for tenant teams)

@@ -40,19 +40,22 @@ public class OnboardingBundleService {
     private final KeycloakAdminService keycloak;
     private final IdentityProvidersBootstrap idp;
     private final RoutingConfigService routing;
+    private final TenantDatabaseService databaseService;
 
     public OnboardingBundleService(TenantService tenants,
                                    AppRepository appRepo,
                                    Keycloak admin,
                                    KeycloakAdminService keycloak,
                                    IdentityProvidersBootstrap idp,
-                                   RoutingConfigService routing) {
+                                   RoutingConfigService routing,
+                                   TenantDatabaseService databaseService) {
         this.tenants = tenants;
         this.appRepo = appRepo;
         this.admin = admin;
         this.keycloak = keycloak;
         this.idp = idp;
         this.routing = routing;
+        this.databaseService = databaseService;
     }
 
     public byte[] build(UUID tenantId) {
@@ -70,6 +73,7 @@ public class OnboardingBundleService {
 
         boolean bffMode = isBffMode(slug);
         Set<String> enabledIdps = idp.listEnabledProviders(realmName);
+        boolean dbProvisioned = safeDbExists(slug);
 
         boolean anySpa = userApps.stream().anyMatch(a -> "SPA_PKCE".equals(a.profile));
         boolean anyBackend = userApps.stream().anyMatch(a -> "CONFIDENTIAL_BACKEND".equals(a.profile));
@@ -96,7 +100,7 @@ public class OnboardingBundleService {
             writeEntry(zip, "README.md", renderReadme(tenant, realmName, issuer, slug, userApps, bffMode,
                                                      anySpa, anyBackend, anyServiceAccount,
                                                      !enabledIdps.isEmpty(), filesGenerated));
-            writeEntry(zip, ".env.example", renderEnv(tenant, issuer, slug, userApps, bffMode));
+            writeEntry(zip, ".env.example", renderEnv(tenant, issuer, slug, userApps, bffMode, dbProvisioned));
             writeEntry(zip, "helm-values-snippet.yaml", renderHelm(issuer, slug, userApps, bffMode));
             if (!enabledIdps.isEmpty()) {
                 writeEntry(zip, "01-broker-urls.md", renderBrokerUrls(realmName, enabledIdps));
@@ -118,6 +122,22 @@ public class OnboardingBundleService {
             throw new RuntimeException("Failed to build onboarding bundle zip", e);
         }
         return baos.toByteArray();
+    }
+
+    /**
+     * Best-effort existence check for the tenant's managed Postgres DB
+     * on the shared CNPG cluster. Failures here (CNPG unreachable, etc.)
+     * degrade to "not provisioned" — better to leave the DATABASE_*
+     * block out of the bundle than to fail the whole download.
+     */
+    private boolean safeDbExists(String slug) {
+        try {
+            return databaseService.existsFor(slug);
+        } catch (Exception e) {
+            log.debug("safeDbExists({}): CNPG lookup failed ({}), assuming not provisioned",
+                slug, e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -288,7 +308,9 @@ public class OnboardingBundleService {
             .replace("{{warningsBlock}}", warningsBlock);
     }
 
-    private String renderEnv(Tenant t, String issuer, String slug, List<AppInfo> apps, boolean bffMode) {
+    private String renderEnv(Tenant t, String issuer, String slug, List<AppInfo> apps,
+                              boolean bffMode, boolean dbProvisioned) {
+        String dbBlock = renderDbBlock(slug, dbProvisioned);
         if (bffMode) {
             String backendClientId = firstBackendClientId(apps);
             StringBuilder backendClientsBlock = new StringBuilder();
@@ -342,6 +364,7 @@ public class OnboardingBundleService {
 
                 {{backendClientsBlock}}# If your backend needs to call other services as itself (service account):
                 {{serviceAccountBlock}}
+                {{dbBlock}}
                 """)
                 .replace("{{tenantName}}", t.getDisplayName())
                 .replace("{{timestamp}}", Instant.now().toString())
@@ -349,6 +372,7 @@ public class OnboardingBundleService {
                 .replace("{{clientId}}", backendClientId)
                 .replace("{{backendClientsBlock}}", backendClients)
                 .replace("{{serviceAccountBlock}}", sa)
+                .replace("{{dbBlock}}", dbBlock)
                 .stripTrailing() + "\n";
         }
 
@@ -402,6 +426,7 @@ public class OnboardingBundleService {
 
             # Service account (m2m)
             {{serviceAccountBlock}}
+            {{dbBlock}}
             """)
             .replace("{{tenantName}}", t.getDisplayName())
             .replace("{{timestamp}}", Instant.now().toString())
@@ -410,7 +435,30 @@ public class OnboardingBundleService {
             .replace("{{spaBlock}}", spa)
             .replace("{{backendBlock}}", backend)
             .replace("{{serviceAccountBlock}}", sa)
+            .replace("{{dbBlock}}", dbBlock)
             .stripTrailing() + "\n";
+    }
+
+    /**
+     * Optional Managed Postgres connection block. Emitted only when the
+     * tenant has actually provisioned a managed DB on the shared cluster
+     * (we check via {@code TenantDatabaseService#existsFor}). The password
+     * is NOT included — same reveal-once pattern as backend client
+     * secrets, operator must copy from the Data Services tab.
+     */
+    private String renderDbBlock(String slug, boolean dbProvisioned) {
+        if (!dbProvisioned) return "";
+        String dbName = "t_" + slug.replace('-', '_');
+        return ("""
+
+            # Managed Postgres (HA, 3-replica on shared CNPG cluster)
+            DATABASE_HOST=platform-pg-rw.auth-platform.svc.cluster.local
+            DATABASE_PORT=5432
+            DATABASE_NAME={{dbName}}
+            DATABASE_USERNAME={{dbName}}
+            DATABASE_PASSWORD=<paste from auth-manager UI → Data Services tab>
+            DATABASE_URL=jdbc:postgresql://platform-pg-rw.auth-platform.svc.cluster.local:5432/{{dbName}}""")
+            .replace("{{dbName}}", dbName);
     }
 
     private String renderHelm(String issuer, String slug, List<AppInfo> apps, boolean bffMode) {

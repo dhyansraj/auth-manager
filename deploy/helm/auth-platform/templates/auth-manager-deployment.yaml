@@ -115,6 +115,16 @@ spec:
                   name: cloudflare-api
                   key: tunnel-id
                   optional: true
+            # CNPG superuser password — used by TenantDatabaseService to
+            # run CREATE DATABASE / DROP DATABASE DDL when operators
+            # provision per-tenant databases on the shared platform-pg
+            # cluster. The Secret is created by CNPG itself
+            # (see deploy/cnpg/pg-cluster.yaml: superuserSecret).
+            - name: CNPG_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-pg-superuser-secret
+                  key: password
           volumeMounts:
             - name: config
               mountPath: /config

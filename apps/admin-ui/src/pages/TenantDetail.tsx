@@ -8,11 +8,12 @@ import IdentityProvidersTab from '../features/idp/IdentityProvidersTab';
 import BrandingTab from '../features/branding/BrandingTab';
 import PermissionsTab from '../features/roles/PermissionsTab';
 import RolesTab from '../features/roles/RolesTab';
+import DataServicesTab from '../features/data-services/DataServicesTab';
 import UserRolesPopover from '../features/roles/UserRolesPopover';
 import { useRolesQuery } from '../features/roles/useRolesQuery';
 import { useUserRealmRolesQueries } from '../features/roles/useUserRealmRolesQueries';
 
-type TabKey = 'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'permissions' | 'roles' | 'users' | 'audit';
+type TabKey = 'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'permissions' | 'roles' | 'data-services' | 'users' | 'audit';
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -44,6 +45,11 @@ export default function TenantDetail() {
     if (canEditBranding)     t.push('branding');
     if (canEditPermissions)  t.push('permissions');
     if (canEditRoles)        t.push('roles');
+    // Data Services tab is read-on-VIEW, mutate-on-EDIT (the tab itself
+    // gates the provision/deprovision buttons on TENANT_EDIT). Showing on
+    // VIEW means tenant-user-managers can see the connection coordinates
+    // (but not the password) without being able to mutate.
+    if (canViewTenant)       t.push('data-services');
     if (canListUsers)        t.push('users');
     if (canViewAudit)        t.push('audit');
     return t.length > 0 ? ['overview', ...t] : [];
@@ -93,6 +99,7 @@ export default function TenantDetail() {
       {tab === 'branding' && <BrandingTab slug={t.slug} />}
       {tab === 'permissions' && <PermissionsTab slug={t.slug} />}
       {tab === 'roles' && <RolesTab slug={t.slug} />}
+      {tab === 'data-services' && <DataServicesTab tenantId={t.id} />}
       {tab === 'users' && <UsersTab tenantId={t.id} slug={t.slug} />}
       {tab === 'audit' && <AuditTab tenantId={t.id} />}
     </div>
@@ -101,6 +108,7 @@ export default function TenantDetail() {
 
 function tabLabel(k: string): string {
   if (k === 'identity-providers') return 'Identity Providers';
+  if (k === 'data-services') return 'Data Services';
   return k.charAt(0).toUpperCase() + k.slice(1);
 }
 

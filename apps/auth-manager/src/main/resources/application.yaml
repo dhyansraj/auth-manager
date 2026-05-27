@@ -50,3 +50,15 @@ cloudflare:
   api-token: ${CF_API_TOKEN:}
   account-id: ${CF_ACCOUNT_ID:}
   tunnel-id: ${CF_TUNNEL_ID:}
+
+# CNPG superuser connection: used by TenantDatabaseService to run CREATE
+# DATABASE / DROP DATABASE DDL when provisioning per-tenant databases on
+# the shared platform-pg cluster. Points at the maintenance `postgres`
+# database, NOT at our own `authmanager` database (which is what
+# spring.datasource.* is wired to). Password is injected via env from the
+# K8s Secret `platform-pg-superuser-secret` (created by CNPG).
+platform-pg:
+  superuser:
+    url: ${PLATFORM_PG_SUPERUSER_URL:jdbc:postgresql://platform-pg-rw.auth-platform.svc.cluster.local:5432/postgres}
+    username: ${PLATFORM_PG_SUPERUSER_USERNAME:postgres}
+    password: ${CNPG_SUPERUSER_PASSWORD:}

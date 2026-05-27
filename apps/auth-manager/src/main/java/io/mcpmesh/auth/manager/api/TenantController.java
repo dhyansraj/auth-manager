@@ -9,6 +9,7 @@ import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
 import io.mcpmesh.auth.manager.service.OnboardingBundleService;
+import io.mcpmesh.auth.manager.service.TenantDatabaseService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.UsermanagementBootstrap;
 import jakarta.validation.Valid;
@@ -17,6 +18,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,7 +32,9 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -43,18 +49,21 @@ public class TenantController {
     private final IdentityProvidersBootstrap idpBootstrap;
     private final TenantSecurity tenantSecurity;
     private final OnboardingBundleService bundleService;
+    private final TenantDatabaseService databaseService;
 
     public TenantController(TenantService service, AuditEventRepository auditRepo,
                             UsermanagementBootstrap bootstrap,
                             IdentityProvidersBootstrap idpBootstrap,
                             TenantSecurity tenantSecurity,
-                            OnboardingBundleService bundleService) {
+                            OnboardingBundleService bundleService,
+                            TenantDatabaseService databaseService) {
         this.service = service;
         this.auditRepo = auditRepo;
         this.bootstrap = bootstrap;
         this.idpBootstrap = idpBootstrap;
         this.tenantSecurity = tenantSecurity;
         this.bundleService = bundleService;
+        this.databaseService = databaseService;
     }
 
     @PostMapping
@@ -175,6 +184,73 @@ public class TenantController {
             .header("Content-Disposition", "attachment; filename=\"" + fname + "\"")
             .contentType(MediaType.parseMediaType("application/zip"))
             .body(zip);
+    }
+
+    // ----- Managed Postgres (per-tenant database on shared CNPG cluster) ----
+
+    /**
+     * Status endpoint: returns connection coordinates for the tenant's
+     * managed database if provisioned. Never includes the password —
+     * that's reveal-once on the provision response.
+     */
+    @GetMapping("/{id}/data/postgres")
+    @PreAuthorize("@perms.hasOnTenantId(#id, 'TENANT_VIEW')")
+    public Map<String, Object> getDatabaseStatus(@PathVariable UUID id) {
+        var t = service.get(id);
+        boolean exists = databaseService.existsFor(t.getSlug());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("tenantSlug", t.getSlug());
+        body.put("provisioned", exists);
+        if (exists) {
+            String dbName = TenantDatabaseService.dbNameFor(t.getSlug());
+            body.put("host", "platform-pg-rw.auth-platform.svc.cluster.local");
+            body.put("port", 5432);
+            body.put("database", dbName);
+            body.put("username", dbName);
+        } else {
+            body.put("host", null);
+            body.put("port", null);
+            body.put("database", null);
+            body.put("username", null);
+        }
+        return body;
+    }
+
+    /**
+     * Provisions a managed Postgres database + owner user on the shared
+     * CNPG cluster for the tenant. Returns the connection coordinates
+     * including the freshly-generated password — this is the ONLY time
+     * the password is exposed; operator must save it elsewhere.
+     */
+    @PostMapping("/{id}/data/postgres")
+    @PreAuthorize("@perms.hasOnTenantId(#id, 'TENANT_EDIT')")
+    public TenantDatabaseService.ProvisionResult provisionDatabase(
+        @PathVariable UUID id,
+        Authentication auth
+    ) {
+        var t = service.get(id);
+        return databaseService.provisionFor(t, principal(auth));
+    }
+
+    /**
+     * Drops the tenant's managed database and owner user. Idempotent —
+     * returns 204 even if there was nothing to drop. DESTROYS DATA.
+     */
+    @DeleteMapping("/{id}/data/postgres")
+    @PreAuthorize("@perms.hasOnTenantId(#id, 'TENANT_EDIT')")
+    @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    public void deprovisionDatabase(@PathVariable UUID id, Authentication auth) {
+        var t = service.get(id);
+        databaseService.deprovisionFor(t, principal(auth));
+    }
+
+    private static String principal(Authentication auth) {
+        if (auth instanceof JwtAuthenticationToken jwtAuth) {
+            Jwt jwt = jwtAuth.getToken();
+            String pref = jwt.getClaimAsString("preferred_username");
+            return pref != null ? pref : jwt.getSubject();
+        }
+        return "system";
     }
 
     @GetMapping("/{id}/audit")

@@ -231,3 +231,31 @@ export interface BrandingConfig {
   layoutVariant: LayoutVariant;
   slots: Partial<Record<SlotName, string>>;
 }
+
+// ---------------------------------------------------------------------------
+// Data Services / Managed Postgres (per-tenant database on shared CNPG)
+// ---------------------------------------------------------------------------
+
+/** Status returned by GET /tenants/{id}/data/postgres. NEVER includes password. */
+export interface DatabaseStatus {
+  tenantSlug: string;
+  provisioned: boolean;
+  host: string | null;
+  port: number | null;
+  database: string | null;
+  username: string | null;
+}
+
+/**
+ * Reveal-once payload from POST /tenants/{id}/data/postgres. The
+ * password field is the ONLY time the password is exposed; the operator
+ * must copy it elsewhere before dismissing the UI reveal.
+ */
+export interface DatabaseProvisionResult {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password: string;
+  jdbcUrl: string;
+}
