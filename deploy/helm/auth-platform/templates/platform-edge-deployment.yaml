@@ -57,6 +57,8 @@ spec:
               value: {{ $kc | quote }}
             - name: PLATFORM_HOST
               value: {{ $platformHost | quote }}
+            - name: ROUTE_DEFAULT_MAX_BODY_MB
+              value: {{ .Values.platformEdge.config.routeDefaultMaxBodyMb | default 25 | quote }}
             - name: NGINX_RESOLVER
               value: {{ required "platformEdge.config.nginxResolver must be set (e.g. 10.43.0.10 for k3s)" .Values.platformEdge.config.nginxResolver | quote }}
           readinessProbe:

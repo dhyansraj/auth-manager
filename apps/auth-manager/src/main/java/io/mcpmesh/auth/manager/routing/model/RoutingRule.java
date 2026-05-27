@@ -38,10 +38,22 @@ import jakarta.validation.constraints.NotNull;
  * {@code /*}. If the configured prefix is not actually a prefix of the
  * matched request path, the router proxies as-is (no-op).
  *
+ * <p>{@code maxBodyMb} (optional, may be {@code null}) is the per-route
+ * request-body cap in megabytes. When set, the router reads
+ * {@code Content-Length} on body-carrying methods (POST/PUT/PATCH/DELETE) and
+ * returns {@code 413 Payload Too Large} BEFORE forwarding upstream if the
+ * declared length exceeds {@code maxBodyMb * 1024 * 1024} bytes. When unset
+ * (null), routes fall back to a platform-wide default (see
+ * {@code ROUTE_DEFAULT_MAX_BODY_MB}, default 25 MB). The absolute upper bound
+ * is enforced by nginx's {@code client_max_body_size 100m} (the Cloudflare
+ * Free tunnel ceiling) regardless of this value. Requests without a
+ * Content-Length header (e.g. chunked uploads) are NOT rejected here — the
+ * nginx ceiling is the only check.
+ *
  * <p>JSON deserialization tolerates missing {@code bypassCsrf} /
- * {@code requiredPermission} / {@code stripPrefix} fields (Jackson defaults
- * boolean to {@code false} and the Strings to {@code null}), so older wire
- * payloads remain compatible.
+ * {@code requiredPermission} / {@code stripPrefix} / {@code maxBodyMb}
+ * fields (Jackson defaults boolean to {@code false} and the other types to
+ * {@code null}), so older wire payloads remain compatible.
  */
 public record RoutingRule(
     @NotBlank String path,
@@ -49,20 +61,26 @@ public record RoutingRule(
     @NotBlank String target,
     boolean bypassCsrf,
     String requiredPermission,
-    String stripPrefix
+    String stripPrefix,
+    Integer maxBodyMb
 ) {
-    /** Back-compat convenience constructor: bypassCsrf + requiredPermission + stripPrefix default. */
+    /** Back-compat convenience constructor: bypassCsrf + requiredPermission + stripPrefix + maxBodyMb default. */
     public RoutingRule(String path, AuthMode authMode, String target) {
-        this(path, authMode, target, false, null, null);
+        this(path, authMode, target, false, null, null, null);
     }
 
-    /** Back-compat convenience constructor: requiredPermission + stripPrefix default to null. */
+    /** Back-compat convenience constructor: requiredPermission + stripPrefix + maxBodyMb default to null. */
     public RoutingRule(String path, AuthMode authMode, String target, boolean bypassCsrf) {
-        this(path, authMode, target, bypassCsrf, null, null);
+        this(path, authMode, target, bypassCsrf, null, null, null);
     }
 
-    /** Back-compat convenience constructor: stripPrefix defaults to null. */
+    /** Back-compat convenience constructor: stripPrefix + maxBodyMb default to null. */
     public RoutingRule(String path, AuthMode authMode, String target, boolean bypassCsrf, String requiredPermission) {
-        this(path, authMode, target, bypassCsrf, requiredPermission, null);
+        this(path, authMode, target, bypassCsrf, requiredPermission, null, null);
+    }
+
+    /** Back-compat convenience constructor: maxBodyMb defaults to null. */
+    public RoutingRule(String path, AuthMode authMode, String target, boolean bypassCsrf, String requiredPermission, String stripPrefix) {
+        this(path, authMode, target, bypassCsrf, requiredPermission, stripPrefix, null);
     }
 }

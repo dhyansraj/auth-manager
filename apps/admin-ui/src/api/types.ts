@@ -111,6 +111,13 @@ export interface RoutingRule {
    * /*. Optional; null/undefined/empty means "forward path as-is".
    */
   stripPrefix?: string | null;
+  /**
+   * Max request body in MB. Default 25. Capped at 100 (Cloudflare tunnel
+   * ceiling). Enforced before forwarding upstream by checking Content-Length
+   * on POST/PUT/PATCH/DELETE; oversize requests get 413. Chunked uploads
+   * (no Content-Length) fall through to the nginx 100MB backstop.
+   */
+  maxBodyMb?: number | null;
 }
 
 export interface RoutingConfig {

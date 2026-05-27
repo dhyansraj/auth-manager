@@ -46,4 +46,11 @@ _M.platform_host             = getenv("PLATFORM_HOST",             "auth.mcp-mes
 -- Shared-dict for caching per-tenant route JSON.
 _M.cache_ttl_seconds = 30
 
+-- Per-route body-size cap (megabytes). Routes that omit RoutingRule.maxBodyMb
+-- fall back to this value. Hard upper bound is enforced by nginx's
+-- `client_max_body_size 100m` (Cloudflare Free tunnel ceiling) regardless of
+-- this setting; raising the default above 100 won't help.
+_M.route_default_max_body_mb    = tonumber(getenv("ROUTE_DEFAULT_MAX_BODY_MB", "25"))
+_M.route_default_max_body_bytes = _M.route_default_max_body_mb * 1024 * 1024
+
 return _M

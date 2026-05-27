@@ -87,6 +87,11 @@ export function validate(config: RoutingConfig): ValidationResult {
         }
       }
     }
+    if (typeof rule.maxBodyMb === 'number' && rule.maxBodyMb > 100) {
+      warnings.push(
+        `Rule #${i + 1}: Max body ${rule.maxBodyMb} MB exceeds Cloudflare 100MB tunnel ceiling — requests will fail at CF edge regardless.`
+      );
+    }
   });
 
   Object.entries(config.targets).forEach(([k, v]) => {
@@ -130,6 +135,12 @@ export function deepEqual(a: RoutingConfig, b: RoutingConfig): boolean {
     const xs = (x.stripPrefix ?? '').trim();
     const ys = (y.stripPrefix ?? '').trim();
     if (xs !== ys) return false;
+    // Treat null / undefined / 0 as equivalent for the optional body-size
+    // cap (all three mean "use the platform default"). Numeric coercion of
+    // null/undefined is 0, so a single ?? 0 normalises all three.
+    const xm = x.maxBodyMb ?? 0;
+    const ym = y.maxBodyMb ?? 0;
+    if (xm !== ym) return false;
   }
   const ak = Object.keys(a.targets), bk = Object.keys(b.targets);
   if (ak.length !== bk.length) return false;

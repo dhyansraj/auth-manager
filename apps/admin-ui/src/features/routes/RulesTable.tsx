@@ -28,7 +28,7 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
     const defaultTarget = targetKeys[0] ?? '';
     onChange([
       ...rules,
-      { path: '', authMode: 'REQUIRED', target: defaultTarget, bypassCsrf: false, requiredPermission: '', stripPrefix: '' },
+      { path: '', authMode: 'REQUIRED', target: defaultTarget, bypassCsrf: false, requiredPermission: '', stripPrefix: '', maxBodyMb: null },
     ]);
   };
 
@@ -77,6 +77,13 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
               title="Skip CSRF check on cookie-authed mutations. Use for third-party UIs (Redis Commander, Grafana) that don't send X-CSRF-Token. Only meaningful when Auth Mode is REQUIRED."
             >
               Bypass CSRF
+              <span className="ml-1 text-slate-400 cursor-help">(?)</span>
+            </th>
+            <th
+              className="px-3 py-2 w-32"
+              title="Max request body size in MB. Default 25 if blank. Max 100 (Cloudflare tunnel ceiling). 413 returned if exceeded."
+            >
+              Max body (MB)
               <span className="ml-1 text-slate-400 cursor-help">(?)</span>
             </th>
             <th className="px-3 py-2 w-16 text-right">Actions</th>
@@ -170,6 +177,23 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
                     className="h-4 w-4 disabled:opacity-50"
                   />
                 </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    step={1}
+                    value={r.maxBodyMb ?? ''}
+                    placeholder="25"
+                    disabled={readOnly}
+                    onChange={e => {
+                      const v = e.target.value;
+                      update(i, { maxBodyMb: v === '' ? null : Number(v) });
+                    }}
+                    title="Max request body size in MB. Default 25 if blank. Max 100 (Cloudflare tunnel ceiling). 413 returned if exceeded."
+                    className="w-full border rounded px-2 py-1 font-mono text-sm disabled:bg-slate-100"
+                  />
+                </td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   {!readOnly && (
                     <button
@@ -185,7 +209,7 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
           })}
           {rules.length === 0 && (
             <tr>
-              <td colSpan={8} className="px-3 py-6 text-center text-slate-500">
+              <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
                 No rules. {!readOnly && 'Add at least one rule with path "/*".'}
               </td>
             </tr>

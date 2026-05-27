@@ -378,5 +378,34 @@ if type(rule.stripPrefix) == "string" and rule.stripPrefix ~= "" then
     end
 end
 
+-- 6d. Per-rule body-size cap. Reject oversize bodies up front so we don't
+-- ship a useless multi-MB upload to the backend just for it to 413 (or
+-- worse, OOM). Only checked on body-carrying methods AND only when the
+-- client sent a Content-Length header — chunked uploads (no Content-Length)
+-- fall through to nginx's client_max_body_size 100m backstop.
+-- type() guard handles cjson.null / missing field; falls back to the
+-- platform-wide default (ROUTE_DEFAULT_MAX_BODY_MB, default 25 MB).
+local method = ngx.req.get_method()
+if method == "POST" or method == "PUT" or method == "PATCH" or method == "DELETE" then
+    local cl = tonumber(ngx.var.http_content_length)
+    if cl then
+        local cap_mb = rule.maxBodyMb
+        if type(cap_mb) ~= "number" then
+            cap_mb = config.route_default_max_body_mb
+        end
+        local cap_bytes = cap_mb * 1024 * 1024
+        if cl > cap_bytes then
+            ngx.status = 413
+            ngx.header.content_type = "application/json"
+            ngx.say(cjson.encode({
+                error   = "payload_too_large",
+                message = "Request body " .. cl .. " bytes exceeds route limit "
+                          .. cap_bytes .. " bytes (" .. cap_mb .. " MB)"
+            }))
+            return ngx.exit(413)
+        end
+    end
+end
+
 -- 7. Proxy
 ngx.var.route_backend = resolved
