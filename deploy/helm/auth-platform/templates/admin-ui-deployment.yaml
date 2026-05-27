@@ -18,6 +18,18 @@ spec:
         {{- include "auth-platform.labels" . | nindent 8 }}
         app.kubernetes.io/component: admin-ui
     spec:
+      # Spread admin-ui replicas across nodes (preferred). Pairs with
+      # .Values.adminUi.replicas >= 2 for true app-tier HA.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+                    app.kubernetes.io/component: admin-ui
       containers:
         - name: admin-ui
           image: {{ include "auth-platform.image" (dict "global" .Values.global "repository" .Values.adminUi.image.repository "tag" .Values.adminUi.image.tag) }}

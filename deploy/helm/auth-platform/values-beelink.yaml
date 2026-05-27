@@ -8,6 +8,12 @@ global:
   storageClass: "longhorn"
 
 authManager:
+  # 2 replicas with anti-affinity for HA. Bootstrap runners
+  # (RoutingPublisherBootstrap, SystemClientTokenBootstrap,
+  # PlatformRoleBootstrap, IdentityProvidersBootstrap) all run on each pod
+  # at startup. Every operation is idempotent so double-execution is
+  # log noise + a few extra KC API calls, not a correctness problem.
+  replicas: 2
   image:
     repository: auth-manager
     tag: "0.1.51"
@@ -48,11 +54,18 @@ keycloak:
     adminPassword: ""
 
 adminUi:
+  # 2 replicas with anti-affinity. Stateless nginx serving static files
+  # — pure horizontal scaling, no coordination needed.
+  replicas: 2
   image:
     repository: admin-ui
     tag: "0.1.32"
 
 platformEdge:
+  # 3 replicas with anti-affinity. Cluster has 5 nodes, 3 is the sweet
+  # spot — survives any 2-node failure simultaneously with capacity left.
+  # NOTE: template uses .replicaCount here (not .replicas like the other deploys).
+  replicaCount: 3
   image:
     repository: platform-edge
     tag: "0.1.18"

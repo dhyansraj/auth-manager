@@ -19,6 +19,19 @@ spec:
         app.kubernetes.io/component: auth-manager
     spec:
       serviceAccountName: {{ .Release.Name }}-auth-manager
+      # Spread replicas across nodes when possible (preferred, not required —
+      # if all suitable nodes are taken, scheduler still places the pod).
+      # Pairs with .Values.authManager.replicas >= 2 for true app-tier HA.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+                    app.kubernetes.io/component: auth-manager
       containers:
         - name: auth-manager
           image: {{ include "auth-platform.image" (dict "global" .Values.global "repository" .Values.authManager.image.repository "tag" .Values.authManager.image.tag) }}
