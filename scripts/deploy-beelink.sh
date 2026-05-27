@@ -46,11 +46,25 @@ KC_IMAGE_REPO="${KC_IMAGE_REPO:-bitnamilegacy/keycloak}"
 KC_IMAGE_TAG="${KC_IMAGE_TAG:-26.3.3-debian-12-r0}"
 
 DB_USER="${DB_USER:-authmanager}"
-DB_PASSWORD="${DB_PASSWORD:-authmanager-dev-pass}"
+DB_PASSWORD="${DB_PASSWORD:-}"
 DB_NAME="${DB_NAME:-authmanager}"
 
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}"
-KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-admin}"
+KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-}"
+
+# Refuse to run with empty / well-known-default credentials. Forces operators
+# to source their password vault before invoking this script; prevents the
+# foot-gun where a helm upgrade silently resets KC admin back to "admin".
+if [ -z "$KC_ADMIN_PASSWORD" ] || [ "$KC_ADMIN_PASSWORD" = "admin" ]; then
+  echo "ERROR: KC_ADMIN_PASSWORD env var must be set to a non-default value." >&2
+  echo "  Example: export KC_ADMIN_PASSWORD='<value-from-password-manager>'" >&2
+  exit 2
+fi
+if [ -z "$DB_PASSWORD" ] || [ "$DB_PASSWORD" = "authmanager-dev-pass" ]; then
+  echo "ERROR: DB_PASSWORD env var must be set to a non-default value." >&2
+  echo "  Example: export DB_PASSWORD='<value-from-password-manager>'" >&2
+  exit 2
+fi
 # Public OIDC issuer hostname (path-included). KC 26 hostname-v2 builds the
 # issuer as KC_HOSTNAME + "/realms/<realm>", so a path component here means
 # tokens get iss="https://auth.mcp-mesh.io/auth/realms/<realm>".

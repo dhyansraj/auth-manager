@@ -56,6 +56,14 @@ export default function TenantsList() {
                     <button onClick={() => { if (confirm(`Delete tenant ${t.slug}?`)) del.mutate(t.id); }}
                             className="text-red-700 hover:underline text-xs">Delete</button>
                   )}
+                  {t.status !== 'ACTIVE' && (
+                    <Link
+                      to={`/tenants/new?resume=${t.id}`}
+                      className="text-blue-700 hover:underline text-xs ml-3"
+                    >
+                      Resume
+                    </Link>
+                  )}
                 </td>
               </tr>
             ))}

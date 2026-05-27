@@ -11,9 +11,13 @@ import java.util.List;
  *
  * <p>{@code roles} and {@code hashTripwire} are null when {@code applyRoles=false}.
  * {@code identityProviders} and {@code defaultRoleMappers} are null when the
- * incoming manifest omits those sections. Phase 2 never deletes: anything
- * present in KC but missing from the manifest surfaces in the
- * {@code skippedAsMissing} bucket and a warning.
+ * incoming manifest omits those sections.
+ *
+ * <p>{@code Diff.skipped} = items present in KC but absent from the manifest
+ * that were left untouched (additive sections: permissions, roles, IdPs).
+ * {@code Diff.deleted} = items present in KC but absent from the manifest
+ * that were actively removed because the manifest section is authoritative
+ * (currently: defaultRoleMappers).
  *
  * <p>For {@code defaultRoleMappers}, diff entries are formatted as
  * {@code <idpAlias>:<roleName>} (e.g. {@code google:customer}).
@@ -42,10 +46,17 @@ public record ApplyResult(
         List<String> created,
         List<String> updated,
         List<String> unchanged,
-        List<String> skippedAsMissing
+        List<String> skipped,
+        List<String> deleted
     ) {
         public static Diff empty() {
-            return new Diff(List.of(), List.of(), List.of(), List.of());
+            return new Diff(List.of(), List.of(), List.of(), List.of(), List.of());
+        }
+
+        /** Back-compat constructor for sections that don't delete (permissions, roles, IdPs). */
+        public Diff(List<String> created, List<String> updated,
+                    List<String> unchanged, List<String> skipped) {
+            this(created, updated, unchanged, skipped, List.of());
         }
     }
 

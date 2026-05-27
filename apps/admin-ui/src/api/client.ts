@@ -11,6 +11,7 @@ import type {
   IdentityProviderId,
   ThemeMeta,
   ThemeRolloutStatus,
+  BrandingConfig,
 } from './types';
 
 // The admin-ui is served at /admin/* on every host. The edge maps
@@ -28,11 +29,36 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Centralized 401 handling for admin-ui's API client. On 401, captures the
+ * current path + query and redirects the browser to /_bff/login?redirect_back=...
+ * The BFF sign-in flow round-trips back to the same URL with a fresh session.
+ *
+ * Wizard form state is persisted to sessionStorage by TenantWizard, so the
+ * round-trip is non-destructive for in-progress onboarding.
+ *
+ * Throws after triggering the navigation so the calling promise chain halts —
+ * no further code runs in the current request handler.
+ */
+async function checkAuth(r: Response): Promise<Response> {
+  if (r.status === 401) {
+    const back = window.location.pathname + window.location.search;
+    // Use setTimeout to defer just enough for the throw to land first; the
+    // navigation still happens because we haven't unloaded yet.
+    setTimeout(() => {
+      window.location.href = '/_bff/login?redirect_back=' + encodeURIComponent(back);
+    }, 0);
+    throw new ApiError(401, 'Session expired — redirecting to sign in', null, '');
+  }
+  return r;
+}
+
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json');
 
   const r = await bffFetch(base + path, { ...init, headers });
+  await checkAuth(r);
   if (!r.ok) {
     const raw = await r.text();
     let parsed: unknown = raw;
@@ -46,6 +72,8 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   listTenants:   () => req<import('./types').Tenant[]>('/tenants'),
   getTenant:     (id: string) => req<import('./types').Tenant>(`/tenants/${id}`),
+  getTenantBySlug: (slug: string) =>
+    req<import('./types').Tenant>(`/tenants/by-slug/${slug}`),
   createTenant:  (body: {
     slug: string;
     displayName: string;
@@ -77,6 +105,7 @@ export const api = {
       headers: { 'Content-Type': 'application/yaml' },
       body: yamlBody,
     });
+    await checkAuth(r);
     if (!r.ok) {
       const raw = await r.text();
       let parsed: unknown = raw;
@@ -183,6 +212,7 @@ export const api = {
     const r = await bffFetch(`${base}/tenants/${slug}/theme`, {
       method: 'POST', body: form,
     });
+    await checkAuth(r);
     if (!r.ok) {
       const raw = await r.text();
       let parsed: unknown = raw;
@@ -195,4 +225,36 @@ export const api = {
     req<void>(`/tenants/${slug}/theme`, { method: 'DELETE' }),
   getThemeStatus: (slug: string) =>
     req<ThemeRolloutStatus>(`/tenants/${slug}/theme/status`),
+
+  // -------------------------------------------------------------------------
+  // Rich-login Branding (layout variant + named slot HTML)
+  // -------------------------------------------------------------------------
+  getBranding: (slug: string) =>
+    req<BrandingConfig>(`/tenants/${slug}/branding`),
+  updateBranding: (slug: string, body: BrandingConfig) =>
+    req<BrandingConfig>(`/tenants/${slug}/branding`, {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
+
+  // -------------------------------------------------------------------------
+  // Onboarding bundle (.zip handoff for tenant teams)
+  // -------------------------------------------------------------------------
+  downloadOnboardingBundle: async (tenantId: string): Promise<void> => {
+    const r = await bffFetch(`${base}/tenants/${tenantId}/onboarding-bundle`, {
+      credentials: 'include',
+    });
+    await checkAuth(r);
+    if (!r.ok) throw new ApiError(r.status, r.statusText, null, await r.text());
+    const blob = await r.blob();
+    const filename = r.headers.get('Content-Disposition')?.match(/filename="(.+?)"/)?.[1]
+      || 'onboarding-bundle.zip';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 };

@@ -66,6 +66,17 @@ export default function TenantDetail() {
         <Link to="/tenants" className="text-slate-500 hover:text-slate-900">← Tenants</Link>
         <h1 className="text-2xl font-semibold">{t.displayName}</h1>
         <code className="text-xs text-slate-500">{t.slug}</code>
+        <div className="ml-auto">
+          <button
+            onClick={async () => {
+              try { await api.downloadOnboardingBundle(t.id); }
+              catch (e) { alert('Download failed: ' + (e instanceof Error ? e.message : String(e))); }
+            }}
+            className="bg-white border px-3 py-1.5 rounded text-sm hover:bg-slate-50"
+          >
+            Download bundle
+          </button>
+        </div>
       </div>
       <div className="flex gap-4 border-b">
         {visibleTabs.map(k => (

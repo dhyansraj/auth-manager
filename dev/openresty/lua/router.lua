@@ -195,7 +195,7 @@ local function load_routes(tenant)
     return json, nil
 end
 
-local function enforce_auth(auth_mode, tenant)
+local function enforce_auth(auth_mode, tenant, rule_opts)
     -- BFF_BEARER_INJECTED: caller (match_platform for /_bff/me) has already
     -- proven the session and set Authorization: do nothing here, in
     -- particular do NOT strip the header.
@@ -236,8 +236,16 @@ local function enforce_auth(auth_mode, tenant)
             -- Double-submit CSRF: only on cookie-authed requests. Bearer
             -- callers (CLI / m2m / native apps) are exempt -- knowing the
             -- token is itself proof of intent.
-            local ok = bff.enforce_csrf_if_cookie_auth()
-            if not ok then return end  -- response already emitted (403)
+            --
+            -- Per-rule opt-out: routes pointing at embedded third-party UIs
+            -- (Redis Commander, Grafana, ...) can set bypassCsrf=true so the
+            -- upstream's own session/CSRF model isn't double-gated by ours.
+            -- Platform cross-cutting paths never pass rule_opts, so /admin/*
+            -- and friends always enforce CSRF.
+            if not (rule_opts and rule_opts.bypassCsrf) then
+                local ok = bff.enforce_csrf_if_cookie_auth()
+                if not ok then return end  -- response already emitted (403)
+            end
         end
         return
     end
@@ -328,7 +336,47 @@ if not resolved or resolved == "" then
 end
 
 -- 6. Auth gating
-enforce_auth(rule.authMode, tenant)
+-- bypassCsrf is decoded as boolean from JSON; cjson sets missing fields to
+-- nil, which is falsy in the rule_opts check inside enforce_auth.
+enforce_auth(rule.authMode, tenant, { bypassCsrf = rule.bypassCsrf })
+
+-- 6b. Per-rule permission gating. Only enforced when the rule actually
+-- declares one AND auth was REQUIRED (so we have a JWT to inspect).
+-- enforce_auth would have already short-circuited on missing/invalid auth.
+if rule.authMode == "REQUIRED"
+   and type(rule.requiredPermission) == "string"
+   and rule.requiredPermission ~= "" then
+    if not bff.has_permission(rule.requiredPermission) then
+        ngx.status = 403
+        ngx.header.content_type = "application/json"
+        ngx.say(cjson.encode({
+            error = "forbidden",
+            message = "missing required permission: " .. rule.requiredPermission
+        }))
+        return ngx.exit(403)
+    end
+end
+
+-- 6c. Per-rule prefix strip. For embedded third-party apps mounted under a
+-- subpath whose internal links assume root (e.g. Redis Commander at
+-- /ops/redis/* whose XHRs go to /apiv2/...). If the configured prefix is
+-- not actually a prefix of the matched path, proxy as-is (operator
+-- misconfig -- the matcher already let this rule win on a longer prefix
+-- match, so a rewrite that breaks the path would be worse than a no-op).
+-- type() guard handles cjson.null when the JSON omits the field or sends null.
+if type(rule.stripPrefix) == "string" and rule.stripPrefix ~= "" then
+    local stripped
+    if path == rule.stripPrefix or path == rule.stripPrefix .. "/" then
+        stripped = "/"
+    elseif path:sub(1, #rule.stripPrefix + 1) == rule.stripPrefix .. "/" then
+        stripped = path:sub(#rule.stripPrefix + 1)  -- keeps leading slash
+    else
+        stripped = path  -- prefix doesn't match; leave URI alone
+    end
+    if stripped ~= path then
+        ngx.req.set_uri(stripped, false)  -- false = don't re-match locations
+    end
+end
 
 -- 7. Proxy
 ngx.var.route_backend = resolved

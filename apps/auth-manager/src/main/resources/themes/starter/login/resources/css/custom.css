@@ -64,17 +64,41 @@ html, body, .login-pf {
 }
 
 /* ===== Login card surface =============================================
- * keycloak.v2's main card is .pf-v5-c-login__main; container/header are
- * outer wrappers. Set background on all so any tenant-supplied background
- * image bleeds correctly behind the card.
+ * keycloak.v2's DOM:
+ *   .pf-v5-c-login                  ← outermost wrapper, full viewport width
+ *   └─ .pf-v5-c-login__container    ← centered, narrower row
+ *      ├─ .pf-v5-c-login__header    ← branding strip (right column on wide)
+ *      └─ .pf-v5-c-login__main      ← the actual card (form lives here)
+ *         ├─ .pf-v5-c-login__main-header
+ *         ├─ .pf-v5-c-login__main-body
+ *         └─ .pf-v5-c-login__main-footer
+ *
+ * By DEFAULT we make the wrappers TRANSPARENT so the body background
+ * (whatever the tenant sets — flat colour, gradient, or image) bleeds
+ * through edge-to-edge. ONLY the card itself gets the opaque
+ * --kc-card-background colour. This is what every modern login page
+ * expects (gradient/photo background with a floating card on top).
+ *
+ * If you want the OLD behaviour (full-width white middle band swallowing
+ * the body bg), override these in your own CSS:
+ *   .pf-v5-c-login,
+ *   .pf-v5-c-login__container,
+ *   .pf-v5-c-login__header {
+ *     background: var(--kc-card-background) !important;
+ *   }
  */
 .pf-v5-c-login,
 .pf-v5-c-login__container,
+.pf-v5-c-login__header {
+  background: transparent !important;
+  color: var(--kc-text-primary) !important;
+}
+
+/* The card surface — opaque, rounded, shadowed, floating on body bg. */
 .pf-v5-c-login__main,
 .pf-v5-c-login__main-body,
 .pf-v5-c-login__main-header,
-.pf-v5-c-login__main-footer,
-.pf-v5-c-login__header {
+.pf-v5-c-login__main-footer {
   background: var(--kc-card-background) !important;
   color: var(--kc-text-primary) !important;
 }
@@ -197,11 +221,17 @@ input.pf-v5-c-form-control:focus {
 }
 
 /* ===== Social IdP icon sizing — CRITICAL =============================
- * KC renders the IdP icon inside the secondary button as a .pf-v5-c-brand
- * element (sometimes wrapping an <img>, sometimes a background-image div).
- * Without an explicit cap the icon renders at its natural size and pushes
- * the button to full card width. Multiple selectors + !important because
- * the rendered element type varies across KC IdP plugins.
+ * KC renders the IdP icon inside the secondary button in one of THREE
+ * shapes depending on the IdP plugin + KC version:
+ *   1. inline <svg> directly in the button (KC 26.x built-in Google/GitHub)
+ *   2. <img> tag wrapped in .pf-v5-c-brand (older / custom IdPs)
+ *   3. background-image on a .pf-v5-c-brand div
+ * Without an explicit cap on ALL of them, the icon renders at its natural
+ * size (often 200x200+) and pushes the button to full card width — turning
+ * the "Continue with GitHub" button into a giant logo with tiny text.
+ *
+ * Multiple selectors + !important because PatternFly v5 ships base sizing
+ * that defeats less-specific rules.
  */
 .pf-v5-c-button.pf-m-secondary .pf-v5-c-brand,
 .pf-v5-c-button .pf-v5-c-brand,
@@ -222,6 +252,16 @@ input.pf-v5-c-form-control:focus {
   max-width: 20px !important;
   max-height: 20px !important;
   object-fit: contain;
+}
+.pf-v5-c-button.pf-m-secondary svg,
+.pf-v5-c-button svg {
+  width: 20px !important;
+  height: 20px !important;
+  max-width: 20px !important;
+  max-height: 20px !important;
+  flex: 0 0 20px;
+  vertical-align: middle;
+  margin-right: 8px;
 }
 
 /* ===== Links ==========================================================

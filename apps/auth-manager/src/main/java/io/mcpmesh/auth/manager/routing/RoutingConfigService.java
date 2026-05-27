@@ -92,7 +92,8 @@ public class RoutingConfigService {
         Tenant t = tenants.findBySlug(slug)
             .filter(x -> !x.isDeleted())
             .orElseThrow(() -> new TenantNotFoundException(slug));
-        t.setRoutingConfig(newConfig);
+        RoutingConfig sortedConfig = sortBySpecificity(newConfig);
+        t.setRoutingConfig(sortedConfig);
         Tenant saved = tenants.save(t);
 
         // Audit BEFORE registering the after-commit sync so the audit row
@@ -101,15 +102,52 @@ public class RoutingConfigService {
         // behavior across the service layer).
         Map<String, Object> details = Map.of(
             "slug", slug,
-            "ruleCount", newConfig.rules().size(),
-            "targets", newConfig.targets()
+            "ruleCount", sortedConfig.rules().size(),
+            "targets", sortedConfig.targets()
         );
         audit.recordSuccess(SYSTEM_ACTOR, SYSTEM_KIND, saved.getId(),
             "routes.apply", "tenant", saved.getId().toString(),
-            newConfig, details);
+            sortedConfig, details);
 
-        registerRedisPublish(slug, newConfig);
+        registerRedisPublish(slug, sortedConfig);
         return saved.getRoutingConfig();
+    }
+
+    /**
+     * Re-orders rules by path specificity so the router (first-match-wins)
+     * always tries the most-specific rule first. Operators can add rules in
+     * any order in the UI; we canonicalize at save time so a {@code /*}
+     * catch-all placed first does not swallow more-specific rules like
+     * {@code /ops/redis/*}.
+     *
+     * <p>Ordering (most-specific first):
+     * <ol>
+     *   <li>Exact paths (no trailing wildcard)</li>
+     *   <li>Prefix-wildcard paths ({@code /foo/*}), longer prefix first</li>
+     *   <li>The pure catch-all {@code /*} always last</li>
+     * </ol>
+     */
+    static RoutingConfig sortBySpecificity(RoutingConfig incoming) {
+        List<RoutingRule> sorted = incoming.rules().stream()
+            .sorted(RoutingConfigService::compareSpecificity)
+            .toList();
+        return new RoutingConfig(sorted, incoming.targets());
+    }
+
+    static int compareSpecificity(RoutingRule a, RoutingRule b) {
+        boolean aCatchAll = "/*".equals(a.path());
+        boolean bCatchAll = "/*".equals(b.path());
+        if (aCatchAll && !bCatchAll) return 1;   // a (catch-all) goes last
+        if (!aCatchAll && bCatchAll) return -1;
+        if (aCatchAll) return 0;                 // both catch-all
+
+        boolean aWild = a.path().endsWith("/*");
+        boolean bWild = b.path().endsWith("/*");
+        // Exact matches outrank wildcards within the non-catch-all bucket.
+        if (!aWild && bWild) return -1;
+        if (aWild && !bWild) return 1;
+        // Both wildcards or both exact: longer path wins (more specific).
+        return Integer.compare(b.path().length(), a.path().length());
     }
 
     /**

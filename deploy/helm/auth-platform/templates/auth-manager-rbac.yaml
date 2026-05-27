@@ -36,6 +36,12 @@ rules:
   resources: ["statefulsets/status"]
   resourceNames: ["platform-kc-keycloak"]
   verbs: ["get"]
+# Patch deployments so CloudflaredReloader can trigger cloudflared rollouts
+# after tunnel ingress changes. Same pattern as the StatefulSet patch above
+# (kubectl.kubernetes.io/restartedAt annotation = strategic merge patch).
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

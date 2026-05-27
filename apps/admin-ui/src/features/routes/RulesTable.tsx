@@ -20,23 +20,16 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
     onChange(next);
   };
 
-  const move = (i: number, dir: -1 | 1) => {
-    const j = i + dir;
-    if (j < 0 || j >= rules.length) return;
-    const next = [...rules];
-    const tmp = next[i];
-    next[i] = next[j];
-    next[j] = tmp;
-    onChange(next);
-  };
-
   const remove = (i: number) => {
     onChange(rules.filter((_, idx) => idx !== i));
   };
 
   const add = () => {
     const defaultTarget = targetKeys[0] ?? '';
-    onChange([...rules, { path: '', authMode: 'REQUIRED', target: defaultTarget }]);
+    onChange([
+      ...rules,
+      { path: '', authMode: 'REQUIRED', target: defaultTarget, bypassCsrf: false, requiredPermission: '', stripPrefix: '' },
+    ]);
   };
 
   return (
@@ -53,6 +46,11 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
           </button>
         )}
       </div>
+      {!readOnly && (
+        <p className="text-xs text-slate-500">
+          Rules are auto-sorted by specificity on save (exact paths first, then longest prefix, <code>/*</code> last).
+        </p>
+      )}
       <table className="w-full bg-white border rounded text-sm">
         <thead className="bg-slate-50 text-left">
           <tr>
@@ -60,7 +58,28 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
             <th className="px-3 py-2">Path</th>
             <th className="px-3 py-2 w-32">Auth Mode</th>
             <th className="px-3 py-2 w-48">Target</th>
-            <th className="px-3 py-2 w-28 text-right">Actions</th>
+            <th
+              className="px-3 py-2 w-44"
+              title="Optional. If set, request requires this permission claim in the JWT (in addition to auth). Skip if no permission gating needed."
+            >
+              Required permission
+              <span className="ml-1 text-slate-400 cursor-help">(?)</span>
+            </th>
+            <th
+              className="px-3 py-2 w-44"
+              title="Optional. Strips this prefix from the request URI before forwarding. For embedded apps that don't support a base-path config. Common: same as the rule path minus the trailing /*."
+            >
+              Strip prefix
+              <span className="ml-1 text-slate-400 cursor-help">(?)</span>
+            </th>
+            <th
+              className="px-3 py-2 w-28"
+              title="Skip CSRF check on cookie-authed mutations. Use for third-party UIs (Redis Commander, Grafana) that don't send X-CSRF-Token. Only meaningful when Auth Mode is REQUIRED."
+            >
+              Bypass CSRF
+              <span className="ml-1 text-slate-400 cursor-help">(?)</span>
+            </th>
+            <th className="px-3 py-2 w-16 text-right">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -119,30 +138,46 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
                   </select>
                   {targetErr && <div className="text-xs text-red-700 mt-1">{targetErr}</div>}
                 </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="text"
+                    value={r.requiredPermission ?? ''}
+                    placeholder="e.g. OPS_ACCESS"
+                    disabled={readOnly}
+                    onChange={e => update(i, { requiredPermission: e.target.value })}
+                    title="Optional. If set, request requires this permission claim in the JWT (in addition to auth). Skip if no permission gating needed."
+                    className="w-full border rounded px-2 py-1 font-mono text-sm disabled:bg-slate-100"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="text"
+                    value={r.stripPrefix ?? ''}
+                    placeholder="e.g. /ops/redis"
+                    disabled={readOnly}
+                    onChange={e => update(i, { stripPrefix: e.target.value })}
+                    title="Optional. Strips this prefix from the request URI before forwarding. For embedded apps that don't support a base-path config. Common: same as the rule path minus the trailing /*."
+                    className="w-full border rounded px-2 py-1 font-mono text-sm disabled:bg-slate-100"
+                  />
+                </td>
+                <td className="px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(r.bypassCsrf)}
+                    disabled={readOnly}
+                    onChange={e => update(i, { bypassCsrf: e.target.checked })}
+                    title="Skip CSRF check on cookie-authed mutations. Use for third-party UIs that don't send X-CSRF-Token."
+                    className="h-4 w-4 disabled:opacity-50"
+                  />
+                </td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   {!readOnly && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => move(i, -1)}
-                        disabled={i === 0}
-                        title="Move up"
-                        className="px-1 text-slate-500 hover:text-slate-900 disabled:opacity-30"
-                      >↑</button>
-                      <button
-                        type="button"
-                        onClick={() => move(i, 1)}
-                        disabled={i === rules.length - 1}
-                        title="Move down"
-                        className="px-1 text-slate-500 hover:text-slate-900 disabled:opacity-30"
-                      >↓</button>
-                      <button
-                        type="button"
-                        onClick={() => remove(i)}
-                        title="Delete"
-                        className="ml-2 text-red-700 hover:underline text-xs"
-                      >delete</button>
-                    </>
+                    <button
+                      type="button"
+                      onClick={() => remove(i)}
+                      title="Delete"
+                      className="text-red-700 hover:underline text-xs"
+                    >delete</button>
                   )}
                 </td>
               </tr>
@@ -150,7 +185,7 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
           })}
           {rules.length === 0 && (
             <tr>
-              <td colSpan={5} className="px-3 py-6 text-center text-slate-500">
+              <td colSpan={8} className="px-3 py-6 text-center text-slate-500">
                 No rules. {!readOnly && 'Add at least one rule with path "/*".'}
               </td>
             </tr>

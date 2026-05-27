@@ -1,0 +1,28 @@
+{{- /*
+  Platform-managed parent theme for the rich-login feature. The Bitnami
+  keycloak chart's theme-materializer init container (see
+  deploy/helm/keycloak-overrides/values-platform-kc.yaml) enumerates
+  ConfigMaps labelled mcpmesh/theme=true in the same namespace and copies
+  their decoded contents into /opt/bitnami/keycloak/themes/<name>/.
+
+  ConfigMap name "theme-mcpmesh-flexible" → KC theme directory "mcpmesh-flexible".
+  Keys use "__" as the path separator (decoded back to "/" by the init container).
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: theme-mcpmesh-flexible
+  namespace: {{ .Release.Namespace }}
+  labels:
+    mcpmesh/theme: "true"
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: platform-theme
+data:
+  login__theme.properties: |-
+{{ .Files.Get "themes/mcpmesh-flexible/login/theme.properties" | indent 4 }}
+  login__template.ftl: |-
+{{ .Files.Get "themes/mcpmesh-flexible/login/template.ftl" | indent 4 }}
+  login__messages__messages_en.properties: |-
+{{ .Files.Get "themes/mcpmesh-flexible/login/messages/messages_en.properties" | indent 4 }}
+  login__resources__css__mcp-layout.css: |-
+{{ .Files.Get "themes/mcpmesh-flexible/login/resources/css/mcp-layout.css" | indent 4 }}

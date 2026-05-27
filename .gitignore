@@ -107,3 +107,6 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+
+# Claude Code session state (scheduled tasks, etc.) — full directory
+.claude/

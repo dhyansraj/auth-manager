@@ -114,6 +114,15 @@ export default function RoutesTab({ slug }: Props) {
         </div>
       )}
 
+      {canManage && validation.warnings.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-900">
+          <div className="font-medium mb-1">Warnings:</div>
+          <ul className="list-disc ml-5">
+            {validation.warnings.map((w, i) => <li key={'w' + i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
+
       {saveMessage && (
         <div className="bg-emerald-50 border border-emerald-200 rounded p-3 text-sm text-emerald-900 flex justify-between">
           <span>{saveMessage}</span>

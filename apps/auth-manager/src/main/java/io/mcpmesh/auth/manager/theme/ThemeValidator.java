@@ -82,7 +82,12 @@ public class ThemeValidator {
         "keycloak",
         "keycloak.v2.account",
         "keycloak.account",
-        "base"
+        "base",
+        // Platform-managed parent theme: provides the rich-login grid +
+        // named-slot scaffolding. Directory name uses a dash (KC reads
+        // the parent= value verbatim as a directory lookup; ConfigMap is
+        // theme-mcpmesh-flexible -> /opt/.../themes/mcpmesh-flexible/).
+        "mcpmesh-flexible"
     );
 
     /** KC theme types that may contain a {@code theme.properties}. */
@@ -492,47 +497,70 @@ public class ThemeValidator {
             // excludes the optional trailing '/'.
             java.util.regex.Pattern p = java.util.regex.Pattern.compile(
                 "<" + tag + "((?:[^>]*?))/?>");
-            java.util.regex.Matcher m = p.matcher(result);
-            StringBuilder sb = new StringBuilder();
             String closeTag = "</" + tag + ">";
-            int cursor = 0;
-            while (m.find()) {
-                sb.append(result, cursor, m.start());
-                String attrs = m.group(1);
-                String trimmedAttrs = attrs.replaceFirst("\\s+$", "");
-                int afterOpener = m.end();
-                int closeIdx = indexOfIgnoreCase(result, closeTag, afterOpener);
-                // Decide: is this an empty container we should leave alone,
-                // or one with wrongly-nested siblings we need to lift out?
-                boolean leaveAlone = false;
-                if (closeIdx >= 0) {
-                    String between = result.substring(afterOpener, closeIdx);
-                    if (between.trim().isEmpty()) {
-                        // Empty (or whitespace-only) container -- preserve
-                        // the original opener + close tag pair as-is.
-                        leaveAlone = true;
+            // Outer "until stable" loop: a single linear sweep skips matches
+            // inside a previously-lifted region (the `m.start() < cursor`
+            // guard below), so deeply-nested void-element occurrences may
+            // need a second pass to be canonicalised. Bounded at 5 iterations
+            // since realistic SVG nesting depth is 2-3 levels.
+            String previous;
+            int passes = 0;
+            do {
+                previous = result;
+                java.util.regex.Matcher m = p.matcher(result);
+                StringBuilder sb = new StringBuilder();
+                int cursor = 0;
+                while (m.find()) {
+                    // When the previous iteration "lifted" wrongly-nested content
+                    // out of a void element, cursor jumps past a close-tag that's
+                    // ahead of where the regex matcher is currently positioned.
+                    // Any subsequent matches whose start falls before cursor are
+                    // inside that already-emitted region — skip them to avoid
+                    // double-emission and an IndexOutOfBounds on append. Nested
+                    // void-element occurrences may not get rewritten to canonical
+                    // self-closing form this pass; the outer do/while picks them
+                    // up on a subsequent iteration.
+                    if (m.start() < cursor) {
+                        continue;
                     }
-                }
-                if (leaveAlone) {
-                    // Re-emit the original opener verbatim.
-                    sb.append(result, m.start(), m.end());
-                    cursor = m.end();
-                } else {
-                    // Rewrite opener as self-closing.
-                    sb.append('<').append(tag);
-                    if (!trimmedAttrs.isEmpty()) sb.append(trimmedAttrs);
-                    sb.append("/>");
-                    cursor = afterOpener;
+                    sb.append(result, cursor, m.start());
+                    String attrs = m.group(1);
+                    String trimmedAttrs = attrs.replaceFirst("\\s+$", "");
+                    int afterOpener = m.end();
+                    int closeIdx = indexOfIgnoreCase(result, closeTag, afterOpener);
+                    // Decide: is this an empty container we should leave alone,
+                    // or one with wrongly-nested siblings we need to lift out?
+                    boolean leaveAlone = false;
                     if (closeIdx >= 0) {
-                        // Lift the wrongly-nested content back out: keep
-                        // everything between opener and close, drop the close.
-                        sb.append(result, cursor, closeIdx);
-                        cursor = closeIdx + closeTag.length();
+                        String between = result.substring(afterOpener, closeIdx);
+                        if (between.trim().isEmpty()) {
+                            // Empty (or whitespace-only) container -- preserve
+                            // the original opener + close tag pair as-is.
+                            leaveAlone = true;
+                        }
+                    }
+                    if (leaveAlone) {
+                        // Re-emit the original opener verbatim.
+                        sb.append(result, m.start(), m.end());
+                        cursor = m.end();
+                    } else {
+                        // Rewrite opener as self-closing.
+                        sb.append('<').append(tag);
+                        if (!trimmedAttrs.isEmpty()) sb.append(trimmedAttrs);
+                        sb.append("/>");
+                        cursor = afterOpener;
+                        if (closeIdx >= 0) {
+                            // Lift the wrongly-nested content back out: keep
+                            // everything between opener and close, drop the close.
+                            sb.append(result, cursor, closeIdx);
+                            cursor = closeIdx + closeTag.length();
+                        }
                     }
                 }
-            }
-            sb.append(result, cursor, result.length());
-            result = sb.toString();
+                sb.append(result, cursor, result.length());
+                result = sb.toString();
+                passes++;
+            } while (!result.equals(previous) && passes < 5);
         }
         return result;
     }

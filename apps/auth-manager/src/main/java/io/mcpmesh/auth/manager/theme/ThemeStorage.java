@@ -102,6 +102,37 @@ public class ThemeStorage {
             name, data.size(), binaryData.size());
     }
 
+    /**
+     * Reads the raw file map (decoded paths) from the tenant's theme ConfigMap.
+     * Returns empty if no ConfigMap exists. Used by the branding merge path
+     * which needs to overlay slot HTML onto an existing tenant zip.
+     *
+     * <p>Both text and binary entries are surfaced — binaryData values are
+     * base64-decoded back to raw bytes so callers see the same shape as the
+     * Validator's extracted-files map.
+     */
+    public Optional<Map<String, byte[]>> readThemeFiles(String slug) {
+        ConfigMap cm = k8s.configMaps()
+            .inNamespace(namespace)
+            .withName(configMapNameFor(slug))
+            .get();
+        if (cm == null) {
+            return Optional.empty();
+        }
+        Map<String, byte[]> out = new LinkedHashMap<>();
+        if (cm.getData() != null) {
+            for (Map.Entry<String, String> e : cm.getData().entrySet()) {
+                out.put(decodePath(e.getKey()), e.getValue().getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        if (cm.getBinaryData() != null) {
+            for (Map.Entry<String, String> e : cm.getBinaryData().entrySet()) {
+                out.put(decodePath(e.getKey()), Base64.getDecoder().decode(e.getValue()));
+            }
+        }
+        return Optional.of(out);
+    }
+
     public Optional<ThemeMeta> getTheme(String slug) {
         ConfigMap cm = k8s.configMaps()
             .inNamespace(namespace)

@@ -1,7 +1,9 @@
 package io.mcpmesh.auth.manager.theme;
 
 import io.mcpmesh.auth.manager.audit.AuditService;
+import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
+import io.mcpmesh.auth.manager.theme.branding.BrandingMerger;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -21,9 +23,11 @@ class ThemeServiceTest {
 
     private final ThemeService service = new ThemeService(
         mock(TenantService.class),
+        mock(TenantRepository.class),
         mock(ThemeValidator.class),
         mock(ThemeStorage.class),
         mock(ThemeApplier.class),
+        mock(BrandingMerger.class),
         mock(AuditService.class)
     );
 
@@ -34,6 +38,7 @@ class ThemeServiceTest {
         Set<String> names = readEntryNames(zip);
 
         assertThat(names).containsExactlyInAnyOrder(
+            "README.md",
             "login/theme.properties",
             "login/resources/css/custom.css",
             "login/resources/img/logo.svg",
@@ -44,8 +49,8 @@ class ThemeServiceTest {
             "email/theme.properties",
             "email/messages/messages_en.properties"
         );
-        // 9 = 7 (prior login/account set) + 2 (new email/* additions).
-        assertThat(names).hasSize(9);
+        // 10 = 9 (prior set) + 1 (layout-aware README at zip root).
+        assertThat(names).hasSize(10);
     }
 
     @Test

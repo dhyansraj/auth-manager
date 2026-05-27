@@ -791,6 +791,50 @@ function _M.enforce_csrf_if_cookie_auth()
     return true
 end
 
+-- ─── Permission check (called from router.lua after enforce_auth) ───────
+--
+-- Returns true iff `perm_id` appears in the caller's JWT (Authorization
+-- header), checking both resource_access.<client>.roles[] (per-client) and
+-- realm_access.roles[] (realm-level). The header is expected to have been
+-- set by either an upstream Bearer client or try_inject_bearer_from_cookie.
+--
+-- No signature verification is performed: upstream services validate the
+-- signature on their own calls and the router treats the JWT as truth for
+-- the purpose of authz gating. The Authorization header itself is only
+-- considered present after enforce_auth (REQUIRED) succeeded, so any
+-- forged claim would have had to round-trip through KC's signed issuance.
+function _M.has_permission(perm_id)
+    if not perm_id or perm_id == "" then return true end
+    local hdr = ngx.var.http_authorization
+    if not hdr or hdr == "" then return false end
+    local token = hdr:gsub("^Bearer ", "")
+    local _, payload_b64 = token:match("^([^.]+)%.([^.]+)%.(.+)$")
+    if not payload_b64 then return false end
+    -- base64url -> base64 + pad
+    payload_b64 = payload_b64:gsub("-", "+"):gsub("_", "/")
+    local pad = #payload_b64 % 4
+    if pad > 0 then payload_b64 = payload_b64 .. string.rep("=", 4 - pad) end
+    local payload_json = ngx.decode_base64(payload_b64)
+    if not payload_json then return false end
+    local payload = cjson.decode(payload_json)
+    if not payload then return false end
+    if payload.resource_access then
+        for _, client in pairs(payload.resource_access) do
+            if type(client) == "table" and client.roles then
+                for _, role in ipairs(client.roles) do
+                    if role == perm_id then return true end
+                end
+            end
+        end
+    end
+    if payload.realm_access and payload.realm_access.roles then
+        for _, role in ipairs(payload.realm_access.roles) do
+            if role == perm_id then return true end
+        end
+    end
+    return false
+end
+
 -- ─── Constants exposed to router.lua ────────────────────────────────────
 _M.COOKIE_SID  = COOKIE_SID
 _M.COOKIE_CSRF = COOKIE_CSRF

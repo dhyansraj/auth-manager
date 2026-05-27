@@ -104,7 +104,7 @@ class TenantManifestApplyServiceTest {
         assertThat(result.permissions().created()).isEmpty();
         assertThat(result.permissions().updated()).isEmpty();
         assertThat(result.permissions().unchanged()).isEmpty();
-        assertThat(result.permissions().skippedAsMissing()).isEmpty();
+        assertThat(result.permissions().skipped()).isEmpty();
         assertThat(result.roles()).isNull();
         assertThat(result.hashTripwire()).isNull();
         assertThat(result.warnings()).isEmpty();
@@ -141,7 +141,7 @@ class TenantManifestApplyServiceTest {
 
         assertThat(result.permissions().created()).isEmpty();
         assertThat(result.permissions().updated()).isEmpty();
-        assertThat(result.permissions().skippedAsMissing()).containsExactly("HOME_VIEW");
+        assertThat(result.permissions().skipped()).containsExactly("HOME_VIEW");
         assertThat(result.warnings())
             .anyMatch(w -> w.contains("HOME_VIEW") && w.contains("left alone"));
         verify(clientRoles, never()).create(any());

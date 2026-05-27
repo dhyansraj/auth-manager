@@ -1,0 +1,97 @@
+/* mcpmesh-flexible layout grid + slot positioning.
+ * The body class .mcp-layout-<variant> determines which CSS Grid template
+ * applies. Slots that have no content (their .mcp-slot div isn't emitted
+ * by the FTL when the message is empty) simply don't exist in the DOM —
+ * the grid template has named areas, and missing areas collapse cleanly.
+ */
+
+/* ===== Default: centered ============================================
+ * Slots stack vertically above and below the form area. Marketing slots
+ * are hidden (this is the single-column layout).
+ */
+body.mcp-layout-centered {
+  display: grid;
+  grid-template-areas:
+    "above-form"
+    "form-area"
+    "below-form"
+    "footer";
+  grid-template-columns: minmax(320px, 480px);
+  justify-content: center;
+  align-content: start;
+  min-height: 100vh;
+  padding: 2rem 1rem;
+  gap: 1rem;
+}
+body.mcp-layout-centered .mcp-slot-marketing-left,
+body.mcp-layout-centered .mcp-slot-marketing-right { display: none; }
+body.mcp-layout-centered .mcp-slot-above-form { grid-area: above-form; }
+body.mcp-layout-centered .mcp-slot-form-area  { grid-area: form-area; }
+body.mcp-layout-centered .mcp-slot-below-form { grid-area: below-form; }
+body.mcp-layout-centered .mcp-slot-footer     { grid-area: footer; }
+
+/* ===== Split (marketing on left) ===================================== */
+body.mcp-layout-split-left {
+  display: grid;
+  grid-template-areas:
+    "marketing-left form-area"
+    "footer footer";
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr auto;
+  min-height: 100vh;
+  gap: 2rem;
+}
+body.mcp-layout-split-left .mcp-slot-marketing-left { grid-area: marketing-left; padding: 3rem; display: flex; flex-direction: column; justify-content: center; }
+body.mcp-layout-split-left .mcp-slot-marketing-right { display: none; }
+body.mcp-layout-split-left .mcp-slot-form-area { grid-area: form-area; display: flex; flex-direction: column; justify-content: center; padding: 2rem; max-width: 480px; }
+body.mcp-layout-split-left .mcp-slot-footer { grid-area: footer; }
+
+@media (max-width: 768px) {
+  body.mcp-layout-split-left {
+    grid-template-areas: "form-area" "marketing-left" "footer";
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Split (marketing on right) ==================================== */
+body.mcp-layout-split-right {
+  display: grid;
+  grid-template-areas:
+    "form-area marketing-right"
+    "footer footer";
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr auto;
+  min-height: 100vh;
+  gap: 2rem;
+}
+body.mcp-layout-split-right .mcp-slot-marketing-right { grid-area: marketing-right; padding: 3rem; display: flex; flex-direction: column; justify-content: center; }
+body.mcp-layout-split-right .mcp-slot-marketing-left { display: none; }
+body.mcp-layout-split-right .mcp-slot-form-area { grid-area: form-area; display: flex; flex-direction: column; justify-content: center; padding: 2rem; max-width: 480px; margin-left: auto; }
+body.mcp-layout-split-right .mcp-slot-footer { grid-area: footer; }
+
+@media (max-width: 768px) {
+  body.mcp-layout-split-right {
+    grid-template-areas: "form-area" "marketing-right" "footer";
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Full-bleed background ========================================= */
+body.mcp-layout-bleed {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 2rem 1rem;
+}
+body.mcp-layout-bleed .mcp-slot-marketing-left,
+body.mcp-layout-bleed .mcp-slot-marketing-right,
+body.mcp-layout-bleed .mcp-slot-above-form,
+body.mcp-layout-bleed .mcp-slot-below-form { display: none; }
+body.mcp-layout-bleed .mcp-slot-form-area { max-width: 480px; width: 100%; }
+body.mcp-layout-bleed .mcp-slot-footer { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); }
+
+/* ===== Slot defaults =================================================
+ * Make slots styleable by tenants — tenant CSS can override these.
+ */
+.mcp-slot { box-sizing: border-box; }
+.mcp-slot-form-area .pf-v5-c-login { width: 100%; }

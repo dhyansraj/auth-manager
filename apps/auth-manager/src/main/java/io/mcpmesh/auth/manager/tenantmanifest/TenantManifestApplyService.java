@@ -45,7 +45,7 @@ import java.util.TreeMap;
  *   <li>Permissions (KC client roles on app clients) are created or have their
  *       description updated. Existing client roles not present in the manifest
  *       are <strong>never</strong> deleted; they surface as
- *       {@code skippedAsMissing} with a warning.</li>
+ *       {@code skipped} with a warning.</li>
  *   <li>Composite roles (KC realm roles) follow the same rule when
  *       {@code applyRoles=true}, gated by a hash tripwire stored in the realm
  *       attribute {@link #SEED_ROLES_HASH_ATTR}.</li>
@@ -487,9 +487,13 @@ public class TenantManifestApplyService {
     private ApplyResult.Diff computeDefaultRoleMappersDiff(
         String realmName, Set<String> targetIdps, List<String> listedRoles
     ) {
+        // Mapper sections are authoritative: existing IdP roles NOT in the
+        // manifest's defaultRoles list are deleted (see
+        // applyDefaultRoleMapperMutations). That makes them `deleted`, not
+        // `skipped` — `skipped` means "left untouched".
         List<String> created = new ArrayList<>();
         List<String> unchanged = new ArrayList<>();
-        List<String> skipped = new ArrayList<>();
+        List<String> deleted = new ArrayList<>();
         Set<String> listedSet = new LinkedHashSet<>(listedRoles);
 
         for (String idp : targetIdps) {
@@ -504,14 +508,14 @@ public class TenantManifestApplyService {
             }
             for (String existingRole : existing) {
                 if (!listedSet.contains(existingRole)) {
-                    skipped.add(idp + ":" + existingRole);
+                    deleted.add(idp + ":" + existingRole);
                 }
             }
         }
         created.sort(Comparator.naturalOrder());
         unchanged.sort(Comparator.naturalOrder());
-        skipped.sort(Comparator.naturalOrder());
-        return new ApplyResult.Diff(created, List.of(), unchanged, skipped);
+        deleted.sort(Comparator.naturalOrder());
+        return new ApplyResult.Diff(created, List.of(), unchanged, List.of(), deleted);
     }
 
     private void applyIdpMutations(String realmName,
@@ -538,7 +542,7 @@ public class TenantManifestApplyService {
     /**
      * Applies the previously-computed defaultRoleMappersDiff:
      * - created entries -> ensureHardcodedRoleMapper
-     * - skipped entries (existing role NOT in the manifest's defaultRoles list)
+     * - deleted entries (existing role NOT in the manifest's defaultRoles list)
      *   -> removeHardcodedRoleMapper (per spec: list is authoritative).
      * Diff "name" entries are formatted "<idp>:<role>".
      */
@@ -557,7 +561,7 @@ public class TenantManifestApplyService {
                     realmName, parts[0], parts[1], e.getMessage());
             }
         }
-        for (String label : diff.skippedAsMissing()) {
+        for (String label : diff.deleted()) {
             String[] parts = label.split(":", 2);
             if (parts.length != 2) continue;
             try {

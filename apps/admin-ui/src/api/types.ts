@@ -87,6 +87,30 @@ export interface RoutingRule {
   path: string;
   authMode: AuthMode;
   target: string;
+  /**
+   * Skip the platform's double-submit CSRF check on cookie-authed
+   * mutations matching this rule. Use only for embedded third-party UIs
+   * (Redis Commander, Grafana, ...) that have their own session model and
+   * don't send the platform's X-CSRF-Token header. Optional; defaults to
+   * false. Only meaningful when authMode is REQUIRED.
+   */
+  bypassCsrf?: boolean;
+  /**
+   * Single permission id (a KC client-role or realm-role name) that must
+   * appear in the caller's JWT for the request to proceed. Verbatim string
+   * match against resource_access.<client>.roles[] / realm_access.roles[].
+   * Optional; null/undefined/empty means "no extra permission check".
+   * Only enforced when authMode is REQUIRED.
+   */
+  requiredPermission?: string | null;
+  /**
+   * Prefix stripped from the request URI before forwarding upstream. Used
+   * for embedded third-party apps mounted under a subpath whose internal
+   * links assume root (e.g. Redis Commander at /ops/redis/* whose XHRs go
+   * to /apiv2/...). Should normally be the rule's path minus the trailing
+   * /*. Optional; null/undefined/empty means "forward path as-is".
+   */
+  stripPrefix?: string | null;
 }
 
 export interface RoutingConfig {
@@ -180,4 +204,23 @@ export interface ThemeValidationError {
   code: string;
   path: string;
   message: string;
+}
+
+// ---------------------------------------------------------------------------
+// Rich-login Branding (mcpmesh.flexible parent theme)
+// ---------------------------------------------------------------------------
+
+export type LayoutVariant = 'centered' | 'split-left' | 'split-right' | 'bleed';
+
+export type SlotName =
+  | 'marketingLeft'
+  | 'marketingRight'
+  | 'aboveForm'
+  | 'belowForm'
+  | 'footer';
+
+/** Per-tenant layout variant + slot HTML map. Round-trips through PUT /branding. */
+export interface BrandingConfig {
+  layoutVariant: LayoutVariant;
+  slots: Partial<Record<SlotName, string>>;
 }

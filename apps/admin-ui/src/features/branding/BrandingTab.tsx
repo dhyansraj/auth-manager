@@ -1,8 +1,13 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { bffFetch, usePermission } from '@mcpmesh/auth-lib-react';
 import { api, ApiError } from '../../api/client';
-import type { ThemeMeta, ThemeValidationError } from '../../api/types';
+import type {
+  BrandingConfig,
+  LayoutVariant,
+  ThemeMeta,
+  ThemeValidationError,
+} from '../../api/types';
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
@@ -34,6 +39,10 @@ export default function BrandingTab({ slug }: Props) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['theme', slug] });
       qc.invalidateQueries({ queryKey: ['theme-status', slug] });
+      // Upload may have updated the tenant's layoutVariant (server-side
+      // reconcile from mcpLayoutVariant= in the uploaded zip). Refresh the
+      // branding query so the layout dropdown stays in sync.
+      qc.invalidateQueries({ queryKey: ['branding', slug] });
     },
   });
 
@@ -70,9 +79,10 @@ export default function BrandingTab({ slug }: Props) {
         <h2 className="text-lg font-semibold">Branding</h2>
         <p className="text-xs text-slate-500 mt-0.5">
           Customize this tenant&apos;s Keycloak login + account pages with your
-          own CSS, logo, fonts, and copy. Download the starter, edit locally,
-          zip it back up, and upload. We pre-scan every file and reject
-          anything that could execute code in the user&apos;s browser.
+          own CSS, logo, fonts, and copy. Pick a layout, download the
+          layout-aware starter, edit slot HTML locally inside the zip, then
+          upload. We pre-scan every file and reject anything that could execute
+          code in the user&apos;s browser.
         </p>
       </div>
 
@@ -82,6 +92,8 @@ export default function BrandingTab({ slug }: Props) {
           The current theme is read-only below.
         </div>
       )}
+
+      <LayoutPicker slug={slug} canManage={canManage} />
 
       <div className="flex gap-3">
         <button
@@ -294,4 +306,93 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+// ---------------------------------------------------------------------------
+// Layout picker: auto-saves the layoutVariant via PUT /branding on every
+// dropdown change. Slot HTML lives entirely inside the downloaded starter zip
+// (zip-driven workflow); we do NOT render slot textareas here.
+//
+// We still send the existing `slots` map back on every save so the backend
+// keeps whatever's already in the DB (legacy compat — the column stays).
+// ---------------------------------------------------------------------------
+
+const LAYOUT_OPTIONS: { value: LayoutVariant; label: string }[] = [
+  { value: 'centered',    label: 'Centered (default)' },
+  { value: 'split-left',  label: 'Split — marketing on left' },
+  { value: 'split-right', label: 'Split — marketing on right' },
+  { value: 'bleed',       label: 'Full-bleed background' },
+];
+
+function LayoutPicker({ slug, canManage }: { slug: string; canManage: boolean }) {
+  const qc = useQueryClient();
+  const branding = useQuery({
+    queryKey: ['branding', slug],
+    queryFn: () => api.getBranding(slug),
+    enabled: !!slug,
+  });
+
+  const save = useMutation({
+    mutationFn: (body: BrandingConfig) => api.updateBranding(slug, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['branding', slug] });
+      // Layout change re-runs the theme apply, which may flip the rollout
+      // status. Refresh both downstream queries so the badge updates.
+      qc.invalidateQueries({ queryKey: ['theme', slug] });
+      qc.invalidateQueries({ queryKey: ['theme-status', slug] });
+    },
+  });
+
+  // "Saved" indicator fades in/out for ~1.5s after each successful save.
+  const [savedFlash, setSavedFlash] = useState(false);
+  useEffect(() => {
+    if (!save.isSuccess) return;
+    setSavedFlash(true);
+    const t = setTimeout(() => setSavedFlash(false), 1500);
+    return () => clearTimeout(t);
+  }, [save.isSuccess, save.submittedAt]);
+
+  function handleChange(next: LayoutVariant) {
+    if (!branding.data) return;  // ignore until first load
+    // Preserve whatever's in the DB for slots; the UI no longer owns them.
+    save.mutate({ layoutVariant: next, slots: branding.data.slots ?? {} });
+  }
+
+  const current = branding.data?.layoutVariant ?? 'centered';
+  const disabled = !canManage || save.isPending || branding.isLoading;
+
+  return (
+    <div className="bg-white border rounded p-4 space-y-2">
+      <div>
+        <div className="font-semibold">Layout</div>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Pick a layout, then click <strong>Download starter</strong> below to
+          get a zip with placeholder content for each slot.
+        </p>
+      </div>
+      <div className="flex items-center gap-3">
+        <select
+          className="border rounded px-2 py-1 text-sm w-full max-w-sm disabled:bg-slate-100 disabled:text-slate-500"
+          value={current}
+          disabled={disabled}
+          onChange={(e) => handleChange(e.target.value as LayoutVariant)}
+        >
+          {LAYOUT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        {save.isPending && (
+          <span className="text-xs text-slate-500">Saving…</span>
+        )}
+        {!save.isPending && savedFlash && (
+          <span className="text-xs text-emerald-700 transition-opacity">Saved</span>
+        )}
+        {save.isError && (
+          <span className="text-xs text-red-700">
+            {String(save.error)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }

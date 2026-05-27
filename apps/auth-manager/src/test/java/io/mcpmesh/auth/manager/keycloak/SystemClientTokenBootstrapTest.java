@@ -2,16 +2,18 @@ package io.mcpmesh.auth.manager.keycloak;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.mockito.ArgumentCaptor;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -21,9 +23,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for {@link SystemClientTokenBootstrap} -- focuses on the
- * disable-lightweight-tokens loop across realms + clients. Stubs the KC
- * admin service entirely.
+ * Unit tests for {@link SystemClientTokenBootstrap} -- exercises both the
+ * lightweight-token disable AND the webOrigins backfill on system clients
+ * across realms. Stubs the KC admin service entirely; captures the mutator
+ * lambda passed to {@code mutateClient} and applies it to a fake
+ * {@link ClientRepresentation} to verify the per-rep changes.
  */
 class SystemClientTokenBootstrapTest {
 
@@ -42,6 +46,22 @@ class SystemClientTokenBootstrapTest {
         return r;
     }
 
+    private static ClientRepresentation clientRep(String clientId) {
+        ClientRepresentation rep = new ClientRepresentation();
+        rep.setClientId(clientId);
+        return rep;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Predicate<ClientRepresentation> anyMutator() {
+        return any(Predicate.class);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ArgumentCaptor<Predicate<ClientRepresentation>> mutatorCaptor() {
+        return ArgumentCaptor.forClass(Predicate.class);
+    }
+
     @Test
     void patchesEveryKnownSystemClient_acrossMultipleRealms() {
         // Two realms, every known client present in both.
@@ -52,18 +72,16 @@ class SystemClientTokenBootstrapTest {
             when(keycloak.findClientUuid("t-app1", clientId))
                 .thenReturn(Optional.of("app1-" + clientId));
         }
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
 
         bootstrap.run(null);
 
-        // Each (realm, client) pair gets exactly one setClientAttributes call
-        // with the lightweight-token attr disabled.
+        // Each (realm, client) pair gets exactly one mutateClient call.
         for (String clientId : SystemClientTokenBootstrap.SYSTEM_CLIENTS) {
-            verify(keycloak, times(1)).setClientAttributes(
-                eq("dev"), eq("dev-" + clientId),
-                eq(Map.of(SystemClientTokenBootstrap.LIGHTWEIGHT_TOKEN_ATTR, "false")));
-            verify(keycloak, times(1)).setClientAttributes(
-                eq("t-app1"), eq("app1-" + clientId),
-                eq(Map.of(SystemClientTokenBootstrap.LIGHTWEIGHT_TOKEN_ATTR, "false")));
+            verify(keycloak, times(1)).mutateClient(
+                eq("dev"), eq("dev-" + clientId), anyMutator());
+            verify(keycloak, times(1)).mutateClient(
+                eq("t-app1"), eq("app1-" + clientId), anyMutator());
         }
     }
 
@@ -80,15 +98,16 @@ class SystemClientTokenBootstrapTest {
                     .thenReturn(Optional.empty());
             }
         }
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
 
         bootstrap.run(null);
 
-        verify(keycloak, times(1)).setClientAttributes(
-            eq("dev"), eq("uuid-admin-cli"), anyMap());
-        verify(keycloak, times(1)).setClientAttributes(
-            eq("dev"), eq("uuid-account"), anyMap());
-        // The other clients have no UUID, so no setter call.
-        verify(keycloak, times(2)).setClientAttributes(anyString(), anyString(), anyMap());
+        verify(keycloak, times(1)).mutateClient(
+            eq("dev"), eq("uuid-admin-cli"), anyMutator());
+        verify(keycloak, times(1)).mutateClient(
+            eq("dev"), eq("uuid-account"), anyMutator());
+        // The other clients have no UUID, so no mutateClient call.
+        verify(keycloak, times(2)).mutateClient(anyString(), anyString(), anyMutator());
     }
 
     @Test
@@ -104,12 +123,13 @@ class SystemClientTokenBootstrapTest {
                     .thenReturn(Optional.of("uuid-" + clientId));
             }
         }
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
 
         bootstrap.run(null);
 
-        // Every non-broken client got its setter call (size = SYSTEM_CLIENTS - 1).
+        // Every non-broken client got its mutateClient call (size = SYSTEM_CLIENTS - 1).
         verify(keycloak, times(SystemClientTokenBootstrap.SYSTEM_CLIENTS.size() - 1))
-            .setClientAttributes(anyString(), anyString(), anyMap());
+            .mutateClient(anyString(), anyString(), anyMutator());
     }
 
     @Test
@@ -124,12 +144,13 @@ class SystemClientTokenBootstrapTest {
             when(keycloak.findClientUuid("healthy", clientId))
                 .thenReturn(Optional.of("h-" + clientId));
         }
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
 
         bootstrap.run(null);
 
         verify(keycloak, times(SystemClientTokenBootstrap.SYSTEM_CLIENTS.size()))
-            .setClientAttributes(eq("healthy"), anyString(), anyMap());
-        verify(keycloak, never()).setClientAttributes(eq("broken"), anyString(), anyMap());
+            .mutateClient(eq("healthy"), anyString(), anyMutator());
+        verify(keycloak, never()).mutateClient(eq("broken"), anyString(), anyMutator());
     }
 
     @Test
@@ -139,7 +160,7 @@ class SystemClientTokenBootstrapTest {
 
         bootstrap.run(null);  // no throw
 
-        verify(keycloak, never()).setClientAttributes(anyString(), anyString(), any());
+        verify(keycloak, never()).mutateClient(anyString(), anyString(), any());
     }
 
     @Test
@@ -155,7 +176,7 @@ class SystemClientTokenBootstrapTest {
         bootstrap.run(null);
 
         verify(keycloak, never()).findClientUuid(anyString(), anyString());
-        verify(keycloak, never()).setClientAttributes(anyString(), anyString(), any());
+        verify(keycloak, never()).mutateClient(anyString(), anyString(), any());
     }
 
     @Test
@@ -182,16 +203,163 @@ class SystemClientTokenBootstrapTest {
     }
 
     @Test
-    void capturesAttributesMapPassedToSetter() {
+    void webOriginClientsContainsOnlySpaConsoles() {
+        // Document the SPA-only subset that gets the webOrigins=["+"] backfill.
+        assertThat(SystemClientTokenBootstrap.WEB_ORIGIN_CLIENTS)
+            .containsExactlyInAnyOrder("account-console", "security-admin-console");
+    }
+
+    @Test
+    void mutator_disablesLightweightTokensWhenAttrMissing() {
+        // admin-cli with no attributes map -> mutator should set
+        // lightweight=false and return true.
         when(keycloak.listRealms()).thenReturn(List.of(realm("dev")));
         when(keycloak.findClientUuid(eq("dev"), anyString())).thenReturn(Optional.empty());
         when(keycloak.findClientUuid("dev", "admin-cli")).thenReturn(Optional.of("u-admin"));
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
 
         bootstrap.run(null);
 
-        ArgumentCaptor<Map<String, String>> cap = ArgumentCaptor.forClass(Map.class);
-        verify(keycloak).setClientAttributes(eq("dev"), eq("u-admin"), cap.capture());
-        assertThat(cap.getValue())
+        ArgumentCaptor<Predicate<ClientRepresentation>> cap = mutatorCaptor();
+        verify(keycloak).mutateClient(eq("dev"), eq("u-admin"), cap.capture());
+
+        ClientRepresentation rep = clientRep("admin-cli");
+        boolean changed = cap.getValue().test(rep);
+
+        assertThat(changed).isTrue();
+        assertThat(rep.getAttributes())
             .containsEntry(SystemClientTokenBootstrap.LIGHTWEIGHT_TOKEN_ATTR, "false");
+        // admin-cli isn't an SPA -> webOrigins must not be touched.
+        assertThat(rep.getWebOrigins()).isNull();
+    }
+
+    @Test
+    void mutator_isNoOpWhenLightweightAlreadyDisabledAndNotSpaClient() {
+        // admin-cli with attrs already at "false" + not in WEB_ORIGIN_CLIENTS ->
+        // mutator must return false so the underlying PUT is skipped.
+        when(keycloak.listRealms()).thenReturn(List.of(realm("dev")));
+        when(keycloak.findClientUuid(eq("dev"), anyString())).thenReturn(Optional.empty());
+        when(keycloak.findClientUuid("dev", "admin-cli")).thenReturn(Optional.of("u-admin"));
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(false);
+
+        bootstrap.run(null);
+
+        ArgumentCaptor<Predicate<ClientRepresentation>> cap = mutatorCaptor();
+        verify(keycloak).mutateClient(eq("dev"), eq("u-admin"), cap.capture());
+
+        ClientRepresentation rep = clientRep("admin-cli");
+        HashMap<String, String> attrs = new HashMap<>();
+        attrs.put(SystemClientTokenBootstrap.LIGHTWEIGHT_TOKEN_ATTR, "false");
+        rep.setAttributes(attrs);
+
+        boolean changed = cap.getValue().test(rep);
+
+        assertThat(changed).isFalse();
+        assertThat(rep.getAttributes())
+            .containsEntry(SystemClientTokenBootstrap.LIGHTWEIGHT_TOKEN_ATTR, "false");
+        assertThat(rep.getWebOrigins()).isNull();
+    }
+
+    @Test
+    void mutator_backfillsWebOriginsOnSpaClientWithEmptyList() {
+        // account-console with empty webOrigins -> mutator sets ["+"] AND
+        // disables lightweight tokens, returns true.
+        when(keycloak.listRealms()).thenReturn(List.of(realm("dev")));
+        when(keycloak.findClientUuid(eq("dev"), anyString())).thenReturn(Optional.empty());
+        when(keycloak.findClientUuid("dev", "account-console"))
+            .thenReturn(Optional.of("u-account-console"));
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
+
+        bootstrap.run(null);
+
+        ArgumentCaptor<Predicate<ClientRepresentation>> cap = mutatorCaptor();
+        verify(keycloak).mutateClient(eq("dev"), eq("u-account-console"), cap.capture());
+
+        ClientRepresentation rep = clientRep("account-console");
+        rep.setWebOrigins(new ArrayList<>());
+        boolean changed = cap.getValue().test(rep);
+
+        assertThat(changed).isTrue();
+        assertThat(rep.getAttributes())
+            .containsEntry(SystemClientTokenBootstrap.LIGHTWEIGHT_TOKEN_ATTR, "false");
+        assertThat(rep.getWebOrigins()).containsExactly("+");
+    }
+
+    @Test
+    void mutator_backfillsWebOriginsOnSpaClientWithNullList() {
+        // security-admin-console with null webOrigins -> mutator sets ["+"].
+        when(keycloak.listRealms()).thenReturn(List.of(realm("dev")));
+        when(keycloak.findClientUuid(eq("dev"), anyString())).thenReturn(Optional.empty());
+        when(keycloak.findClientUuid("dev", "security-admin-console"))
+            .thenReturn(Optional.of("u-sec-admin"));
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
+
+        bootstrap.run(null);
+
+        ArgumentCaptor<Predicate<ClientRepresentation>> cap = mutatorCaptor();
+        verify(keycloak).mutateClient(eq("dev"), eq("u-sec-admin"), cap.capture());
+
+        ClientRepresentation rep = clientRep("security-admin-console");
+        // webOrigins left at null
+        boolean changed = cap.getValue().test(rep);
+
+        assertThat(changed).isTrue();
+        assertThat(rep.getWebOrigins()).containsExactly("+");
+    }
+
+    @Test
+    void mutator_leavesNonEmptyWebOriginsAlone() {
+        // account-console with operator-customised webOrigins -> mutator must
+        // NOT clobber the list. Lightweight-token disable still applies, so
+        // overall the mutator returns true (changed=true) but webOrigins is
+        // untouched.
+        when(keycloak.listRealms()).thenReturn(List.of(realm("dev")));
+        when(keycloak.findClientUuid(eq("dev"), anyString())).thenReturn(Optional.empty());
+        when(keycloak.findClientUuid("dev", "account-console"))
+            .thenReturn(Optional.of("u-account-console"));
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(true);
+
+        bootstrap.run(null);
+
+        ArgumentCaptor<Predicate<ClientRepresentation>> cap = mutatorCaptor();
+        verify(keycloak).mutateClient(eq("dev"), eq("u-account-console"), cap.capture());
+
+        ClientRepresentation rep = clientRep("account-console");
+        List<String> custom = new ArrayList<>(List.of("https://custom.example.com"));
+        rep.setWebOrigins(custom);
+        boolean changed = cap.getValue().test(rep);
+
+        // Lightweight-token disable still fired, so the overall mutator
+        // reports a change.
+        assertThat(changed).isTrue();
+        // webOrigins must be preserved verbatim.
+        assertThat(rep.getWebOrigins()).containsExactly("https://custom.example.com");
+    }
+
+    @Test
+    void mutator_isFullNoOpWhenSpaClientAlreadyHasBothAttrAndWebOrigins() {
+        // account-console with lightweight already false AND webOrigins already
+        // populated -> mutator returns false.
+        when(keycloak.listRealms()).thenReturn(List.of(realm("dev")));
+        when(keycloak.findClientUuid(eq("dev"), anyString())).thenReturn(Optional.empty());
+        when(keycloak.findClientUuid("dev", "account-console"))
+            .thenReturn(Optional.of("u-account-console"));
+        when(keycloak.mutateClient(anyString(), anyString(), anyMutator())).thenReturn(false);
+
+        bootstrap.run(null);
+
+        ArgumentCaptor<Predicate<ClientRepresentation>> cap = mutatorCaptor();
+        verify(keycloak).mutateClient(eq("dev"), eq("u-account-console"), cap.capture());
+
+        ClientRepresentation rep = clientRep("account-console");
+        HashMap<String, String> attrs = new HashMap<>();
+        attrs.put(SystemClientTokenBootstrap.LIGHTWEIGHT_TOKEN_ATTR, "false");
+        rep.setAttributes(attrs);
+        rep.setWebOrigins(new ArrayList<>(List.of("+")));
+
+        boolean changed = cap.getValue().test(rep);
+
+        assertThat(changed).isFalse();
+        assertThat(rep.getWebOrigins()).containsExactly("+");
     }
 }

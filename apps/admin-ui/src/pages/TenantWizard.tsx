@@ -1,7 +1,19 @@
-import { useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
-import type { Tenant } from '../api/types';
+import type { Tenant, IdentityProviderDto } from '../api/types';
+
+const DRAFT_STORAGE_KEY = 'mcpmesh.tenantwizard.draft.v1';
+
+// File objects can't be JSON-serialized — exclude them from persisted draft.
+type PersistedDraft = {
+  step: 1 | 2 | 3 | 4 | 5;
+  maxStepReached: 1 | 2 | 3 | 4 | 5;
+  basics: WizardBasics;
+  apps: WizardApp[];
+  // manifestFile + themeFile are deliberately NOT persisted; on restore the
+  // operator must re-pick those files. We track this with restoredFromDraft.
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +29,8 @@ interface WizardApp {
   profile: AppProfile;
   audience: string[];
   saPermissions: string[];
+  /** Sentinel: true for apps loaded via resume-mode (already provisioned). */
+  _existing?: boolean;
 }
 
 interface WizardBasics {
@@ -61,6 +75,8 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function TenantWizard() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const resumeId = searchParams.get('resume');
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
   const [maxStepReached, setMaxStepReached] = useState<1 | 2 | 3 | 4 | 5>(1);
 
@@ -81,6 +97,84 @@ export default function TenantWizard() {
   const [createdApps, setCreatedApps] = useState<CreatedAppInfo[]>([]);
   const [finished, setFinished] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
+
+  // ---- resume mode (prefill from existing non-ACTIVE tenant) --------------
+  // Operator clicks "Resume" on a non-ACTIVE tenant from the Tenants list.
+  // Takes precedence over draft restoration — if you're resuming, throw away
+  // the unrelated draft you might have had.
+  const [resumedFromTenant, setResumedFromTenant] = useState<Tenant | null>(null);
+  const resumeHydratedRef = useRef(false);
+
+  useEffect(() => {
+    if (!resumeId || resumeHydratedRef.current) return;
+    resumeHydratedRef.current = true;
+    (async () => {
+      try {
+        const tenant = await api.getTenant(resumeId);
+        const existingApps = await api.listApps(tenant.id);
+        // Filter out the platform-managed 'usermanagement' app — it's not a
+        // tenant-app and shouldn't appear in the wizard's Apps step.
+        const userApps = existingApps.filter(a => a.slug !== 'usermanagement');
+        setBasics({
+          slug:         tenant.slug,
+          displayName:  tenant.displayName,
+          adminEmail:   '',
+          hostnames:    tenant.hostnames ?? [],
+        });
+        // For resume mode, treat existing apps as "already provisioned" — show
+        // them in step 2 with a small badge so the operator can ADD MORE apps
+        // but not edit/delete the existing rows from inside the wizard. (App
+        // editing/deletion stays in the Apps tab on tenant detail.)
+        setApps(userApps.map(a => ({
+          slug: a.slug,
+          displayName: a.displayName,
+          profile: 'CONFIDENTIAL_BACKEND' as AppProfile,
+          audience: [],
+          saPermissions: [],
+          _existing: true,
+        })));
+        setMaxStepReached(1);
+        setStep(1);
+        setResumedFromTenant(tenant);
+      } catch (e: any) {
+        console.warn('Resume mode: failed to load tenant', resumeId, e);
+      }
+    })();
+  }, [resumeId]);
+
+  // ---- draft persistence (sessionStorage) ---------------------------------
+  // Survives the 401 → BFF sign-in → redirect_back round-trip so the operator's
+  // in-progress input is not lost when the session expires mid-wizard.
+  const [restoredFromDraft, setRestoredFromDraft] = useState(false);
+  const draftHydrated = useRef(false);
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem(DRAFT_STORAGE_KEY);
+    draftHydrated.current = true;
+    // Resume mode takes precedence — don't restore unrelated draft.
+    if (resumeId) return;
+    if (!raw) return;
+    try {
+      const draft = JSON.parse(raw) as PersistedDraft;
+      if (draft.step !== undefined) setStep(draft.step);
+      if (draft.maxStepReached !== undefined) setMaxStepReached(draft.maxStepReached);
+      if (draft.basics) setBasics(draft.basics);
+      if (draft.apps) setApps(draft.apps);
+      setRestoredFromDraft(true);
+    } catch {
+      sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Skip the very first render (before hydration completes) so we don't
+    // overwrite a stored draft with the initial empty state.
+    if (!draftHydrated.current) return;
+    const draft: PersistedDraft = { step, maxStepReached, basics, apps };
+    sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+  }, [step, maxStepReached, basics, apps]);
+
+  const clearDraft = () => sessionStorage.removeItem(DRAFT_STORAGE_KEY);
 
   // ---- validation per step --------------------------------------------------
 
@@ -153,6 +247,19 @@ export default function TenantWizard() {
     }
   }
 
+  // Tenant DB status can be ACTIVE even if UsermanagementBootstrap failed
+  // partway (the bootstrap exception bubbles up to the controller but the
+  // tenant row is already committed). Detect this by checking whether the
+  // realm's "usermanagement" client got created.
+  async function needsRetry(tenantId: string): Promise<boolean> {
+    try {
+      const list = await api.listApps(tenantId);
+      return !list.some(a => a.slug === 'usermanagement');
+    } catch {
+      return false;
+    }
+  }
+
   async function generate() {
     setGenerating(true);
     setFinished(false);
@@ -178,28 +285,94 @@ export default function TenantWizard() {
     setProgress([...rows]);
 
     // ---- 1. Tenant ----------------------------------------------------------
+    // Idempotent create: if createTenant errors (409 duplicate, or 500 after a
+    // partial bootstrap), try to fetch by slug — if it exists, we're recovering
+    // from a prior half-completed run; otherwise surface the original error.
     let tenant: Tenant | null = null;
-    const tenantOk = await runStep(rows, setProgress, 'tenant', async () => {
-      tenant = await api.createTenant({
-        slug: basics.slug,
-        displayName: basics.displayName,
-        adminEmail: basics.adminEmail,
-        hostnames: basics.hostnames.map(h => ({
-          host: h.host.trim(),
-          backend: (h.backend.trim() || `${h.host.trim()}:80`),
-        })),
-      });
-      if (tenant && tenant.status === 'FAILED') {
-        tenant = await api.retryTenant(tenant.id);
+    {
+      const key = 'tenant';
+      let updated = rows.map(r => r.key === key ? { ...r, status: 'in_progress' as ProgressStatus } : r);
+      setProgress(updated);
+      rows.length = 0; rows.push(...updated);
+      try {
+        tenant = await api.createTenant({
+          slug: basics.slug,
+          displayName: basics.displayName,
+          adminEmail: basics.adminEmail,
+          hostnames: basics.hostnames.map(h => ({
+            host: h.host.trim(),
+            backend: (h.backend.trim() || `${h.host.trim()}:80`),
+          })),
+        });
+        updated = updated.map(r => r.key === key ? { ...r, status: 'success' as ProgressStatus, detail: `Created '${tenant!.slug}'` } : r);
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+      } catch (e) {
+        let existing: Tenant | null = null;
+        try {
+          existing = await api.getTenantBySlug(basics.slug);
+        } catch {
+          const detail = e instanceof ApiError ? e.message : String(e);
+          updated = updated.map(r => r.key === key ? { ...r, status: 'error' as ProgressStatus, detail } : r);
+          setProgress(updated);
+          rows.length = 0; rows.push(...updated);
+          setGenerating(false);
+          return;
+        }
+        tenant = existing;
+        updated = updated.map(r => r.key === key ? {
+          ...r,
+          status: 'success' as ProgressStatus,
+          detail: `Tenant '${existing!.slug}' already exists (status=${existing!.status}); resuming`,
+        } : r);
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
       }
-    });
-    if (!tenantOk || !tenant) { setGenerating(false); return; }
+    }
+    if (!tenant) { setGenerating(false); return; }
     setCreatedTenant(tenant);
 
+    // Retry bootstrap if the tenant row is FAILED or if the usermanagement
+    // client never got created (bootstrap exception bubbled up but the tenant
+    // row was already committed).
+    const shouldRetry = tenant.status === 'FAILED' || (await needsRetry(tenant.id));
+    if (shouldRetry) {
+      const key = 'retry';
+      const retryRow: ProgressRow = { key, label: 'Retry bootstrap', status: 'in_progress' };
+      let updated = [...rows, retryRow];
+      setProgress(updated);
+      rows.length = 0; rows.push(...updated);
+      try {
+        tenant = await api.retryTenant(tenant.id);
+        updated = updated.map(r => r.key === key ? {
+          ...r,
+          status: 'success' as ProgressStatus,
+          detail: `Re-bootstrapped to status=${tenant!.status}`,
+        } : r);
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+        setCreatedTenant(tenant);
+      } catch (e) {
+        const detail = e instanceof ApiError ? e.message : String(e);
+        updated = updated.map(r => r.key === key ? { ...r, status: 'error' as ProgressStatus, detail } : r);
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+        setGenerating(false);
+        return;
+      }
+    }
+
     // ---- 2. Apps (sequential — audience targets must exist first) ----------
+    // Idempotent create: if createApp 409s, fall back to listApps and reuse
+    // the existing record. clientSecret is one-shot at create time, so for
+    // pre-existing apps we record null and surface a hint to the operator.
     const created: CreatedAppInfo[] = [];
     for (const app of apps) {
-      const ok = await runStep(rows, setProgress, `app:${app.slug}`, async () => {
+      const key = `app:${app.slug}`;
+      let updated = rows.map(r => r.key === key ? { ...r, status: 'in_progress' as ProgressStatus } : r);
+      setProgress(updated);
+      rows.length = 0; rows.push(...updated);
+      try {
         const result = await api.createApp(tenant!.id, {
           slug: app.slug,
           displayName: app.displayName,
@@ -215,8 +388,38 @@ export default function TenantWizard() {
           profile: app.profile,
         });
         setCreatedApps([...created]);
-      });
-      if (!ok) { setGenerating(false); return; }
+        updated = updated.map(r => r.key === key ? { ...r, status: 'success' as ProgressStatus } : r);
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+      } catch (e) {
+        const all = await api.listApps(tenant!.id).catch(() => [] as import('../api/types').App[]);
+        const existing = all.find(a => a.slug === app.slug);
+        if (existing) {
+          created.push({
+            slug: app.slug,
+            displayName: app.displayName,
+            appId: existing.id,
+            clientId: existing.clientId,
+            clientSecret: null,
+            profile: app.profile,
+          });
+          setCreatedApps([...created]);
+          updated = updated.map(r => r.key === key ? {
+            ...r,
+            status: 'success' as ProgressStatus,
+            detail: 'Already existed; clientSecret captured previously (re-create to reset)',
+          } : r);
+          setProgress(updated);
+          rows.length = 0; rows.push(...updated);
+        } else {
+          const detail = e instanceof ApiError ? e.message : String(e);
+          updated = updated.map(r => r.key === key ? { ...r, status: 'error' as ProgressStatus, detail } : r);
+          setProgress(updated);
+          rows.length = 0; rows.push(...updated);
+          setGenerating(false);
+          return;
+        }
+      }
     }
 
     // ---- 3. SA perms --------------------------------------------------------
@@ -249,6 +452,7 @@ export default function TenantWizard() {
 
     setGenerating(false);
     setFinished(true);
+    clearDraft();
   }
 
   function resetWizard() {
@@ -305,6 +509,33 @@ export default function TenantWizard() {
         onJump={(s) => { if (s <= maxStepReached && !generating) setStep(s); }}
       />
 
+      {resumedFromTenant && (
+        <div className="mb-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded text-xs">
+          <span className="font-medium">Resuming onboarding</span> for{' '}
+          <code className="font-mono">{resumedFromTenant.slug}</code> (status:{' '}
+          <code className="font-mono">{resumedFromTenant.status}</code>). Basics
+          locked; add or edit apps below + click Generate to retry bootstrap + finish.
+        </div>
+      )}
+
+      {restoredFromDraft && !resumedFromTenant && (
+        <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded text-xs flex justify-between items-center">
+          <span className="text-amber-900">
+            Restored your in-progress draft. Files (manifest / theme) need to be re-selected if you uploaded any.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              clearDraft();
+              window.location.reload();
+            }}
+            className="text-amber-900 underline ml-3 whitespace-nowrap"
+          >
+            Discard draft + start fresh
+          </button>
+        </div>
+      )}
+
       {step === 1 && (
         <Step1Basics basics={basics} onChange={setBasics} />
       )}
@@ -340,9 +571,13 @@ export default function TenantWizard() {
           )}
         </div>
         <div className="flex gap-2">
-          <Link to="/tenants" className="text-sm text-slate-600 hover:text-slate-900 px-3 py-1.5">
+          <button
+            type="button"
+            onClick={() => { clearDraft(); navigate('/tenants'); }}
+            className="text-sm text-slate-600 hover:text-slate-900 px-3 py-1.5"
+          >
             Cancel
-          </Link>
+          </button>
           {step < 5 && (
             <button
               onClick={next}
@@ -558,8 +793,19 @@ function Step2Apps({
         return (
           <div key={i} className="bg-white border rounded p-4 space-y-3">
             <div className="flex justify-between items-center">
-              <div className="text-sm font-semibold">App #{i + 1}</div>
-              <button onClick={() => removeApp(i)} className="text-xs text-red-700 hover:underline">
+              <div className="text-sm font-semibold flex items-center gap-2">
+                <span>App #{i + 1}</span>
+                {app._existing && (
+                  <span className="px-2 py-0.5 rounded text-xs bg-blue-50 text-blue-800 border border-blue-200 font-normal">
+                    already exists
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => removeApp(i)}
+                disabled={app._existing}
+                className="text-xs text-red-700 hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
+              >
                 Remove
               </button>
             </div>
@@ -957,22 +1203,49 @@ function SuccessPage({
   onViewTenant: () => void;
   onOnboardAnother: () => void;
 }) {
-  const confidentialApps = apps.filter(a => a.profile !== 'SPA_PKCE');
-  const primaryBackend = confidentialApps[0];
+  // Only apps that actually got a clientSecret back are confidential — SPA
+  // apps + pre-existing apps (whose secret was captured on a prior run) have
+  // clientSecret === null and shouldn't appear in the env-vars block.
+  const confidentialApps = apps.filter(a => a.clientSecret !== null);
+  const realmName = tenant.realmName ?? `t-${tenant.slug}`;
+  const upperSlug = tenant.slug.toUpperCase().replace(/-/g, '_');
 
-  // Naive: pick the first hostname as the auth URL — in practice the
-  // platform-host (auth.mcp-mesh.io) is the canonical issuer base.
-  const issuerUri = `https://auth.mcp-mesh.io/auth/realms/${tenant.realmName ?? `t-${tenant.slug}`}`;
-  const envBlock = [
-    `AUTH_LIB_ISSUER_URI       = ${issuerUri}`,
-    `AUTH_LIB_CLIENT_ID        = ${primaryBackend?.clientId ?? `<backend-client-id>`}`,
-    `AUTH_LIB_CLIENT_SECRET    = <from above>`,
-    `AUTH_LIB_AUDIENCES        = ${primaryBackend?.clientId ?? `<backend-client-id>`}`,
+  // Always-render lines: apply to any tenant regardless of confidential apps.
+  const alwaysRenderLines = [
+    `AUTH_LIB_ISSUER_URI         = https://auth.mcp-mesh.io/auth/realms/${realmName}`,
     `AUTH_LIB_PERMISSIONS_SOURCE = claims`,
-    `KC_BASE                   = https://auth.mcp-mesh.io/auth`,
-    `AUTH_MGR_BASE             = http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080`,
-    `${tenant.slug.toUpperCase().replace(/-/g, '_')}_TENANT_SLUG        = ${tenant.slug}`,
-  ].join('\n');
+    `KC_BASE                     = https://auth.mcp-mesh.io/auth`,
+    `AUTH_MGR_BASE               = http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080`,
+    `${upperSlug}_TENANT_SLUG = ${tenant.slug}`,
+  ];
+
+  // For the Copy-block button: include CLIENT_ID + AUDIENCES per confidential
+  // app (with a section header when >1) but NEVER the secret — operator copies
+  // the secret separately via the Reveal button.
+  const copyBlock = (() => {
+    const sections: string[] = [];
+    if (confidentialApps.length > 0) {
+      confidentialApps.forEach((a, idx) => {
+        const header = confidentialApps.length > 1 ? `# ${a.slug}\n` : '';
+        sections.push(
+          `${header}AUTH_LIB_CLIENT_ID     = ${a.slug}\n` +
+          `AUTH_LIB_AUDIENCES     = ${a.slug}`
+        );
+        if (idx < confidentialApps.length - 1) sections.push('');
+      });
+      sections.push('');
+    }
+    sections.push(alwaysRenderLines.join('\n'));
+    return sections.join('\n');
+  })();
+
+  // Fix #2: fetch enabled IdPs on the realm — drives the manual-steps section.
+  const [enabledIdps, setEnabledIdps] = useState<IdentityProviderDto[]>([]);
+  useEffect(() => {
+    api.listIdentityProviders(tenant.slug)
+      .then(idps => setEnabledIdps(idps.filter(i => i.enabled)))
+      .catch(() => { /* don't fail the success page if this errors */ });
+  }, [tenant.slug]);
 
   return (
     <div className="space-y-6">
@@ -982,7 +1255,7 @@ function SuccessPage({
           <div className="font-semibold text-emerald-900">
             Tenant '{tenant.slug}' onboarded
           </div>
-          <div className="text-xs text-emerald-800">Realm: <code className="font-mono">{tenant.realmName ?? `t-${tenant.slug}`}</code></div>
+          <div className="text-xs text-emerald-800">Realm: <code className="font-mono">{realmName}</code></div>
         </div>
       </div>
 
@@ -1022,34 +1295,84 @@ function SuccessPage({
         </section>
       )}
 
+      <div className="text-xs text-slate-600 bg-slate-50 border rounded px-3 py-2">
+        Tip: Download the full onboarding bundle below for a single-file handoff (env vars + library setup + theming + user migration docs).
+      </div>
+
       <section className="bg-white border rounded p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">Env vars for tenant team's helm-values</div>
           <button
-            onClick={() => navigator.clipboard.writeText(envBlock).catch(() => { /* clipboard blocked */ })}
+            onClick={() => navigator.clipboard.writeText(copyBlock).catch(() => { /* clipboard blocked */ })}
             className="text-xs bg-slate-900 text-white px-2 py-1 rounded hover:bg-slate-700"
           >
             Copy block
           </button>
         </div>
-        <pre className="bg-slate-50 border rounded p-3 text-xs font-mono whitespace-pre overflow-x-auto">{envBlock}</pre>
+        <div className="bg-slate-50 border rounded p-3 text-xs font-mono overflow-x-auto space-y-3">
+          {confidentialApps.map((a, idx) => {
+            const revealed = revealedSecrets.has(a.clientId);
+            return (
+              <div key={a.clientId} className="space-y-1">
+                {confidentialApps.length > 1 && (
+                  <div className="text-slate-500"># {a.slug}</div>
+                )}
+                <div>AUTH_LIB_CLIENT_ID     = {a.slug}</div>
+                <div className="flex items-center gap-2">
+                  <span>AUTH_LIB_CLIENT_SECRET =</span>
+                  {revealed ? (
+                    <code className="bg-white border px-1 rounded">
+                      {a.clientSecret ?? '<no secret returned>'}
+                    </code>
+                  ) : (
+                    <button
+                      onClick={() => onReveal(a.clientId, a.clientSecret)}
+                      className="bg-slate-900 text-white px-2 py-0.5 rounded text-xs hover:bg-slate-700"
+                    >
+                      Reveal once + copy
+                    </button>
+                  )}
+                </div>
+                <div>AUTH_LIB_AUDIENCES     = {a.slug}</div>
+                {idx < confidentialApps.length - 1 && <div className="h-1" />}
+              </div>
+            );
+          })}
+          <pre className="whitespace-pre">{alwaysRenderLines.join('\n')}</pre>
+        </div>
       </section>
 
       <section className="bg-white border rounded p-4 space-y-3">
         <div className="text-sm font-semibold">Manual steps</div>
-        <BrokerUriRow
-          label="Add this URI to your Google OAuth Console:"
-          uri={`https://auth.mcp-mesh.io/auth/realms/${tenant.realmName ?? `t-${tenant.slug}`}/broker/google/endpoint`}
-          openHref="https://console.cloud.google.com/apis/credentials"
-        />
-        <BrokerUriRow
-          label="(If GitHub OAuth also configured)"
-          uri={`https://auth.mcp-mesh.io/auth/realms/${tenant.realmName ?? `t-${tenant.slug}`}/broker/github/endpoint`}
-        />
-        <div className="text-sm text-slate-700">
-          □ Share the client_secret(s) above with the tenant team via a secure channel
-          (1Password / Bitwarden / Signal).
-        </div>
+        {enabledIdps.length === 0 ? (
+          <div className="text-sm text-slate-700">
+            □ No identity providers enabled on this realm — sign-in will require manual user
+            creation. Visit the Identity Providers tab on the tenant detail page to enable
+            Google or GitHub.
+          </div>
+        ) : (
+          enabledIdps.map(idp => {
+            const brokerUrl = `https://auth.mcp-mesh.io/auth/realms/${realmName}/broker/${idp.id}/endpoint`;
+            const openHref =
+              idp.id === 'google' ? 'https://console.cloud.google.com/apis/credentials' :
+              idp.id === 'github' ? 'https://github.com/settings/developers' :
+              undefined;
+            return (
+              <BrokerUriRow
+                key={idp.id}
+                label={`Add this URI to your ${idp.displayName} OAuth Console:`}
+                uri={brokerUrl}
+                openHref={openHref}
+              />
+            );
+          })
+        )}
+        {confidentialApps.length > 0 && (
+          <div className="text-sm text-slate-700">
+            □ Share the client_secret(s) above with the tenant team via a secure channel
+            (1Password / Bitwarden / Signal).
+          </div>
+        )}
       </section>
 
       <div className="flex gap-3">
@@ -1058,6 +1381,15 @@ function SuccessPage({
         </button>
         <button onClick={onOnboardAnother} className="bg-white border px-3 py-1.5 rounded text-sm hover:bg-slate-50">
           Onboard another
+        </button>
+        <button
+          onClick={async () => {
+            try { await api.downloadOnboardingBundle(tenant.id); }
+            catch (e) { alert('Download failed: ' + (e instanceof Error ? e.message : String(e))); }
+          }}
+          className="bg-white border px-3 py-1.5 rounded text-sm hover:bg-slate-50"
+        >
+          Download bundle (.zip)
         </button>
       </div>
     </div>

@@ -35,6 +35,26 @@ function BackToAppLink() {
   );
 }
 
+// Account console URL is realm-specific: dev realm on the platform host,
+// t-<slug> on tenant subdomains. KC serves the account console at
+// /auth/realms/<realm>/account regardless of admin-ui's base path.
+function AccountConsoleLink() {
+  const isPlatformHost = window.location.hostname === 'auth.mcp-mesh.io';
+  const tenant = useCurrentTenant();
+  const realm = isPlatformHost ? 'dev' : (tenant?.realmName ?? `t-${window.location.hostname.split('.')[0]}`);
+  return (
+    <a
+      href={`${window.location.origin}/auth/realms/${realm}/account`}
+      target="_blank"
+      rel="noopener"
+      className="text-slate-300 hover:text-white text-xs underline"
+      title="Change password, configure OTP, view sessions"
+    >
+      My account
+    </a>
+  );
+}
+
 function AuthenticatedShell() {
   const auth = useBffAuth();
   return (
@@ -53,6 +73,7 @@ function AuthenticatedShell() {
             <span className="text-slate-300 text-xs">
               {auth.user?.profile?.preferred_username || auth.user?.profile?.email || 'signed in'}
             </span>
+            <AccountConsoleLink />
             <button onClick={() => auth.signoutRedirect()}
                     className="text-slate-300 hover:text-white text-xs underline">Sign out</button>
           </nav>

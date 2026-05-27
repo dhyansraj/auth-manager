@@ -10,32 +10,41 @@ global:
 authManager:
   image:
     repository: auth-manager
-    tag: "0.1.28"
+    tag: "0.1.49"
   config:
     keycloakUrl: "https://auth.mcp-mesh.io/auth"
     postgresHost: "platform-pg-postgresql"
     redisHost: "platform-redis-master"
 
-# Must match what scripts/deploy-beelink.sh provisioned Postgres + KC with
-# (DB_PASSWORD / KC_ADMIN_PASSWORD env vars in that script). Bitnami's
-# Postgres chart sets the password on first install and persists it across
-# upgrades, so this MUST match the original install value.
+# Credentials: empty in this overlay so the chart's `lookup`-based secret
+# template preserves whatever is already in the in-cluster
+# auth-platform-auth-manager Secret. Rotation is done via `kubectl patch
+# secret` (or KC admin API for the realm-side change) and survives any
+# `helm upgrade auth-platform` without --set overrides.
+#
+# To set credentials on FIRST install (before the secret exists), pass via:
+#   helm upgrade --install ... --set postgresql.auth.password=... --set keycloak.auth.adminPassword=...
+# OR pre-create the secret out-of-band with kubectl before running helm.
+#
+# scripts/deploy-beelink.sh still passes auth.adminPassword to the bitnami
+# Keycloak chart (which is a separate release, not this one) via its own
+# --set, so DB_PASSWORD / KC_ADMIN_PASSWORD env vars there are still required.
 postgresql:
   auth:
-    password: "authmanager-dev-pass"
+    password: ""
 keycloak:
   auth:
-    adminPassword: "admin"
+    adminPassword: ""
 
 adminUi:
   image:
     repository: admin-ui
-    tag: "0.1.20"
+    tag: "0.1.32"
 
 platformEdge:
   image:
     repository: platform-edge
-    tag: "0.1.14"
+    tag: "0.1.17"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,

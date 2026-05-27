@@ -1,6 +1,7 @@
 package io.mcpmesh.auth.manager.domain.tenant;
 
 import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
+import io.mcpmesh.auth.manager.theme.branding.BrandingConfig;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -48,6 +49,10 @@ public class Tenant {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "routing_config", nullable = false, columnDefinition = "jsonb")
     private RoutingConfig routingConfig;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "branding_config", columnDefinition = "jsonb")
+    private BrandingConfig brandingConfig;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -115,6 +120,14 @@ public class Tenant {
         this.routingConfig = config;
     }
 
+    /**
+     * Replaces the rich-login branding config. {@code null} clears it back to
+     * the "no customization" state — equivalent to deleting the column value.
+     */
+    public void setBrandingConfig(BrandingConfig config) {
+        this.brandingConfig = config;
+    }
+
     public boolean isDeleted() {
         return deletedAt != null;
     }
@@ -128,6 +141,7 @@ public class Tenant {
     public TenantStatus getStatus() { return status; }
     public Map<String, Object> getSettings() { return settings; }
     public RoutingConfig getRoutingConfig() { return routingConfig; }
+    public BrandingConfig getBrandingConfig() { return brandingConfig; }
     public Instant getCreatedAt() { return createdAt; }
     public String getCreatedBy() { return createdBy; }
     public Instant getUpdatedAt() { return updatedAt; }

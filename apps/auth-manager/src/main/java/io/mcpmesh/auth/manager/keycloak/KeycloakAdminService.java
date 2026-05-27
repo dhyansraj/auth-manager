@@ -5,9 +5,12 @@ import jakarta.ws.rs.core.Response;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.resource.AuthorizationResource;
 import org.keycloak.admin.client.resource.ClientResource;
+import org.keycloak.admin.client.resource.ClientScopeResource;
+import org.keycloak.admin.client.resource.ClientScopesResource;
 import org.keycloak.admin.client.resource.RealmResource;
 import org.keycloak.admin.client.resource.RoleResource;
 import org.keycloak.representations.idm.ClientRepresentation;
+import org.keycloak.representations.idm.ClientScopeRepresentation;
 import org.keycloak.representations.idm.ProtocolMapperRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
@@ -46,6 +49,29 @@ public class KeycloakAdminService {
     /** Round-trips to Keycloak; throws if the server is unreachable or the token is rejected. */
     public ServerInfoRepresentation serverInfo() {
         return admin.serverInfo().getInfo();
+    }
+
+    /**
+     * Force the KC admin client to discard its cached bearer token. The next
+     * admin REST call will re-authenticate from scratch (username/password
+     * grant on master realm's admin-cli), producing a fresh token whose
+     * realm-role view INCLUDES any realms created after the previous token
+     * was issued.
+     *
+     * Use after creating a new realm so the immediate subsequent bootstrap
+     * call (UsermanagementBootstrap) doesn't 403 on the new realm.
+     */
+    public void invalidateAdminToken() {
+        try {
+            var tm = admin.tokenManager();
+            String current = tm.getAccessTokenString();
+            if (current != null) {
+                tm.invalidate(current);
+            }
+            log.debug("KC admin token invalidated; next call will re-authenticate");
+        } catch (Exception e) {
+            log.warn("Failed to invalidate KC admin token: {}", e.getMessage());
+        }
     }
 
     /** List of realms this admin can see; small per deployment, no pagination needed. */
@@ -106,6 +132,39 @@ public class KeycloakAdminService {
 
         admin.realms().create(realm);
         return realmName;
+    }
+
+    /**
+     * Idempotently sets the realm's {@code enabled} flag. Returns {@code true}
+     * if the flag was changed (and the PUT issued); {@code false} if the realm
+     * was already in the requested state (no round-trip).
+     *
+     * <p>Used by tenant soft-delete to disable the realm without destroying
+     * users/clients/theme, and by tenant resurrect to re-enable it.
+     */
+    public boolean setRealmEnabled(String realmName, boolean enabled) {
+        RealmRepresentation r = admin.realm(realmName).toRepresentation();
+        if (r.isEnabled() != null && r.isEnabled() == enabled) {
+            return false;
+        }
+        r.setEnabled(enabled);
+        admin.realm(realmName).update(r);
+        log.info("Realm '{}' enabled={}", realmName, enabled);
+        return true;
+    }
+
+    /**
+     * Permanently deletes the realm. Idempotent: a {@link NotFoundException}
+     * from KC (realm already absent) is logged and swallowed so callers can
+     * safely re-invoke during force-delete recovery.
+     */
+    public void deleteRealm(String realmName) {
+        try {
+            admin.realm(realmName).remove();
+            log.info("Realm '{}' deleted from KC", realmName);
+        } catch (NotFoundException e) {
+            log.info("Realm '{}' already absent in KC (idempotent delete)", realmName);
+        }
     }
 
     /**
@@ -211,6 +270,25 @@ public class KeycloakAdminService {
     }
 
     /**
+     * Fetches a client's current state, applies {@code mutator}, and PUTs the
+     * result back to KC in a single round-trip. Returns {@code true} if the
+     * mutator reported a change (and the update was issued); {@code false} if
+     * the mutator reported no-op (and we skipped the PUT entirely).
+     *
+     * <p>Use when a caller needs to patch multiple fields on the same client
+     * atomically (e.g. attributes + webOrigins) without paying for two
+     * toRepresentation/update cycles.
+     */
+    public boolean mutateClient(String realmName, String clientUuid,
+                                java.util.function.Predicate<ClientRepresentation> mutator) {
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        ClientRepresentation rep = clientResource.toRepresentation();
+        if (!mutator.test(rep)) return false;
+        clientResource.update(rep);
+        return true;
+    }
+
+    /**
      * Replaces a client's {@code redirectUris} and {@code webOrigins} with the
      * canonical set for the {@code usermanagement} client on a realm:
      *
@@ -310,6 +388,17 @@ public class KeycloakAdminService {
     }
 
     /**
+     * Returns the full {@link ClientRepresentation} for a clientId, or
+     * {@code null} if no such client exists. Convenience for callers that need
+     * to inspect flag state (publicClient, standardFlowEnabled, etc.) without
+     * also paying for a separate {@code findClientUuid} round-trip.
+     */
+    public ClientRepresentation findClientRepresentation(String realmName, String clientId) {
+        var matches = admin.realm(realmName).clients().findByClientId(clientId);
+        return matches.isEmpty() ? null : matches.get(0);
+    }
+
+    /**
      * Sets the three top-level OAuth2 flow flags on a client (standardFlow,
      * directGrants, serviceAccounts). Used by app-creation profiles to flip a
      * freshly-created client into the right shape (SPA / service-account-only)
@@ -365,6 +454,177 @@ public class KeycloakAdminService {
         log.info("ensureAudienceMapper: added '{}' on client {} in realm '{}'",
             mapperName, clientUuid, realmName);
         return true;
+    }
+
+    /**
+     * Idempotently configures KC so BFF-issued tokens (minted via the realm's
+     * {@code usermanagement} client) carry {@code aud:<audienceClientId>}.
+     *
+     * <p>Implementation:
+     * <ol>
+     *   <li>Find or create a client_scope named {@code audience-<audienceClientId>}
+     *       with {@code includeInTokenScope=false}.</li>
+     *   <li>Find or create an {@code oidc-audience-mapper} on that scope with
+     *       {@code included.client.audience=<audienceClientId>},
+     *       {@code access.token.claim=true},
+     *       {@code id.token.claim=false}.</li>
+     *   <li>Add the scope to {@code usermanagement}'s default-client-scopes.</li>
+     * </ol>
+     *
+     * <p>Safe to call repeatedly. Logs at info on first creation, debug on no-op.
+     *
+     * <p>Replaces the legacy {@link #ensureAudienceMapper} pattern for backend
+     * profiles — that one installed the mapper on the backend client itself,
+     * which doesn't fire when tokens flow through the BFF's {@code usermanagement}
+     * client.
+     */
+    public void ensureUsermanagementAudienceFor(String realmName, String audienceClientId) {
+        if (audienceClientId == null || audienceClientId.isBlank()) {
+            throw new IllegalArgumentException("audienceClientId must be non-blank");
+        }
+        String scopeName = "audience-" + audienceClientId;
+        RealmResource realm = admin.realm(realmName);
+        ClientScopesResource scopes = realm.clientScopes();
+
+        // 1. Find or create the client scope.
+        String scopeId = findClientScopeId(scopes, scopeName);
+        if (scopeId == null) {
+            ClientScopeRepresentation csr = new ClientScopeRepresentation();
+            csr.setName(scopeName);
+            csr.setProtocol("openid-connect");
+            csr.setDescription("Adds aud:" + audienceClientId + " to access tokens minted via the BFF's usermanagement client.");
+            java.util.Map<String, String> scopeAttrs = new java.util.LinkedHashMap<>();
+            scopeAttrs.put("include.in.token.scope", "false");
+            scopeAttrs.put("display.on.consent.screen", "false");
+            csr.setAttributes(scopeAttrs);
+            try (Response resp = scopes.create(csr)) {
+                if (resp.getStatus() < 200 || resp.getStatus() >= 300) {
+                    throw new RuntimeException(
+                        "Create client_scope " + scopeName + " failed: HTTP " + resp.getStatus()
+                        + " " + resp.getStatusInfo().getReasonPhrase());
+                }
+            }
+            scopeId = findClientScopeId(scopes, scopeName);
+            if (scopeId == null) {
+                throw new IllegalStateException(
+                    "Client scope " + scopeName + " not found after create in realm " + realmName);
+            }
+            log.info("ensureUsermanagementAudienceFor: created client_scope '{}' in realm '{}'",
+                scopeName, realmName);
+        } else {
+            log.debug("ensureUsermanagementAudienceFor: client_scope '{}' already exists in realm '{}'",
+                scopeName, realmName);
+        }
+
+        // 2. Find or create the oidc-audience-mapper on the scope.
+        ClientScopeResource scopeRes = scopes.get(scopeId);
+        String mapperName = "audience-mapper-" + audienceClientId;
+        boolean mapperPresent = false;
+        var existingMappers = scopeRes.getProtocolMappers().getMappersPerProtocol("openid-connect");
+        if (existingMappers != null) {
+            for (ProtocolMapperRepresentation m : existingMappers) {
+                if ("oidc-audience-mapper".equals(m.getProtocolMapper())
+                    && m.getConfig() != null
+                    && audienceClientId.equals(m.getConfig().get("included.client.audience"))) {
+                    mapperPresent = true;
+                    break;
+                }
+            }
+        }
+        if (!mapperPresent) {
+            ProtocolMapperRepresentation mapper = new ProtocolMapperRepresentation();
+            mapper.setName(mapperName);
+            mapper.setProtocol("openid-connect");
+            mapper.setProtocolMapper("oidc-audience-mapper");
+            java.util.Map<String, String> cfg = new java.util.LinkedHashMap<>();
+            cfg.put("included.client.audience", audienceClientId);
+            cfg.put("id.token.claim", "false");
+            cfg.put("access.token.claim", "true");
+            mapper.setConfig(cfg);
+            try (Response resp = scopeRes.getProtocolMappers().createMapper(mapper)) {
+                if (resp.getStatus() < 200 || resp.getStatus() >= 300) {
+                    throw new RuntimeException(
+                        "Create audience mapper on scope " + scopeName + " failed: HTTP " + resp.getStatus()
+                        + " " + resp.getStatusInfo().getReasonPhrase());
+                }
+            }
+            log.info("ensureUsermanagementAudienceFor: added oidc-audience-mapper on scope '{}' in realm '{}'",
+                scopeName, realmName);
+        } else {
+            log.debug("ensureUsermanagementAudienceFor: oidc-audience-mapper already present on scope '{}' in realm '{}'",
+                scopeName, realmName);
+        }
+
+        // 3. Add the scope to usermanagement's default-client-scopes.
+        var umClientUuidOpt = findClientUuid(realmName, "usermanagement");
+        if (umClientUuidOpt.isEmpty()) {
+            throw new IllegalStateException(
+                "usermanagement client not found in realm " + realmName
+                + " — cannot wire BFF audience for " + audienceClientId);
+        }
+        ClientResource umRes = realm.clients().get(umClientUuidOpt.get());
+        boolean alreadyDefault = false;
+        try {
+            var defaults = umRes.getDefaultClientScopes();
+            if (defaults != null) {
+                for (ClientScopeRepresentation d : defaults) {
+                    if (scopeName.equals(d.getName())) {
+                        alreadyDefault = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("ensureUsermanagementAudienceFor: getDefaultClientScopes failed in realm '{}': {}",
+                realmName, e.getMessage());
+        }
+        if (!alreadyDefault) {
+            umRes.addDefaultClientScope(scopeId);
+            log.info("ensureUsermanagementAudienceFor: added scope '{}' to usermanagement's default-client-scopes in realm '{}'",
+                scopeName, realmName);
+        } else {
+            log.debug("ensureUsermanagementAudienceFor: scope '{}' already in usermanagement's default-client-scopes in realm '{}'",
+                scopeName, realmName);
+        }
+    }
+
+    /**
+     * Non-mutating check: returns true if {@code usermanagement}'s
+     * default-client-scopes in the given realm includes
+     * {@code audience-<audienceClientId>}. Best-effort — returns {@code true}
+     * on any lookup failure so the bundle README doesn't emit a spurious
+     * "missing audience" warning when the issue is really KC connectivity.
+     */
+    public boolean hasUsermanagementAudienceFor(String realmName, String audienceClientId) {
+        String scopeName = "audience-" + audienceClientId;
+        try {
+            var umClientUuidOpt = findClientUuid(realmName, "usermanagement");
+            if (umClientUuidOpt.isEmpty()) return true;
+            ClientResource umRes = admin.realm(realmName).clients().get(umClientUuidOpt.get());
+            var defaults = umRes.getDefaultClientScopes();
+            if (defaults == null) return false;
+            for (ClientScopeRepresentation d : defaults) {
+                if (scopeName.equals(d.getName())) return true;
+            }
+            return false;
+        } catch (Exception e) {
+            log.debug("hasUsermanagementAudienceFor({}, {}) failed: {}",
+                realmName, audienceClientId, e.getMessage());
+            return true;
+        }
+    }
+
+    private static String findClientScopeId(ClientScopesResource scopes, String name) {
+        try {
+            var all = scopes.findAll();
+            if (all == null) return null;
+            for (ClientScopeRepresentation cs : all) {
+                if (name.equals(cs.getName())) return cs.getId();
+            }
+        } catch (Exception e) {
+            // findAll may throw on transient KC issues; let caller treat as "missing".
+        }
+        return null;
     }
 
     /** Returns the service-account user UUID for the given client, or empty if serviceAccountsEnabled is false. */

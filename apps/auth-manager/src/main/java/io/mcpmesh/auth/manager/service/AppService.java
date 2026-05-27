@@ -93,8 +93,7 @@ public class AppService {
         try {
             // Idempotency: if a previous failed attempt already created the KC client,
             // look it up rather than failing.
-            clientUuid = keycloak.findClientUuid(realmName, slug)
-                .orElseGet(() -> keycloak.createClient(realmName, slug, displayName));
+            clientUuid = findOrCreateClientWithRetry(realmName, slug, displayName);
         } catch (Exception e) {
             audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, tenantId,
                 "app.create", "app", null,
@@ -117,8 +116,23 @@ public class AppService {
             throw new RuntimeException("Keycloak profile apply failed: " + e.getMessage(), e);
         }
 
-        // Audience mappers: skip self + blanks + duplicates.
-        if (req.audience() != null) {
+        // Backend profiles: wire audience via a per-backend client_scope on
+        // 'usermanagement' so BFF-minted tokens carry aud:<slug>. The previous
+        // implementation installed an oidc-audience-mapper on the backend client
+        // itself, which never fires because tokens flow through usermanagement,
+        // not the backend client.
+        //
+        // SPA_PKCE: still call the legacy ensureAudienceMapper for req.audience()
+        // entries — that's the direct-SPA-to-KC flow which mints via the SPA
+        // client and DOES need self-aud mappers on that client.
+        if (profile == AppProfile.CONFIDENTIAL_BACKEND || profile == AppProfile.SERVICE_ACCOUNT_ONLY) {
+            try {
+                keycloak.ensureUsermanagementAudienceFor(realmName, slug);
+            } catch (Exception e) {
+                log.warn("Failed to ensure usermanagement audience for {}: {}", slug, e.getMessage());
+                // Don't fail the create — operator can retry via UI / admin repair endpoint.
+            }
+        } else if (req.audience() != null) {
             for (String aud : req.audience()) {
                 if (aud == null || aud.isBlank() || aud.equals(slug)) continue;
                 try {
@@ -143,6 +157,36 @@ public class AppService {
             Map.of("clientId", slug, "realm", realmName, "profile", profile.name()));
 
         return new AppCreationResult(app, secret);
+    }
+
+    /**
+     * One-shot retry around the KC admin client's findClientUuid + createClient
+     * pair. The admin client occasionally returns 403 right after auth-manager
+     * pod restart or KC cluster rolling restart — the admin token's session-cached
+     * realm info hasn't propagated yet. Empirically: a 1s sleep + retry succeeds.
+     * After the second attempt, propagates the original exception.
+     *
+     * Returns the client UUID for an existing client (idempotent) or the newly-
+     * created one. The internal find+create pattern is unchanged; only the
+     * exception handling is wrapped.
+     */
+    private String findOrCreateClientWithRetry(String realmName, String slug, String displayName) {
+        try {
+            return keycloak.findClientUuid(realmName, slug)
+                .orElseGet(() -> keycloak.createClient(realmName, slug, displayName));
+        } catch (jakarta.ws.rs.ForbiddenException e1) {
+            log.warn("KC admin client returned 403 for realm '{}' client '{}' — invalidating admin token + sleeping 1s + retrying once",
+                realmName, slug);
+            keycloak.invalidateAdminToken();
+            try { Thread.sleep(1000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            try {
+                return keycloak.findClientUuid(realmName, slug)
+                    .orElseGet(() -> keycloak.createClient(realmName, slug, displayName));
+            } catch (jakarta.ws.rs.ForbiddenException e2) {
+                log.error("KC admin client returned 403 on retry — admin token cache may be stuck; re-throwing");
+                throw e2;
+            }
+        }
     }
 
     private void applyProfile(AppProfile profile, Tenant tenant, String slug, String clientUuid) {
@@ -190,6 +234,32 @@ public class AppService {
     public List<App> listByTenant(UUID tenantId) {
         tenants.get(tenantId);  // 404 if tenant gone
         return repo.findByTenantIdOrderByCreatedAtDesc(tenantId);
+    }
+
+    /**
+     * Inspects the KC client and returns its {@link AppProfile}. Mirrors the
+     * detection logic in {@code OnboardingBundleService} — best-effort, with
+     * {@link AppProfile#CONFIDENTIAL_BACKEND} as the safe default on lookup
+     * failure. Exposed for the admin-repair endpoint that needs to filter to
+     * backend-shaped apps.
+     */
+    @Transactional(readOnly = true)
+    public AppProfile detectProfile(String realmName, String clientId) {
+        try {
+            var uuidOpt = keycloak.findClientUuid(realmName, clientId);
+            if (uuidOpt.isEmpty()) return AppProfile.CONFIDENTIAL_BACKEND;
+            var c = keycloak.findClientRepresentation(realmName, clientId);
+            if (c == null) return AppProfile.CONFIDENTIAL_BACKEND;
+            if (Boolean.TRUE.equals(c.isPublicClient())) return AppProfile.SPA_PKCE;
+            boolean standard = !Boolean.FALSE.equals(c.isStandardFlowEnabled());
+            boolean sa = Boolean.TRUE.equals(c.isServiceAccountsEnabled());
+            if (!standard && sa) return AppProfile.SERVICE_ACCOUNT_ONLY;
+            return AppProfile.CONFIDENTIAL_BACKEND;
+        } catch (Exception e) {
+            log.warn("detectProfile({}, {}) failed: {} — defaulting to CONFIDENTIAL_BACKEND",
+                realmName, clientId, e.getMessage());
+            return AppProfile.CONFIDENTIAL_BACKEND;
+        }
     }
 
     @Transactional(readOnly = true)
