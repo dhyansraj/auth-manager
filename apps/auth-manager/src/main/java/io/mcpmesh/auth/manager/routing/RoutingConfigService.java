@@ -180,7 +180,13 @@ public class RoutingConfigService {
         }
     }
 
-    private void publishToRedis(String slug, RoutingConfig config) {
+    /**
+     * Redis-only publish: SET {@code route:<slug>} to the serialized config.
+     * No DB write, no audit, no sort. Intended for boot-time republish
+     * ({@code RoutingPublisherBootstrap}) and operator-driven repair where
+     * DB is already authoritative and we just need to rebuild the Redis cache.
+     */
+    public void publishToRedis(String slug, RoutingConfig config) {
         String key = KEY_PREFIX + slug;
         try {
             String json = objectMapper.writeValueAsString(config);

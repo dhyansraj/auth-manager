@@ -4,6 +4,7 @@ import io.mcpmesh.auth.manager.api.dto.CreateAppRequest.AppProfile;
 import io.mcpmesh.auth.manager.domain.app.App;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
+import io.mcpmesh.auth.manager.routing.RoutingPublisherBootstrap;
 import io.mcpmesh.auth.manager.service.AppService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.UsermanagementBootstrap;
@@ -34,13 +35,16 @@ public class AdminRepairController {
     private final TenantService tenantService;
     private final AppService appService;
     private final KeycloakAdminService keycloak;
+    private final RoutingPublisherBootstrap routingPublisher;
 
     public AdminRepairController(TenantService tenantService,
                                  AppService appService,
-                                 KeycloakAdminService keycloak) {
+                                 KeycloakAdminService keycloak,
+                                 RoutingPublisherBootstrap routingPublisher) {
         this.tenantService = tenantService;
         this.appService = appService;
         this.keycloak = keycloak;
+        this.routingPublisher = routingPublisher;
     }
 
     /**
@@ -94,5 +98,27 @@ public class AdminRepairController {
         report.put("results", results);
         report.put("tenantsScanned", tenants.size());
         return report;
+    }
+
+    /**
+     * Re-publishes every ACTIVE tenant's routing data ({@code host:*} hashes
+     * and {@code route:*} keys) from Postgres into Redis. Same logic as the
+     * boot-time {@link RoutingPublisherBootstrap}; exposed here so an
+     * operator can repair Redis mid-operation (e.g. after a Redis pod
+     * restart) without restarting auth-manager.
+     *
+     * <p>Idempotent: HSET + SET semantics make repeated calls a no-op
+     * against a warm cache.
+     */
+    @PostMapping("/redis-routes")
+    @PreAuthorize("@perms.has('TENANT_CREATE')")
+    public Map<String, Object> repairRedisRoutes() {
+        RoutingPublisherBootstrap.RepublishReport r = routingPublisher.republishAll();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("tenantsScanned", r.tenantsScanned());
+        out.put("hostsPublished", r.hostsPublished());
+        out.put("routesPublished", r.routesPublished());
+        out.put("failures", r.failures());
+        return out;
     }
 }
