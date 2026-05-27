@@ -247,7 +247,10 @@ local function save_session(sid, fields, ttl)
         end
     end
     local _, herr = red:hset(unpack(args))
-    if herr then rclient.close(red); return false, herr end
+    if herr then
+        rclient.maybe_invalidate_on_readonly(herr)
+        rclient.close(red); return false, herr
+    end
     red:expire("bff:session:" .. sid, ttl)
     rclient.close(red)
     return true, nil
@@ -262,7 +265,10 @@ local function save_tx(state, fields)
         args[#args + 1] = tostring(v)
     end
     local _, herr = red:hset(unpack(args))
-    if herr then rclient.close(red); return false, herr end
+    if herr then
+        rclient.maybe_invalidate_on_readonly(herr)
+        rclient.close(red); return false, herr
+    end
     red:expire("bff:tx:" .. state, TX_TTL)
     rclient.close(red)
     return true, nil

@@ -10,11 +10,22 @@ global:
 authManager:
   image:
     repository: auth-manager
-    tag: "0.1.49"
+    tag: "0.1.50"
   config:
     keycloakUrl: "https://auth.mcp-mesh.io/auth"
-    postgresHost: "platform-pg-postgresql"
-    redisHost: "platform-redis-master"
+    postgresHost: "platform-pg-rw"  # CNPG primary service (3-node HA cluster)
+    # Standalone host (kept as fallback when redisSentinel.enabled=false)
+    redisHost: ""
+    # Redis HA via Sentinel: Spring queries sentinels to discover the current
+    # master, then auto-follows failover. Headless DNS resolves to all 3 pods,
+    # any of which can answer sentinel queries.
+    redisSentinel:
+      enabled: true
+      master: "mymaster"
+      nodes:
+        - "platform-redis-node-0.platform-redis-headless.auth-platform.svc.cluster.local:26379"
+        - "platform-redis-node-1.platform-redis-headless.auth-platform.svc.cluster.local:26379"
+        - "platform-redis-node-2.platform-redis-headless.auth-platform.svc.cluster.local:26379"
 
 # Credentials: empty in this overlay so the chart's `lookup`-based secret
 # template preserves whatever is already in the in-cluster
@@ -44,12 +55,20 @@ adminUi:
 platformEdge:
   image:
     repository: platform-edge
-    tag: "0.1.17"
+    tag: "0.1.18"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,
     # so short names like "auth-platform-auth-manager" would NXDOMAIN.
-    redisHost: "platform-redis-master.auth-platform.svc.cluster.local"
+    # Redis HA via Sentinel: redisHost:redisPort points at any pod's
+    # sentinel (port 26379). redis_client.lua asks SENTINEL get-master-addr-by-name
+    # at runtime, caches the result for 5s, and connects to the current master.
+    # On failover the cache TTL forces re-discovery; on a stale READONLY error
+    # the client invalidates the cache so the next call hits the new master.
+    redisHost: "platform-redis.auth-platform.svc.cluster.local"
+    redisPort: 26379
+    redisSentinelEnabled: true
+    redisSentinelMaster: "mymaster"
     adminApiTarget: "auth-platform-auth-manager.auth-platform.svc.cluster.local:8080"
     adminUiTarget:  "auth-platform-admin-ui.auth-platform.svc.cluster.local:80"
     kcTarget:       "platform-kc-keycloak.auth-platform.svc.cluster.local:80"

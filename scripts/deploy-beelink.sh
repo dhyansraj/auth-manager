@@ -123,7 +123,7 @@ helm upgrade --install platform-kc bitnami/keycloak \
   --set "auth.adminUser=$KC_ADMIN_USER" \
   --set "auth.adminPassword=$KC_ADMIN_PASSWORD" \
   --set "postgresql.enabled=false" \
-  --set "externalDatabase.host=platform-pg-postgresql" \
+  --set "externalDatabase.host=platform-pg-rw" \
   --set "externalDatabase.user=$DB_USER" \
   --set "externalDatabase.password=$DB_PASSWORD" \
   --set "externalDatabase.database=keycloak" \

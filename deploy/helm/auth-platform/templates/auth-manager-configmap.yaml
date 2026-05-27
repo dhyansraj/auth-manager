@@ -13,8 +13,20 @@ data:
         # password injected via env var SPRING_DATASOURCE_PASSWORD
       data:
         redis:
+          {{- if .Values.authManager.config.redisSentinel.enabled }}
+          # Sentinel HA: Spring resolves master via sentinel quorum + auto-
+          # follows failover (master pod change → reconnects to new master
+          # without app-level config update).
+          sentinel:
+            master: {{ .Values.authManager.config.redisSentinel.master | quote }}
+            nodes:
+              {{- range .Values.authManager.config.redisSentinel.nodes }}
+              - {{ . | quote }}
+              {{- end }}
+          {{- else }}
           host: {{ .Values.authManager.config.redisHost | default (printf "%s-redis-master" .Release.Name) }}
           port: 6379
+          {{- end }}
 
     keycloak:
       url: {{ .Values.authManager.config.keycloakUrl | default (printf "http://%s-keycloak" .Release.Name) | quote }}

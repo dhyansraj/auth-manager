@@ -44,7 +44,11 @@ spec:
             - name: REDIS_HOST
               value: {{ required "platformEdge.config.redisHost must be set" .Values.platformEdge.config.redisHost | quote }}
             - name: REDIS_PORT
-              value: "6379"
+              value: {{ .Values.platformEdge.config.redisPort | default 6379 | quote }}
+            - name: REDIS_SENTINEL_ENABLED
+              value: {{ .Values.platformEdge.config.redisSentinelEnabled | default false | quote }}
+            - name: REDIS_SENTINEL_MASTER
+              value: {{ .Values.platformEdge.config.redisSentinelMaster | default "mymaster" | quote }}
             - name: PLATFORM_ADMIN_API_TARGET
               value: {{ $adminApi | quote }}
             - name: PLATFORM_ADMIN_UI_TARGET

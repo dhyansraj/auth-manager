@@ -1,0 +1,70 @@
+# CloudNativePG cluster for the auth platform.
+#
+# 3 instances spread across nodes via anti-affinity. Primary + 2 hot standbys
+# with synchronous replication (minSyncReplicas=1) so writes don't ack until
+# at least one replica has the WAL — survives primary loss without data loss.
+#
+# Connection endpoints (services auto-created by the operator):
+#   platform-pg-rw  → read/write (primary)
+#   platform-pg-ro  → read-only (replicas, load-balanced)
+#   platform-pg-r   → any (primary or replica, useful for reads that tolerate
+#                     small replication lag)
+#
+# Bootstrap creates the `authmanager` database + user. The `keycloak` database
+# is created post-bootstrap via the standalone Job in keycloak-db-create.yaml
+# (CNPG bootstrap.initdb only supports a single database).
+#
+# Credentials live in K8s Secrets managed out-of-band, NOT in this manifest.
+# Operator creates platform-pg-app-secret with username/password before apply.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-pg
+  namespace: auth-platform
+spec:
+  instances: 3
+
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4
+
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "256MB"
+
+  bootstrap:
+    initdb:
+      database: authmanager
+      owner: authmanager
+      secret:
+        name: platform-pg-app-secret
+
+  superuserSecret:
+    name: platform-pg-superuser-secret
+
+  storage:
+    size: 10Gi
+    storageClass: longhorn
+
+  # Anti-affinity: never schedule two PG instances on the same node. With 5
+  # nodes available and 3 instances, the scheduler spreads them across three
+  # distinct nodes.
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+
+  # Synchronous replication: writes wait for at least one replica's ack before
+  # returning. Trades a small latency hit for zero-RPO failover.
+  minSyncReplicas: 1
+  maxSyncReplicas: 1
+
+  monitoring:
+    enablePodMonitor: false  # no Prometheus stack on this cluster yet
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"

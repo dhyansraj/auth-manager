@@ -16,6 +16,21 @@ end
 _M.redis_host = getenv("REDIS_HOST", "redis")
 _M.redis_port = tonumber(getenv("REDIS_PORT", "6379"))
 
+-- Redis Sentinel HA support. When enabled, redis_host:redis_port is the
+-- sentinel endpoint (typically port 26379); redis_client resolves the
+-- current master via `SENTINEL get-master-addr-by-name <master>` at runtime
+-- and caches the answer for a few seconds. Disabled by default so the local
+-- docker-compose stack (standalone redis) keeps working unchanged.
+local function getbool(name, default)
+    local v = os.getenv(name)
+    if v == nil or v == "" then return default end
+    v = v:lower()
+    return v == "1" or v == "true" or v == "yes" or v == "on"
+end
+
+_M.redis_sentinel_enabled = getbool("REDIS_SENTINEL_ENABLED", false)
+_M.redis_sentinel_master  = getenv("REDIS_SENTINEL_MASTER", "mymaster")
+
 -- Cross-cutting platform targets. Defaults are sensible for the local
 -- docker-compose stack (auth-manager runs on the host; keycloak runs in
 -- the compose network).
