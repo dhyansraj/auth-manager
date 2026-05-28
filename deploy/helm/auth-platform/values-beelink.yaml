@@ -68,7 +68,7 @@ platformEdge:
   replicaCount: 3
   image:
     repository: platform-edge
-    tag: "0.1.19"
+    tag: "0.1.20"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,

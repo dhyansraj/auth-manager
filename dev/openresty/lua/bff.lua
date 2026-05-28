@@ -492,17 +492,29 @@ function _M.handle_callback()
     return ngx.redirect(back, 302)
 end
 
--- ─── Endpoint: POST /_bff/logout ─────────────────────────────────────────
+-- ─── Endpoint: GET / POST /_bff/logout ───────────────────────────────────
 --
--- Two-step logout:
+-- Accepts BOTH methods:
+--   - GET  /_bff/logout[?redirect_back=<path>]  → after logout, 302 to
+--     redirect_back (default "/"). Use for plain `<a href>` logout links
+--     and direct address-bar navigation.
+--   - POST /_bff/logout                          → after logout, return 204.
+--     Use for fetch()/XHR clients (the lib's bffFetch helper).
+--
+-- Two-step logout regardless of method:
 --   1. POST to KC's /protocol/openid-connect/logout with the session's
 --      refresh_token. This terminates KC's SSO session and triggers
 --      back-channel logout to every other client (sibling PKCE SPAs).
 --   2. Delete the Redis session + clear cookies. Done unconditionally —
 --      if KC's end-session call fails we still want local cleanup so the
 --      user is at least signed out HERE.
+--
+-- CSRF: logout is intentionally NOT CSRF-protected. The threat model
+-- (attacker tricks user into logging out) has near-zero security impact
+-- and matches industry practice (Auth0, Keycloak's own end-session, etc.).
 function _M.handle_logout()
-    if ngx.req.get_method() ~= "POST" then
+    local method = ngx.req.get_method()
+    if method ~= "GET" and method ~= "POST" then
         return json_response(405, { error = "method_not_allowed" })
     end
     local cookies = parse_cookies()
@@ -531,6 +543,15 @@ function _M.handle_logout()
         delete_session(sid)
     end
     clear_session_cookies()
+    -- GET → 302 to redirect_back (default "/"). POST → 204 no content.
+    if method == "GET" then
+        local args = ngx.req.get_uri_args() or {}
+        local rb = args.redirect_back
+        if type(rb) ~= "string" or rb == "" or rb:sub(1, 1) ~= "/" then
+            rb = "/"
+        end
+        return ngx.redirect(rb, 302)
+    end
     ngx.status = 204
     return ngx.exit(204)
 end
