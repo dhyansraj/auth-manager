@@ -94,7 +94,7 @@ public class TenantManifestRestController {
      * skeleton with the tenant's client_id pre-filled) instead of an empty file
      * when the tenant has no permissions/roles configured yet.
      */
-    @GetMapping(path = "/manifest", produces = APPLICATION_X_YAML_VALUE)
+    @GetMapping(path = "/manifest")
     @PreAuthorize("@perms.hasOnTenantId(#id, 'TENANT_VIEW')")
     public ResponseEntity<String> download(@PathVariable UUID id) throws Exception {
         Tenant tenant = tenants.get(id);

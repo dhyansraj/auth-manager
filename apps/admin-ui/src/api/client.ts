@@ -127,8 +127,11 @@ export const api = {
    * — direct <a download> doesn't reliably attach the session cookie).
    */
   downloadManifest: async (tenantId: string): Promise<void> => {
+    // Explicit Accept: defensive. Without it browsers send `*/*` and Spring's
+    // content negotiation can mis-route to the slug-keyed manifest controller.
     const r = await bffFetch(`${base}/tenants/${tenantId}/manifest`, {
       credentials: 'include',
+      headers: { Accept: 'application/x-yaml' },
     });
     await checkAuth(r);
     if (!r.ok) throw new ApiError(r.status, r.statusText, null, await r.text());
