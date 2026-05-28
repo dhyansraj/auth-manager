@@ -437,7 +437,7 @@ export default function TenantWizard() {
     if (manifestFile) {
       const ok = await runStep(rows, setProgress, 'manifest', async () => {
         const text = await manifestFile.text();
-        await api.applyManifest(basics.slug, text);
+        await api.uploadManifest(tenant!.id, text);
       });
       if (!ok) { setGenerating(false); return; }
     }

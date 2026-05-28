@@ -7,6 +7,16 @@ import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.AppRepository;
 import io.mcpmesh.auth.manager.routing.RoutingConfigService;
 import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
+import io.mcpmesh.auth.manager.tenantmanifest.TenantManifest;
+import io.mcpmesh.auth.manager.tenantmanifest.TenantManifestService;
+import io.mcpmesh.auth.manager.tenantmanifest.TenantManifestYamlRenderer;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.slf4j.Logger;
@@ -41,6 +51,8 @@ public class OnboardingBundleService {
     private final IdentityProvidersBootstrap idp;
     private final RoutingConfigService routing;
     private final TenantDatabaseService databaseService;
+    private final TenantManifestService manifestService;
+    private final ObjectMapper manifestYamlMapper;
 
     public OnboardingBundleService(TenantService tenants,
                                    AppRepository appRepo,
@@ -48,7 +60,8 @@ public class OnboardingBundleService {
                                    KeycloakAdminService keycloak,
                                    IdentityProvidersBootstrap idp,
                                    RoutingConfigService routing,
-                                   TenantDatabaseService databaseService) {
+                                   TenantDatabaseService databaseService,
+                                   TenantManifestService manifestService) {
         this.tenants = tenants;
         this.appRepo = appRepo;
         this.admin = admin;
@@ -56,6 +69,16 @@ public class OnboardingBundleService {
         this.idp = idp;
         this.routing = routing;
         this.databaseService = databaseService;
+        this.manifestService = manifestService;
+        YAMLFactory yf = new YAMLFactory()
+            .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
+            .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
+            .enable(YAMLGenerator.Feature.INDENT_ARRAYS_WITH_INDICATOR);
+        this.manifestYamlMapper = new ObjectMapper(yf)
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            .disable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
+            .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     }
 
     public byte[] build(UUID tenantId) {
@@ -85,6 +108,7 @@ public class OnboardingBundleService {
         filesGenerated.add("README.md");
         filesGenerated.add(".env.example");
         filesGenerated.add("helm-values-snippet.yaml");
+        filesGenerated.add("tenant-manifest.yaml");
         if (!enabledIdps.isEmpty()) filesGenerated.add("01-broker-urls.md");
         if (anyUiFacing) filesGenerated.add("02-frontend.md");
         if (anyBackend || anyServiceAccount) {
@@ -102,6 +126,7 @@ public class OnboardingBundleService {
                                                      !enabledIdps.isEmpty(), filesGenerated));
             writeEntry(zip, ".env.example", renderEnv(tenant, issuer, slug, userApps, bffMode, dbProvisioned));
             writeEntry(zip, "helm-values-snippet.yaml", renderHelm(issuer, slug, userApps, bffMode));
+            writeEntry(zip, "tenant-manifest.yaml", renderTenantManifest(tenant, userApps));
             if (!enabledIdps.isEmpty()) {
                 writeEntry(zip, "01-broker-urls.md", renderBrokerUrls(realmName, enabledIdps));
             }
@@ -1080,6 +1105,30 @@ public class OnboardingBundleService {
             """)
             .replace("{{kcBase}}", KC_BASE)
             .replace("{{realmName}}", realmName);
+    }
+
+    /**
+     * Renders the tenant's current permission catalog + role bundles as YAML.
+     * For a fresh tenant with nothing configured, emits a commented starter
+     * with the first backend client_id pre-filled. Failures degrade to an
+     * apologetic placeholder so the bundle download never breaks.
+     */
+    private String renderTenantManifest(Tenant tenant, List<AppInfo> apps) {
+        try {
+            TenantManifest manifest = manifestService.generate(tenant.getSlug());
+            String firstBackend = apps.stream()
+                .filter(a -> "CONFIDENTIAL_BACKEND".equals(a.profile)
+                          || "SERVICE_ACCOUNT_ONLY".equals(a.profile))
+                .findFirst()
+                .map(a -> a.app.getClientId())
+                .orElse(null);
+            return TenantManifestYamlRenderer.render(manifestYamlMapper, tenant, manifest, firstBackend);
+        } catch (Exception e) {
+            log.warn("renderTenantManifest({}) failed: {}", tenant.getSlug(), e.getMessage());
+            return "# Manifest could not be generated at download time ("
+                + e.getMessage() + ").\n"
+                + "# Re-download the bundle or fetch from the Permissions tab → Download manifest.\n";
+        }
     }
 
     private record AppInfo(App app, String profile) {}

@@ -101,10 +101,15 @@ export const api = {
       `/tenants/${tenantId}/apps/${appId}/service-account/permissions`,
       { method: 'PUT', body: JSON.stringify({ permissions }) }
     ),
-  applyManifest: async (slug: string, yamlBody: string) => {
-    const r = await bffFetch(base + `/tenants/${slug}/manifest:apply?applyRoles=true`, {
+  /**
+   * Apply a manifest YAML to a tenant (UUID-keyed). Calls the new
+   * /tenants/{id}/manifest:apply endpoint guarded by PERMISSIONS_EDIT.
+   * The wizard + Permissions tab both route through here.
+   */
+  uploadManifest: async (tenantId: string, yamlBody: string) => {
+    const r = await bffFetch(base + `/tenants/${tenantId}/manifest:apply?applyRoles=true`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/yaml' },
+      headers: { 'Content-Type': 'application/x-yaml' },
       body: yamlBody,
     });
     await checkAuth(r);
@@ -115,6 +120,29 @@ export const api = {
       throw new ApiError(r.status, r.statusText, parsed, raw);
     }
     return r.json();
+  },
+  /**
+   * Download the tenant's current manifest YAML. Pulls the file via blob +
+   * synthetic anchor (same pattern as the onboarding bundle / theme starter
+   * — direct <a download> doesn't reliably attach the session cookie).
+   */
+  downloadManifest: async (tenantId: string): Promise<void> => {
+    const r = await bffFetch(`${base}/tenants/${tenantId}/manifest`, {
+      credentials: 'include',
+    });
+    await checkAuth(r);
+    if (!r.ok) throw new ApiError(r.status, r.statusText, null, await r.text());
+    const blob = await r.blob();
+    const filename = r.headers.get('Content-Disposition')?.match(/filename="(.+?)"/)?.[1]
+      || `${tenantId}-manifest.yaml`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   },
   updateRoutes: (slug: string, body: { targets: Record<string, string>; rules: Array<{ path: string; authMode: 'PUBLIC' | 'REQUIRED' | 'OPTIONAL'; target: string }> }) =>
     req<import('./types').RoutingConfig>(`/tenants/${slug}/routes`, {
