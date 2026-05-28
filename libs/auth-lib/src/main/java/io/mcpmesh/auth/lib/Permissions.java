@@ -173,9 +173,19 @@ public class Permissions {
     }
 
     private Set<String> readCache(String key) {
+        if (!props.cache().enabled()) return null;
+
         if (redis != null) {
-            String joined = redis.opsForValue().get(key);
-            return joined == null ? null : parseJoined(joined);
+            try {
+                String joined = redis.opsForValue().get(key);
+                return joined == null ? null : parseJoined(joined);
+            } catch (Exception e) {
+                // Redis unreachable / mis-configured / down. Don't 500 the
+                // request — fall through to in-memory cache. Once-per-minute
+                // WARN to avoid log spam.
+                warnRateLimited("readCache: redis unavailable, falling back to in-memory", e);
+                // continue to in-memory path below
+            }
         }
         CacheEntry entry = localCache.get(key);
         if (entry == null) return null;
@@ -187,11 +197,28 @@ public class Permissions {
     }
 
     private void writeCache(String key, Set<String> value) {
+        if (!props.cache().enabled()) return;
+
         if (redis != null) {
-            redis.opsForValue().set(key, String.join(CACHE_DELIMITER, value), ttl);
-            return;
+            try {
+                redis.opsForValue().set(key, String.join(CACHE_DELIMITER, value), ttl);
+                return;
+            } catch (Exception e) {
+                warnRateLimited("writeCache: redis unavailable, using in-memory fallback", e);
+                // fall through to in-memory path
+            }
         }
         localCache.put(key, new CacheEntry(value, Instant.now().plus(ttl)));
+    }
+
+    private volatile Instant lastRedisWarnAt = Instant.EPOCH;
+
+    private void warnRateLimited(String msg, Throwable t) {
+        Instant now = Instant.now();
+        if (now.isAfter(lastRedisWarnAt.plus(Duration.ofMinutes(1)))) {
+            log.warn("{} ({})", msg, t.getMessage());
+            lastRedisWarnAt = now;
+        }
     }
 
     private static Set<String> parseJoined(String joined) {

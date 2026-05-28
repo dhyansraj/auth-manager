@@ -747,6 +747,11 @@ public class OnboardingBundleService {
               issuer-uri: ${AUTH_LIB_ISSUER_URI}
               client-id: ${AUTH_LIB_CLIENT_ID:{{firstBackend}}}
               client-secret: ${AUTH_LIB_CLIENT_SECRET}
+              cache:
+                # In-memory cache by default. Set to false to disable entirely
+                # (slower — every check hits KC UMA). Set to true + configure
+                # spring.data.redis.* to share cache across replicas via Redis.
+                enabled: true
             ```
 
             ## Where does the Bearer come from?
@@ -799,6 +804,28 @@ public class OnboardingBundleService {
             ```bash
             curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/me
             ```
+
+            ## Multi-replica caching (optional)
+
+            The auth-lib cache is in-memory per pod by default. For shared cache
+            across multiple replicas, point Spring Data Redis at the platform's
+            shared sentinel cluster:
+
+            ```yaml
+            spring:
+              data:
+                redis:
+                  sentinel:
+                    master: mymaster
+                    nodes:
+                      - platform-redis-node-0.platform-redis-headless.auth-platform.svc.cluster.local:26379
+                      - platform-redis-node-1.platform-redis-headless.auth-platform.svc.cluster.local:26379
+                      - platform-redis-node-2.platform-redis-headless.auth-platform.svc.cluster.local:26379
+            ```
+
+            auth-lib auto-detects the Spring Redis bean and uses it. If Redis is
+            unreachable at runtime the lib logs a warning + falls back to in-memory
+            caching transparently.
             """)
             .replace("{{slug}}", slug)
             .replace("{{firstBackend}}", firstBackend)

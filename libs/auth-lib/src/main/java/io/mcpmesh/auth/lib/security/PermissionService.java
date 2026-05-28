@@ -14,6 +14,8 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -48,21 +50,42 @@ public class PermissionService {
 
     public Collection<GrantedAuthority> fetchPermissions(String accessToken, String jti) {
         if (cacheEnabled() && jti != null) {
-            String cached = redis.opsForValue().get(CACHE_KEY_PREFIX + jti);
-            if (cached != null && !cached.isBlank()) {
-                log.debug("PermissionService: cache hit jti={}", jti);
-                return parseAuthorities(cached);
+            try {
+                String cached = redis.opsForValue().get(CACHE_KEY_PREFIX + jti);
+                if (cached != null && !cached.isBlank()) {
+                    log.debug("PermissionService: cache hit jti={}", jti);
+                    return parseAuthorities(cached);
+                }
+            } catch (Exception e) {
+                // Redis unreachable / mis-configured / down. Don't 500 the
+                // request — fall through to a fresh UMA call. Once-per-minute
+                // WARN to avoid log spam.
+                warnRateLimited("fetchPermissions(read): redis unavailable, bypassing cache", e);
             }
         }
 
         Collection<GrantedAuthority> authorities = doUmaCall(accessToken);
 
         if (cacheEnabled() && jti != null && !authorities.isEmpty()) {
-            String joined = String.join(CACHE_DELIMITER,
-                authorities.stream().map(GrantedAuthority::getAuthority).toList());
-            redis.opsForValue().set(CACHE_KEY_PREFIX + jti, joined, props.cache().ttl());
+            try {
+                String joined = String.join(CACHE_DELIMITER,
+                    authorities.stream().map(GrantedAuthority::getAuthority).toList());
+                redis.opsForValue().set(CACHE_KEY_PREFIX + jti, joined, props.cache().ttl());
+            } catch (Exception e) {
+                warnRateLimited("fetchPermissions(write): redis unavailable, skipping cache write", e);
+            }
         }
         return authorities;
+    }
+
+    private volatile Instant lastRedisWarnAt = Instant.EPOCH;
+
+    private void warnRateLimited(String msg, Throwable t) {
+        Instant now = Instant.now();
+        if (now.isAfter(lastRedisWarnAt.plus(Duration.ofMinutes(1)))) {
+            log.warn("{} ({})", msg, t.getMessage());
+            lastRedisWarnAt = now;
+        }
     }
 
     private Collection<GrantedAuthority> doUmaCall(String accessToken) {

@@ -3,6 +3,9 @@ package io.mcpmesh.auth.lib;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -172,6 +175,68 @@ class PermissionsTest {
         Permissions permissions = new Permissions(props, rest, null);
         assertThat(permissions.allFor(null)).isEmpty();
         verify(rest, never()).postForObject(any(String.class), any(HttpEntity.class), any(Class.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void allFor_falls_back_to_inmemory_when_redis_throws() {
+        // Redis blows up on every op. The request must still succeed by
+        // falling through to the in-memory cache path — no exception bubbles
+        // up to the auth filter chain.
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> ops = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(ops);
+        when(ops.get(any(String.class)))
+            .thenThrow(new RedisConnectionFailureException("simulated redis down"));
+        org.mockito.Mockito.doThrow(new RedisConnectionFailureException("simulated redis down"))
+            .when(ops).set(any(String.class), any(String.class), any(Duration.class));
+
+        when(rest.postForObject(any(String.class), any(HttpEntity.class), eq(List.class)))
+            .thenAnswer(invocation -> {
+                HttpEntity<MultiValueMap<String, String>> entity = invocation.getArgument(1);
+                String audience = entity.getBody().getFirst("audience");
+                if ("orders".equals(audience)) {
+                    return List.of(Map.of("rsname", "order", "scopes", List.of("view")));
+                }
+                return List.of(Map.of("rsname", "invoice", "scopes", List.of("view")));
+            });
+
+        Permissions permissions = new Permissions(props, rest, redis,
+            Duration.ofSeconds(60));
+
+        // First call: redis.get throws → UMA path runs → redis.set throws →
+        // result still served + cached in-memory.
+        Set<String> first = permissions.allFor(jwt);
+        assertThat(first).containsExactlyInAnyOrder("ORDER_VIEW", "INVOICE_VIEW");
+
+        // Second call: redis.get throws again → in-memory cache wins → no
+        // extra UMA hits beyond the two from the first call.
+        Set<String> second = permissions.allFor(jwt);
+        assertThat(second).isEqualTo(first);
+        verify(rest, times(2)).postForObject(any(String.class), any(HttpEntity.class), eq(List.class));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void allFor_skips_cache_when_disabled() {
+        // cache.enabled=false → cache is bypassed entirely, every call hits UMA.
+        AuthLibProperties disabled = new AuthLibProperties(
+            "http://kc.local/realms/test",
+            "orders",
+            "secret",
+            List.of("orders", "invoices"),
+            new AuthLibProperties.Cache(false, Duration.ofMinutes(5))
+        );
+        when(rest.postForObject(any(String.class), any(HttpEntity.class), eq(List.class)))
+            .thenReturn(List.of(Map.of("rsname", "order", "scopes", List.of("view"))));
+
+        Permissions permissions = new Permissions(disabled, rest, null,
+            Duration.ofSeconds(60));
+        permissions.allFor(jwt);
+        permissions.allFor(jwt);
+
+        // 2 audiences x 2 calls = 4 UMA invocations (no caching at all).
+        verify(rest, times(4)).postForObject(any(String.class), any(HttpEntity.class), eq(List.class));
     }
 
     @Test
