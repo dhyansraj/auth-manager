@@ -6,9 +6,7 @@ import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.keycloak.admin.client.Keycloak;
-import org.keycloak.admin.client.resource.AuthenticationManagementResource;
 import org.keycloak.admin.client.resource.RealmResource;
-import org.keycloak.representations.idm.AuthenticationExecutionInfoRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,61 +22,59 @@ import java.util.UUID;
 
 /**
  * Per-tenant login-method toggle: enable / disable the Username Password Form
- * step in the cloned {@code mcpmesh-browser} authentication flow.
+ * on the tenant's KC login page.
  *
  * <h2>How it works</h2>
  *
- * <p>KC's built-in {@code browser} flow is shared across all realms in the
- * KC server and cannot be edited in-place. The first time we want to flip
- * password OFF on a tenant, we clone {@code browser} → {@code mcpmesh-browser}
- * via the KC admin API, point the realm's {@code browserFlow} at the clone,
- * and then mutate the clone's Username Password Form execution requirement
- * (REQUIRED ↔ DISABLED).
+ * <p>Implementation is a <b>realm attribute + theme CSS</b> approach: we store
+ * a single boolean attribute on the KC realm
+ * ({@code mcpmesh.passwordLoginEnabled}), and the {@code mcpmesh-flexible}
+ * login theme reads that attribute in {@code template.ftl} and toggles a body
+ * class ({@code mcp-no-password}) which hides the username/password form via
+ * CSS.
+ *
+ * <h2>Why not mutate the auth flow?</h2>
+ *
+ * <p>Earlier versions cloned the built-in {@code browser} flow to
+ * {@code mcpmesh-browser} and flipped Username Password Form requirement
+ * REQUIRED ↔ DISABLED. Every variation we tried either killed the login-page
+ * render (KC's {@code AuthenticationSelectionResolver} NPE'd descending into
+ * CONDITIONAL subflows when no user was identified) or fought KC's
+ * REQUIRED + ALTERNATIVE rules. We gave up on flow manipulation and moved to
+ * UX-only gating.
+ *
+ * <h2>Security caveat</h2>
+ *
+ * <p>This is UX gating, NOT server-side enforcement. KC's auth flow remains
+ * the default {@code browser} flow, so a determined attacker can still POST
+ * username + password to the form-action URL directly. Server-side
+ * enforcement would require a custom KC SPI; out of scope.
  *
  * <h2>Invariants</h2>
  *
- * <p>{@link #setPasswordEnabled}{@code (id, false, ...)} refuses when the
- * tenant has zero enabled IdPs — locking yourself out of a fresh tenant is
- * the entire failure mode this guard prevents. Symmetric check in
- * {@link #checkSetIdpEnabled}: disabling the last IdP refuses when password
- * is also off.
+ * <p>{@link #setPasswordEnabled}{@code (id, false, ...)} still refuses when
+ * the tenant has zero enabled IdPs — leaving an operator with zero visible
+ * login methods on the page is the failure this guard prevents. Symmetric
+ * check in {@link #checkSetIdpEnabled}.
  *
  * <h2>Bootstrap</h2>
  *
- * <p>{@link LoginMethodBootstrap} runs at startup to migrate existing tenant
- * realms from the built-in {@code browser} to {@code mcpmesh-browser} —
- * preserving the current state (Username Password Form stays REQUIRED).
- * After this, every tenant realm's {@code browserFlow} points at our
- * private clone, so toggle calls don't need a per-tenant first-run check.
+ * <p>{@link LoginMethodBootstrap} runs at startup to RESTORE every tenant
+ * realm's {@code browserFlow} to KC's built-in {@code browser} — undoing the
+ * historical migration to {@code mcpmesh-browser}. The orphaned
+ * {@code mcpmesh-browser} flow object is left in place (harmless).
  */
 @Service
 public class LoginMethodService {
 
     private static final Logger log = LoggerFactory.getLogger(LoginMethodService.class);
 
-    /** KC's built-in browser flow alias — what every realm uses by default. */
-    public static final String BUILTIN_BROWSER_FLOW = "browser";
-
-    /** Our cloned flow's alias — where the password-toggle mutation happens. */
-    public static final String MCPMESH_BROWSER_FLOW = "mcpmesh-browser";
-
     /**
-     * Provider ID of the Username Password Form leaf execution. Stable across
-     * KC versions (verified on 26.x). We match by {@code providerId} rather
-     * than {@code displayName} because KC v26 prefixes cloned-subflow
-     * displayNames with the parent flow alias (e.g. {@code "mcpmesh-browser
-     * forms"}) — the displayName is therefore unreliable.
+     * Realm-attribute key read by the theme ({@code template.ftl}) and written
+     * by this service. Value is the string {@code "true"} or {@code "false"}.
+     * Absence is treated as {@code "true"} (password ON, default).
      */
-    public static final String UPF_PROVIDER_ID = "auth-username-password-form";
-
-    /**
-     * Provider ID of the "Organization Identity-First Login" leaf inside the
-     * KC v26 Organization subflow. We use this as the anchor to locate the
-     * enclosing Organization subflow (which has no stable name or providerId
-     * of its own). Missing on older KC versions — see
-     * {@link #mutatePasswordRequirement}.
-     */
-    public static final String ORGANIZATION_PROVIDER_ID = "organization";
+    public static final String PASSWORD_ENABLED_ATTR = "mcpmesh.passwordLoginEnabled";
 
     private static final ActorKind ACTOR_KIND = ActorKind.USER;
 
@@ -104,9 +101,8 @@ public class LoginMethodService {
     }
 
     /**
-     * Flips the Username Password Form execution's requirement. Clones the
-     * built-in browser flow on first call if needed; idempotent on subsequent
-     * calls. Refuses to disable when no IdPs would remain enabled.
+     * Toggles the realm attribute {@link #PASSWORD_ENABLED_ATTR}. Refuses to
+     * disable when no IdPs would remain enabled.
      */
     public LoginMethodStatus setPasswordEnabled(UUID tenantId, boolean enabled, String actor) {
         Tenant t = tenants.get(tenantId);
@@ -137,8 +133,7 @@ public class LoginMethodService {
         }
 
         try {
-            ensureClonedFlow(t.getRealmName());
-            mutatePasswordRequirement(t.getRealmName(), enabled);
+            setPasswordAttribute(t.getRealmName(), enabled);
         } catch (Exception e) {
             audit.recordFailure(actor, ACTOR_KIND, t.getId(),
                 "tenant.login_methods.set_password", "tenant", t.getId().toString(),
@@ -155,8 +150,9 @@ public class LoginMethodService {
 
     /**
      * Symmetric guard for the IdP toggle path: refuses to disable the last
-     * enabled IdP when password is also DISABLED. Called from
-     * {@code IdentityProvidersService} before it issues the actual KC mutation.
+     * enabled IdP when password is also DISABLED (i.e. the realm attribute is
+     * explicitly {@code "false"}). Called from {@code IdentityProvidersService}
+     * before it issues the actual KC mutation.
      *
      * @param wantEnabled the desired new state of the IdP; only the {@code false}
      *                    path performs the check.
@@ -182,199 +178,35 @@ public class LoginMethodService {
     }
 
     /**
-     * Migration entry point: clones the realm's browser flow to
-     * {@code mcpmesh-browser} if not already cloned, preserving current
-     * Username Password Form state. Idempotent — safe to call repeatedly.
-     *
-     * @return true if a clone was issued; false if the realm was already on
-     *         {@code mcpmesh-browser}.
-     */
-    public boolean ensureClonedFlow(String realmName) {
-        RealmResource realm = kcAdmin.realm(realmName);
-        RealmRepresentation rep = realm.toRepresentation();
-        if (MCPMESH_BROWSER_FLOW.equals(rep.getBrowserFlow())) {
-            return false;  // already migrated
-        }
-        AuthenticationManagementResource flows = realm.flows();
-        // Defensive: copy() returns 409 if the alias already exists. Check first.
-        boolean cloneExists = flows.getFlows().stream()
-            .anyMatch(f -> MCPMESH_BROWSER_FLOW.equals(f.getAlias()));
-        if (!cloneExists) {
-            Map<String, Object> copyBody = new LinkedHashMap<>();
-            copyBody.put("newName", MCPMESH_BROWSER_FLOW);
-            try (var resp = flows.copy(BUILTIN_BROWSER_FLOW, copyBody)) {
-                int status = resp.getStatus();
-                if (status >= 300) {
-                    throw new RuntimeException(
-                        "KC flow copy failed: HTTP " + status + " " + resp.getStatusInfo().getReasonPhrase());
-                }
-            }
-            log.info("LoginMethodService: cloned 'browser' → '{}' on realm '{}'",
-                MCPMESH_BROWSER_FLOW, realmName);
-        }
-        rep.setBrowserFlow(MCPMESH_BROWSER_FLOW);
-        realm.update(rep);
-        log.info("LoginMethodService: realm '{}' browserFlow now points at '{}'",
-            realmName, MCPMESH_BROWSER_FLOW);
-        return true;
-    }
-
-    /**
-     * Reads the password-form execution's requirement off the
-     * {@code mcpmesh-browser} flow (if present) or the built-in
-     * {@code browser} flow as a fallback. Returns true when the requirement
-     * is {@code REQUIRED} or {@code ALTERNATIVE}; false when {@code DISABLED}.
+     * Reads the {@link #PASSWORD_ENABLED_ATTR} realm attribute. Defaults to
+     * {@code true} (password ON) when the attribute is absent or when the
+     * attributes map is null — matching the theme's default.
      */
     public boolean isPasswordEnabled(String realmName) {
         RealmResource realm = kcAdmin.realm(realmName);
-        String flowAlias = realm.toRepresentation().getBrowserFlow();
-        if (flowAlias == null || flowAlias.isBlank()) flowAlias = BUILTIN_BROWSER_FLOW;
-        try {
-            for (AuthenticationExecutionInfoRepresentation exec :
-                    realm.flows().getExecutions(flowAlias)) {
-                if (UPF_PROVIDER_ID.equals(exec.getProviderId())) {
-                    String req = exec.getRequirement();
-                    return "REQUIRED".equals(req) || "ALTERNATIVE".equals(req);
-                }
-            }
-        } catch (Exception e) {
-            log.warn("isPasswordEnabled({}) — getExecutions({}) failed: {}",
-                realmName, flowAlias, e.getMessage());
-            return true;  // safe default: assume on
-        }
-        // No password execution at all? Definitely not enabled.
-        return false;
+        RealmRepresentation rep = realm.toRepresentation();
+        Map<String, String> attrs = rep.getAttributes();
+        if (attrs == null) return true;
+        String val = attrs.get(PASSWORD_ENABLED_ATTR);
+        if (val == null) return true;
+        return !"false".equalsIgnoreCase(val);
     }
 
     /**
-     * Flips the password-form execution's requirement, along with the
-     * enclosing Forms subflow and (on KC v26+) the top-level Organization
-     * subflow.
-     *
-     * <h3>Why we touch three executions, not just UPF</h3>
-     *
-     * <p>KC's {@code AuthenticationSelectionResolver} recurses into all
-     * ALTERNATIVE subflows when building the login-page selection list.
-     * For each CONDITIONAL inner subflow it encounters it calls
-     * {@code Condition - user configured}, whose authenticator
-     * dereferences {@code user.credentialManager()} — which NPEs at
-     * login-page render time because no user is identified yet. When
-     * password is ON, KC's Forms path runs UPF first (identifying the
-     * user), so the inner conditional sees a non-null user and is fine.
-     * But if we set ONLY UPF to DISABLED and leave Forms ALTERNATIVE, the
-     * selection-list builder still descends into Forms looking for an
-     * alternative authenticator, hits the 2FA conditional, NPEs. Same
-     * hazard on the top-level Organization subflow (it contains a
-     * Conditional-Organization → Condition-user-configured chain).
-     *
-     * <p>Fix: set both subflows to DISABLED when password is off so the
-     * selection resolver never descends into them. On re-enable, restore
-     * to ALTERNATIVE (KC v26's default for both).
-     *
-     * <h3>Structural lookup (no display-name matching)</h3>
-     *
-     * <p>KC v26 prefixes cloned-subflow displayNames with the parent flow
-     * alias (e.g. the {@code forms} subflow becomes
-     * {@code mcpmesh-browser forms} when cloned). We therefore find
-     * executions by structure:
-     * <ul>
-     *   <li>UPF: {@code providerId == "auth-username-password-form"}.</li>
-     *   <li>Forms: the nearest preceding subflow with
-     *       {@code level == upf.level - 1}.</li>
-     *   <li>Organization: the nearest preceding {@code level == 0} subflow
-     *       before the {@code "organization"} leaf. Optional — older KCs
-     *       have no such subflow; we log and skip.</li>
-     * </ul>
-     *
-     * <h3>Always re-applies (no "already correct" skip)</h3>
-     *
-     * <p>This method never short-circuits on "already in desired state". A
-     * partially broken realm (e.g. UPF=DISABLED but Forms=ALTERNATIVE from
-     * an earlier buggy version) is repaired the next time the operator
-     * toggles the switch.
+     * Writes the {@link #PASSWORD_ENABLED_ATTR} realm attribute and PUTs the
+     * realm representation back to KC. Copies the existing attribute map to
+     * avoid mutating shared state inside the KC client cache.
      */
-    private void mutatePasswordRequirement(String realmName, boolean enabled) {
+    private void setPasswordAttribute(String realmName, boolean enabled) {
         RealmResource realm = kcAdmin.realm(realmName);
-        var executions = realm.flows().getExecutions(MCPMESH_BROWSER_FLOW);
-
-        // 1. Locate UPF by providerId.
-        AuthenticationExecutionInfoRepresentation upf = null;
-        int upfIdx = -1;
-        for (int i = 0; i < executions.size(); i++) {
-            var exec = executions.get(i);
-            if (UPF_PROVIDER_ID.equals(exec.getProviderId())) {
-                upf = exec;
-                upfIdx = i;
-                break;
-            }
-        }
-        if (upf == null) {
-            throw new RuntimeException(
-                "Cannot find Username Password Form (providerId=" + UPF_PROVIDER_ID
-                    + ") in flow " + MCPMESH_BROWSER_FLOW + " on realm " + realmName);
-        }
-
-        // 2. Locate Forms = nearest preceding subflow one level shallower than UPF.
-        AuthenticationExecutionInfoRepresentation forms = null;
-        for (int i = upfIdx - 1; i >= 0; i--) {
-            var exec = executions.get(i);
-            if (Boolean.TRUE.equals(exec.getAuthenticationFlow())
-                && exec.getLevel() == upf.getLevel() - 1) {
-                forms = exec;
-                break;
-            }
-        }
-
-        // 3. Locate Organization (KC v26+) = nearest preceding level-0 subflow
-        //    before the "organization" provider leaf.
-        AuthenticationExecutionInfoRepresentation organization = null;
-        int orgLeafIdx = -1;
-        for (int i = 0; i < executions.size(); i++) {
-            if (ORGANIZATION_PROVIDER_ID.equals(executions.get(i).getProviderId())) {
-                orgLeafIdx = i;
-                break;
-            }
-        }
-        if (orgLeafIdx >= 0) {
-            for (int i = orgLeafIdx - 1; i >= 0; i--) {
-                var exec = executions.get(i);
-                if (Boolean.TRUE.equals(exec.getAuthenticationFlow())
-                    && exec.getLevel() == 0) {
-                    organization = exec;
-                    break;
-                }
-            }
-        }
-        if (organization == null) {
-            log.debug("LoginMethodService: realm '{}' has no Organization subflow "
-                + "(pre-KC26 or stripped flow) — skipping that mutation", realmName);
-        }
-
-        // 4. Apply. ALTERNATIVE is KC v26's default requirement for both
-        //    subflows; REQUIRED is the default for the UPF leaf.
-        String subflowWant = enabled ? "ALTERNATIVE" : "DISABLED";
-        String upfWant = enabled ? "REQUIRED" : "DISABLED";
-
-        if (forms != null) {
-            forms.setRequirement(subflowWant);
-            realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, forms);
-            log.info("LoginMethodService: realm '{}' Forms subflow requirement → '{}'",
-                realmName, subflowWant);
-        } else {
-            log.warn("LoginMethodService: realm '{}' has no Forms subflow parent of UPF "
-                + "— flipping leaf only", realmName);
-        }
-
-        upf.setRequirement(upfWant);
-        realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, upf);
-        log.info("LoginMethodService: realm '{}' Username Password Form requirement → '{}'",
-            realmName, upfWant);
-
-        if (organization != null) {
-            organization.setRequirement(subflowWant);
-            realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, organization);
-            log.info("LoginMethodService: realm '{}' Organization subflow requirement → '{}'",
-                realmName, subflowWant);
-        }
+        RealmRepresentation rep = realm.toRepresentation();
+        Map<String, String> attrs = rep.getAttributes() != null
+            ? new HashMap<>(rep.getAttributes())
+            : new HashMap<>();
+        attrs.put(PASSWORD_ENABLED_ATTR, enabled ? "true" : "false");
+        rep.setAttributes(attrs);
+        realm.update(rep);
+        log.info("LoginMethodService: realm '{}' {}={}",
+            realmName, PASSWORD_ENABLED_ATTR, enabled);
     }
 }

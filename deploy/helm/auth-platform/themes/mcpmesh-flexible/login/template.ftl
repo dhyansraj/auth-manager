@@ -106,7 +106,11 @@
     .mcp-slot-form-area .pf-v5-c-login { width: 100%; }
   </style>
 </head>
-<body class="${properties.kcBodyClass!} mcp-layout-${msg('mcpLayoutVariant','centered')}">
+<#-- Read the per-realm password-login flag set by auth-manager's
+     LoginMethodService. Absence → "true" → password ON (default). Compared
+     against the literal "false" so any other value also reads as ON. -->
+<#assign mcpPasswordDisabled = (realm.attributes["mcpmesh.passwordLoginEnabled"]!"true") == "false">
+<body class="${properties.kcBodyClass!} mcp-layout-${msg('mcpLayoutVariant','centered')}${mcpPasswordDisabled?then(' mcp-no-password', '')}">
   <#if msg("mcpmeshSlotMarketingLeftHtml","")?length gt 0>
     <aside class="mcp-slot mcp-slot-marketing-left">${msg("mcpmeshSlotMarketingLeftHtml")?no_esc}</aside>
   </#if>
