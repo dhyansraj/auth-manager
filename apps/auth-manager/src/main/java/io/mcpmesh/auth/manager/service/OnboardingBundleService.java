@@ -1,5 +1,7 @@
 package io.mcpmesh.auth.manager.service;
 
+import io.mcpmesh.auth.manager.authflow.LoginMethodService;
+import io.mcpmesh.auth.manager.authflow.LoginMethodStatus;
 import io.mcpmesh.auth.manager.domain.app.App;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
@@ -10,6 +12,8 @@ import io.mcpmesh.auth.manager.routing.model.RoutingConfig;
 import io.mcpmesh.auth.manager.tenantmanifest.TenantManifest;
 import io.mcpmesh.auth.manager.tenantmanifest.TenantManifestService;
 import io.mcpmesh.auth.manager.tenantmanifest.TenantManifestYamlRenderer;
+import io.mcpmesh.auth.manager.theme.ThemeMeta;
+import io.mcpmesh.auth.manager.theme.ThemeService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,6 +56,8 @@ public class OnboardingBundleService {
     private final RoutingConfigService routing;
     private final TenantDatabaseService databaseService;
     private final TenantManifestService manifestService;
+    private final LoginMethodService loginMethodService;
+    private final ThemeService themeService;
     private final ObjectMapper manifestYamlMapper;
 
     public OnboardingBundleService(TenantService tenants,
@@ -61,7 +67,9 @@ public class OnboardingBundleService {
                                    IdentityProvidersBootstrap idp,
                                    RoutingConfigService routing,
                                    TenantDatabaseService databaseService,
-                                   TenantManifestService manifestService) {
+                                   TenantManifestService manifestService,
+                                   LoginMethodService loginMethodService,
+                                   ThemeService themeService) {
         this.tenants = tenants;
         this.appRepo = appRepo;
         this.admin = admin;
@@ -70,6 +78,8 @@ public class OnboardingBundleService {
         this.routing = routing;
         this.databaseService = databaseService;
         this.manifestService = manifestService;
+        this.loginMethodService = loginMethodService;
+        this.themeService = themeService;
         YAMLFactory yf = new YAMLFactory()
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
@@ -115,7 +125,7 @@ public class OnboardingBundleService {
             filesGenerated.add("03-backend-java.md");
             filesGenerated.add("03-backend-python.md");
         }
-        if (anyServiceAccount) filesGenerated.add("04-service-account.md");
+        if (anyBackend || anyServiceAccount) filesGenerated.add("04-service-account.md");
         filesGenerated.add("05-theming-optional.md");
         filesGenerated.add("06-user-migration.md");
         filesGenerated.add("07-in-cluster-vs-public.md");
@@ -125,7 +135,7 @@ public class OnboardingBundleService {
         try (ZipOutputStream zip = new ZipOutputStream(baos)) {
             writeEntry(zip, "README.md", renderReadme(tenant, realmName, issuer, slug, userApps, bffMode,
                                                      anySpa, anyBackend, anyServiceAccount,
-                                                     !enabledIdps.isEmpty(), filesGenerated));
+                                                     enabledIdps, filesGenerated));
             writeEntry(zip, ".env.example", renderEnv(tenant, issuer, slug, userApps, bffMode, dbProvisioned));
             writeEntry(zip, "helm-values-snippet.yaml", renderHelm(issuer, slug, userApps, bffMode));
             writeEntry(zip, "tenant-manifest.yaml", renderTenantManifest(tenant, userApps));
@@ -140,8 +150,8 @@ public class OnboardingBundleService {
                 writeEntry(zip, "03-backend-java.md", renderBackendJava(tenant, realmName, slug, issuer, userApps, bffMode));
                 writeEntry(zip, "03-backend-python.md", renderBackendPython(tenant, realmName, slug, issuer, userApps, bffMode));
             }
-            if (anyServiceAccount) {
-                writeEntry(zip, "04-service-account.md", renderServiceAccount(issuer, userApps));
+            if (anyBackend || anyServiceAccount) {
+                writeEntry(zip, "04-service-account.md", renderServiceAccount(tenant, issuer, slug, userApps));
             }
             writeEntry(zip, "05-theming-optional.md", renderTheming(slug));
             writeEntry(zip, "06-user-migration.md", renderMigration(realmName));
@@ -234,7 +244,8 @@ public class OnboardingBundleService {
     private String renderReadme(Tenant t, String realmName, String issuer, String slug,
                                 List<AppInfo> apps, boolean bffMode,
                                 boolean anySpa, boolean anyBackend, boolean anyServiceAccount,
-                                boolean anyIdp, List<String> filesGenerated) {
+                                Set<String> enabledIdps, List<String> filesGenerated) {
+        boolean anyIdp = !enabledIdps.isEmpty();
         String appsList = apps.isEmpty()
             ? "_(no apps registered yet)_"
             : apps.stream()
@@ -294,6 +305,8 @@ public class OnboardingBundleService {
             ? ""
             : "\n## Warnings\n\n" + warnings.toString().stripTrailing() + "\n";
 
+        String configuredBlock = renderConfiguredForYou(t, enabledIdps);
+
         return ("""
             # {{tenantName}} — Auth Platform Onboarding
 
@@ -315,26 +328,126 @@ public class OnboardingBundleService {
             - Slug: `{{slug}}`
             - Realm: `{{realmName}}`
             - Issuer: `{{issuer}}`
-            - Admin console: {{adminBase}}/tenants/{{slug}}
-
+            - Admin console: {{adminBase}}/tenants/{{tenantId}}
+            {{configuredBlock}}
             ## Apps registered
 
             {{appsList}}
             {{warningsBlock}}
             ## Questions?
 
-            Ping the platform team. The auth-manager UI at {{adminBase}} is the source of truth — your apps/permissions/branding all live there.
+            Branding, Email config, Identity Providers, Permissions, and Routes are all
+            managed in the platform admin UI under Tenants → {{tenantName}} →
+            respective tabs. The auth-manager UI at {{adminBase}} is the source of truth.
+
+            Ping the platform team for anything else.
             """)
             .replace("{{tenantName}}", t.getDisplayName())
             .replace("{{slug}}", slug)
             .replace("{{realmName}}", realmName)
             .replace("{{issuer}}", issuer)
+            .replace("{{tenantId}}", t.getId() == null ? slug : t.getId().toString())
             .replace("{{adminBase}}", ADMIN_BASE)
             .replace("{{modeBadge}}", modeBadge)
             .replace("{{modeExplanation}}", modeExplanation)
             .replace("{{fileList}}", fileListBlock)
             .replace("{{appsList}}", appsList)
+            .replace("{{configuredBlock}}", configuredBlock)
             .replace("{{warningsBlock}}", warningsBlock);
+    }
+
+    /**
+     * "Configured for you" snapshot — surfaces tenant state the operator
+     * already wired so the README is a single-glance status. Each lookup is
+     * wrapped: a failure logs + drops the line rather than crashing the
+     * bundle.
+     */
+    private String renderConfiguredForYou(Tenant t, Set<String> enabledIdps) {
+        StringBuilder sb = new StringBuilder();
+
+        // Identity providers
+        try {
+            if (!enabledIdps.isEmpty()) {
+                var displayNames = IdentityProvidersBootstrap.defaultDisplayNames();
+                String list = enabledIdps.stream()
+                    .map(id -> displayNames.getOrDefault(id, id))
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
+                sb.append("- **Identity providers:** ").append(list)
+                    .append("  (enabled in this tenant)\n");
+            } else {
+                sb.append("- **Identity providers:** _(none enabled — username/password only)_\n");
+            }
+        } catch (Exception e) {
+            log.debug("renderConfiguredForYou: idp lookup failed for {}: {}", t.getSlug(), e.getMessage());
+        }
+
+        // Login methods (password + IdPs)
+        try {
+            LoginMethodStatus lm = loginMethodService.get(t.getId());
+            String line;
+            if (!lm.passwordEnabled() && !enabledIdps.isEmpty()) {
+                line = "Social only (username/password is disabled)";
+            } else if (lm.passwordEnabled() && !enabledIdps.isEmpty()) {
+                line = "Username/password + social";
+            } else if (lm.passwordEnabled()) {
+                line = "Username/password";
+            } else {
+                line = "_(no login methods enabled — fix this in the admin UI)_";
+            }
+            sb.append("- **Login methods:** ").append(line).append('\n');
+        } catch (Exception e) {
+            log.debug("renderConfiguredForYou: login-method lookup failed for {}: {}", t.getSlug(), e.getMessage());
+        }
+
+        // Email domain
+        try {
+            boolean authed = Boolean.TRUE.equals(t.getSendgridDomainValid())
+                && t.getSendgridDomainId() != null;
+            String authedDomain = null;
+            if (authed) {
+                String fromAddr = t.getEmailFromAddress();
+                if (fromAddr != null && fromAddr.contains("@")) {
+                    String d = fromAddr.substring(fromAddr.indexOf('@') + 1).trim();
+                    if (!d.isBlank()) authedDomain = d;
+                }
+                if (authedDomain == null) {
+                    @SuppressWarnings("unchecked")
+                    java.util.Map<String, Object> settings = t.getSettings();
+                    if (settings != null && settings.get("sendgrid") instanceof java.util.Map<?, ?> sg) {
+                        Object d = sg.get("domain");
+                        if (d instanceof String s && !s.isBlank()) authedDomain = s;
+                    }
+                }
+            }
+            if (authedDomain != null) {
+                sb.append("- **Email domain:** ").append(authedDomain)
+                    .append(" (SendGrid DKIM authenticated)\n");
+            } else {
+                sb.append("- **Email domain:** noreply@mcp-mesh.io (platform fallback — ")
+                    .append("authenticate your domain in admin UI's Email tab)\n");
+            }
+        } catch (Exception e) {
+            log.debug("renderConfiguredForYou: email-domain lookup failed for {}: {}", t.getSlug(), e.getMessage());
+        }
+
+        // Branding theme
+        try {
+            ThemeMeta meta = themeService.currentMeta(t.getSlug());
+            if (meta != null && meta.configured()) {
+                String when = meta.lastModified() == null
+                    ? ""
+                    : " " + meta.lastModified().toString().substring(0, 10);
+                sb.append("- **Branding theme:** Uploaded").append(when).append('\n');
+            } else {
+                sb.append("- **Branding theme:** Platform default\n");
+            }
+        } catch (Exception e) {
+            log.debug("renderConfiguredForYou: theme lookup failed for {}: {}", t.getSlug(), e.getMessage());
+        }
+
+        if (sb.length() == 0) return "";
+        return "\n## Configured for you\n\n" + sb.toString().stripTrailing() + "\n";
     }
 
     private String renderEnv(Tenant t, String issuer, String slug, List<AppInfo> apps,
@@ -507,7 +620,9 @@ public class OnboardingBundleService {
                 }
             }
             return ("""
-                # Snippet to merge into your chart's values.yaml
+                # Suggested config shape — merge into your chart's values.yaml.
+                # Key names may vary by your chart's helm conventions. The .env.example
+                # file in this bundle is the authoritative env-var list.
                 # Mode: Platform-edge BFF
 
                 auth:
@@ -547,7 +662,9 @@ public class OnboardingBundleService {
             }
         }
         return ("""
-            # Snippet to merge into your chart's values.yaml
+            # Suggested config shape — merge into your chart's values.yaml.
+            # Key names may vary by your chart's helm conventions. The .env.example
+            # file in this bundle is the authoritative env-var list.
             # Mode: Direct OIDC
 
             auth:
@@ -645,8 +762,10 @@ public class OnboardingBundleService {
             ## Calling your backend
 
             ```tsx
+            import { bffFetch } from '@mcpmesh/auth-lib-react/bff';
+
             async function getReports() {
-              const r = await fetch('/api/reports', { credentials: 'include' });
+              const r = await bffFetch('/api/reports');
               if (r.status === 401) {
                 window.location.href = `/_bff/login?redirect_back=${encodeURIComponent(window.location.pathname)}`;
                 return;
@@ -654,6 +773,37 @@ public class OnboardingBundleService {
               return r.json();
             }
             ```
+
+            Recommend `bffFetch` for ALL same-origin API calls — GET passes
+            through unmodified, so there's no overhead, and it eliminates the
+            copy-paste trap of forgetting to swap to `bffFetch` later when the
+            same handler grows a POST.
+
+            ## State-changing requests (POST/PUT/DELETE) — use `bffFetch`
+
+            For idempotent reads (GET, HEAD), raw `fetch(url, { credentials: 'include' })`
+            works. For anything that mutates state, the BFF edge requires double-submit
+            CSRF (HttpOnly `bff_sid` + readable `bff_csrf` cookie, header must match).
+            Raw `fetch` doesn't attach the header → you get `{"error":"csrf_mismatch"}`.
+
+            Use the lib's `bffFetch` wrapper — drop-in replacement, same signature:
+
+            ```tsx
+            import { bffFetch } from '@mcpmesh/auth-lib-react/bff';
+
+            async function createClass(payload) {
+              const r = await bffFetch('/api/classes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+              });
+              if (!r.ok) throw new Error('create failed');
+              return r.json();
+            }
+            ```
+
+            `bffFetch` reads the `bff_csrf` cookie and sets `X-CSRF-Token` automatically
+            on POST/PUT/PATCH/DELETE. GET/HEAD pass through unmodified.
 
             ## Permission checks
 
@@ -991,10 +1141,12 @@ public class OnboardingBundleService {
 
             ### Useful endpoints
 
-            - `GET /api/v1/tenants/{slug}/users?role=X&search=Y` — list users (paged)
-            - `GET /api/v1/tenants/{slug}/users/{userId}` — lookup one user
-            - `POST /api/v1/tenants/{slug}/users` — invite a user
-            - `PUT /api/v1/tenants/{slug}/users/{userId}/roles` — update assigned roles
+            - `GET /api/v1/tenants/{{slug}}/users?role=X&search=Y` — list users (paged)
+            - `GET /api/v1/tenants/{{slug}}/users/{userId}` — lookup one user
+            - `POST /api/v1/tenants/{{slug}}/users` — invite a user
+            - `PUT /api/v1/tenants/{{slug}}/users/{userId}/roles` — update assigned roles
+
+            (`{userId}` is the KC subject UUID; substitute at call time.)
 
             Role names come from your tenant manifest — download the latest from
             auth-manager UI → Permissions tab → Download manifest.
@@ -1188,10 +1340,12 @@ public class OnboardingBundleService {
 
             ### Useful endpoints
 
-            - `GET /api/v1/tenants/{slug}/users?role=X&search=Y` — list users (paged)
-            - `GET /api/v1/tenants/{slug}/users/{userId}` — lookup one user
-            - `POST /api/v1/tenants/{slug}/users` — invite a user
-            - `PUT /api/v1/tenants/{slug}/users/{userId}/roles` — update assigned roles
+            - `GET /api/v1/tenants/{{slug}}/users?role=X&search=Y` — list users (paged)
+            - `GET /api/v1/tenants/{{slug}}/users/{userId}` — lookup one user
+            - `POST /api/v1/tenants/{{slug}}/users` — invite a user
+            - `PUT /api/v1/tenants/{{slug}}/users/{userId}/roles` — update assigned roles
+
+            (`{userId}` is the KC subject UUID; substitute at call time.)
 
             Role names come from your tenant manifest — download the latest from
             auth-manager UI → Permissions tab → Download manifest.
@@ -1205,30 +1359,81 @@ public class OnboardingBundleService {
             .replace("{{bearerOrigin}}", bearerOrigin);
     }
 
-    private String renderServiceAccount(String issuer, List<AppInfo> apps) {
+    private String renderServiceAccount(Tenant t, String issuer, String slug, List<AppInfo> apps) {
+        // Every CONFIDENTIAL_BACKEND client has a service account too; SERVICE_ACCOUNT_ONLY
+        // clients are pure-SA. Prefer the SA-only client as the example if present (clearer
+        // mental model); fall back to the first backend client otherwise.
         String saClientId = apps.stream()
             .filter(a -> "SERVICE_ACCOUNT_ONLY".equals(a.profile))
             .findFirst()
             .map(a -> a.app.getClientId())
-            .orElse("<your-sa-client-id>");
+            .orElseGet(() -> apps.stream()
+                .filter(a -> "CONFIDENTIAL_BACKEND".equals(a.profile))
+                .findFirst()
+                .map(a -> a.app.getClientId())
+                .orElse("<your-backend-or-sa-client-id>"));
+        String upper = envVarName(saClientId);
         return ("""
-            # Service-to-service calls (m2m)
+            # Service-account tokens + permission grants
 
-            Your tenant has the `{{saClientId}}` service-account client. Use it to call
-            other services with your own identity (no end-user involved).
+            Every `CONFIDENTIAL_BACKEND` and `SERVICE_ACCOUNT_ONLY` client in your
+            tenant has a Keycloak **service account** — a synthetic user the
+            platform auto-creates per client. You mint a token for it via the
+            OAuth2 `client_credentials` grant; the resulting JWT lets your
+            backend call other services (including the platform admin API) with
+            its own identity, no end-user involved.
 
-            ## Get a token
+            This doc covers **how to mint the token** and **how to grant the
+            service account the permissions it needs**. For what you can DO with
+            that token, see `03-backend-java.md` / `03-backend-python.md`'s
+            "Calling back into the platform admin API" section.
+
+            ## Mint a token (client_credentials grant)
 
             ```bash
-            curl -s -X POST "{{issuer}}/protocol/openid-connect/token" \\
+            KC_TOKEN_ENDPOINT={{issuer}}/protocol/openid-connect/token
+
+            curl -s -X POST "$KC_TOKEN_ENDPOINT" \\
               -d "grant_type=client_credentials" \\
               -d "client_id={{saClientId}}" \\
-              -d "client_secret=$SA_CLIENT_SECRET"
+              -d "client_secret=${{upper}}_CLIENT_SECRET" \\
+              | jq -r '.access_token'
             ```
 
-            The response includes `access_token` — a JWT valid for ~5 minutes by default.
+            The returned `access_token` is a JWT valid for ~5 minutes by default,
+            audience = `{{saClientId}}`. Caching + refresh is your problem in
+            shell scripts; the Java/Python libs handle it for you.
 
-            ## In Java (using the Spring lib)
+            > **In-cluster speedup:** Replace the host with
+            > `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80`
+            > (no `/auth/` prefix in-cluster — see `07-in-cluster-vs-public.md`)
+            > to skip the Cloudflare hop. The issuer URI for JWT validation
+            > stays public.
+
+            ## Where to get the client secret
+
+            Open auth-manager UI → **Apps** → `{{saClientId}}` → **Reveal**.
+            Copy the secret into your deployment's secret store as
+            `{{upper}}_CLIENT_SECRET`. Rotating the secret in KC requires a
+            re-reveal + redeploy — there's no rolling overlap.
+
+            ## Grant the service account a permission
+
+            Out of the box the service account has zero permissions. To call,
+            say, `GET /api/v1/tenants/{{slug}}/users` you need `USER_LIST` on
+            `usermanagement`. Grant flow:
+
+            1. auth-manager UI → **Apps** → `{{saClientId}}`
+            2. Open the **Service account permissions** panel
+            3. Tick `USER_LIST` (or whichever atomic perm the call needs)
+            4. Save — KC propagates within seconds; tokens minted after this
+               point carry the new perm in their `resource_access` claim.
+
+            Tokens already in flight do NOT pick up the new grant — they expire
+            (default 5 min) and the next refresh mints a fresh one with the
+            updated permissions.
+
+            ## In Java (auth-lib helper)
 
             ```java
             @Autowired ServiceAccountTokenProvider sa;
@@ -1238,13 +1443,28 @@ public class OnboardingBundleService {
                 .build();
             ```
 
-            ## Permissions
+            ## In Python
 
-            Service accounts get their permissions from KC roles assigned to the
-            service-account user (auto-created per client). Manage these from
-            auth-manager UI → Apps → {{saClientId}} → Service-account perms.
+            The Python lib doesn't ship a helper — use a small wrapper around
+            `httpx` with a TTL cache, or call `client_credentials` inline per
+            request if your QPS is low. The `requests-oauthlib` package has a
+            `BackendApplicationClient` that handles the refresh dance if you
+            want a battle-tested option.
+
+            ## What this token is NOT for
+
+            - **End-user calls.** The token's `sub` is the service-account
+              synthetic user, not a real human. If your call needs to be
+              attributed to "the user who clicked the button", forward THEIR
+              Bearer (received from platform-edge in BFF mode) instead of
+              minting your own.
+            - **Authn for browser sessions.** The browser never sees this
+              token — platform-edge handles cookie-based browser auth.
             """)
+            .replace("{{tenantName}}", t.getDisplayName())
+            .replace("{{slug}}", slug)
             .replace("{{saClientId}}", saClientId)
+            .replace("{{upper}}", upper)
             .replace("{{issuer}}", issuer);
     }
 
@@ -1350,7 +1570,7 @@ public class OnboardingBundleService {
             | URL purpose | Env var | In-cluster value | Public value | Use which? |
             |---|---|---|---|---|
             | JWT issuer (JWKS + UMA) | `AUTH_LIB_ISSUER_URI` | n/a | `{{kcBase}}/realms/{{realmName}}` | **Public only** |
-            | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80` | `{{kcBase}}` | Either; in-cluster faster |
+            | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/token` | `{{kcBase}}/realms/{{realmName}}/protocol/openid-connect/token` | Either; in-cluster faster |
             | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `https://auth.mcp-mesh.io` | In-cluster strongly preferred |
 
             ## Why the issuer URI must be public
@@ -1432,16 +1652,31 @@ public class OnboardingBundleService {
             && t.getSendgridDomainId() != null;
         String authenticatedDomain = null;
         if (hasAuthenticatedDomain) {
-            @SuppressWarnings("unchecked")
-            java.util.Map<String, Object> settings = t.getSettings();
-            if (settings != null && settings.get("sendgrid") instanceof java.util.Map<?, ?> sg) {
-                Object d = sg.get("domain");
-                if (d instanceof String s && !s.isBlank()) authenticatedDomain = s;
+            // Prefer the domain from the tenant's emailFromAddress (operator-set);
+            // fall back to the SendGrid-registered domain stashed in settings.
+            String fromAddr = t.getEmailFromAddress();
+            if (fromAddr != null && fromAddr.contains("@")) {
+                String d = fromAddr.substring(fromAddr.indexOf('@') + 1).trim();
+                if (!d.isBlank()) authenticatedDomain = d;
+            }
+            if (authenticatedDomain == null) {
+                @SuppressWarnings("unchecked")
+                java.util.Map<String, Object> settings = t.getSettings();
+                if (settings != null && settings.get("sendgrid") instanceof java.util.Map<?, ?> sg) {
+                    Object d = sg.get("domain");
+                    if (d instanceof String s && !s.isBlank()) authenticatedDomain = s;
+                }
             }
         }
         String fromExample = authenticatedDomain != null
             ? "noreply@" + authenticatedDomain
             : platformFallback;
+        // The parenthetical right under SMTP_FROM in the helm yaml block.
+        String fromQualifier = authenticatedDomain != null
+            ? "Mail is DKIM-signed by **" + authenticatedDomain + "** (your authenticated domain)."
+            : ("Use `" + platformFallback + "` until you authenticate your own domain. "
+                + "Authenticate your domain in the admin UI → Tenants → "
+                + t.getDisplayName() + " → Email tab to switch From to your brand domain.");
         String volumeBlock = authenticatedDomain != null
             ? ("- Mail is DKIM-signed by **" + authenticatedDomain + "** (your authenticated\n"
                 + "  domain). Recipients see your brand in the From line.")
@@ -1457,6 +1692,10 @@ public class OnboardingBundleService {
             SMTP relay. No SendGrid API key needed in your code — the relay
             handles auth on your behalf with the platform's credentials.
 
+            > **Note:** KC's own auth emails (password reset, email verification, magic
+            > link) automatically use this same relay — no setup needed on your end.
+            > The realm SMTP config is reconciled at startup by the platform.
+
             ## In-cluster config
 
             Set on your app's deployment (helm values):
@@ -1470,8 +1709,7 @@ public class OnboardingBundleService {
                 value: "{{fromExample}}"
             ```
 
-            (Use `{{platformFallback}}` until you authenticate your own domain in the
-            admin UI's Email tab.)
+            ({{fromQualifier}})
 
             ## Code samples
 
@@ -1535,6 +1773,7 @@ public class OnboardingBundleService {
             {{volumeBlock}}
             """)
             .replace("{{fromExample}}", fromExample)
+            .replace("{{fromQualifier}}", fromQualifier)
             .replace("{{platformFallback}}", platformFallback)
             .replace("{{volumeBlock}}", volumeBlock);
     }
