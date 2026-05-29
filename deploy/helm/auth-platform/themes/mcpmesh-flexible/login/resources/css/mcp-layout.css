@@ -96,30 +96,8 @@ body.mcp-layout-bleed .mcp-slot-footer { position: fixed; bottom: 1rem; left: 50
 .mcp-slot { box-sizing: border-box; }
 .mcp-slot-form-area .pf-v5-c-login { width: 100%; }
 
-/* ===== Social-only login (mcp-no-password) ============================
- * Hide the username/password form fields when the operator has toggled
- * Username/Password OFF in admin UI → Identity Providers tab. KC's flow
- * still allows password auth (a determined attacker could POST credentials
- * directly), so this is UX gating, not server enforcement. Server-side
- * enforcement would require a custom KC SPI; out of scope today. */
-body.mcp-no-password #kc-form-login {
-  display: none !important;
-}
-body.mcp-no-password #kc-form-buttons {
-  display: none !important;
-}
-/* "Forgot password" anchor lives outside #kc-form-login in some KC versions */
-body.mcp-no-password #kc-form-forgot-password,
-body.mcp-no-password .pf-v5-c-form__helper-text {
-  display: none !important;
-}
-/* The "Continue with" separator on the social providers section becomes
- * the primary headline when there's no form above it — remove the label
- * since there's nothing to "continue WITH" (it's just "log in with"). */
-body.mcp-no-password .pf-v5-c-login__main-footer-band {
-  display: none !important;
-}
-/* Give the social buttons more breathing room without the form. */
-body.mcp-no-password #kc-social-providers {
-  padding-top: 1rem;
-}
+/* mcp-no-password rules moved to template.ftl's inline <style> block so
+ * they apply regardless of child theme's `styles=` override (KC inherits
+ * parent template.ftl but NOT parent CSS files when child sets styles=).
+ * If you're looking for "Social-only login" CSS, see template.ftl.
+ */

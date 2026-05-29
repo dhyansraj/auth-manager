@@ -104,6 +104,22 @@
 
     .mcp-slot { box-sizing: border-box; }
     .mcp-slot-form-area .pf-v5-c-login { width: 100%; }
+
+    /* ===== Social-only login (mcp-no-password) ========================
+     * Hide username/password form when realm attribute
+     * mcpmesh.passwordLoginEnabled=false. Inlined here (not in
+     * mcp-layout.css) because tenant child themes typically override
+     * `styles=` to point at their own custom.css, which excludes parent
+     * CSS files. Inline rules always apply. UX-only gating: KC's flow
+     * still accepts credentials POSTed directly to /login-actions. */
+    body.mcp-no-password #kc-form-login,
+    body.mcp-no-password #kc-form-buttons,
+    body.mcp-no-password #kc-form-forgot-password,
+    body.mcp-no-password .pf-v5-c-form__helper-text,
+    body.mcp-no-password .pf-v5-c-login__main-footer-band {
+      display: none !important;
+    }
+    body.mcp-no-password #kc-social-providers { padding-top: 1rem; }
   </style>
 </head>
 <#-- Read the per-realm password-login flag set by auth-manager's
