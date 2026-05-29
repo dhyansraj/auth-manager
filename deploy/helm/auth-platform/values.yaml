@@ -113,6 +113,17 @@ keycloak:
   production: false                 # use start-dev shape; faster boot for now
   proxy: edge                       # behind CF + OpenResty
 
+# ───── smtp-relay (in-cluster SendGrid gateway for KC realm emails) ─────
+# Forwards unauthenticated SMTP on :25 to smtp.sendgrid.net:587 using the
+# SendGrid API key from the `sendgrid-api` Secret (key: api-key) — created
+# out-of-band; if missing the deployment will CrashLoop until provided.
+smtpRelay:
+  enabled: true
+  image:
+    repository: smtp-relay
+    tag: "0.1.0"
+  sendgridSecretName: sendgrid-api
+
 # ───── cloudflared (Cloudflare Tunnel connector) ─────
 # The tunnel token is held in a Secret named cloudflared-token (key: token)
 # that must exist in the namespace BEFORE installing this chart.

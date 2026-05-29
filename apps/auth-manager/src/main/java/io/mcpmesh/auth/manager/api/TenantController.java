@@ -5,6 +5,7 @@ import io.mcpmesh.auth.manager.api.dto.CreateTenantRequest;
 import io.mcpmesh.auth.manager.api.dto.PageResponse;
 import io.mcpmesh.auth.manager.api.dto.TenantResponse;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
+import io.mcpmesh.auth.manager.email.SmtpConfigBootstrap;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
@@ -47,6 +48,7 @@ public class TenantController {
     private final AuditEventRepository auditRepo;
     private final UsermanagementBootstrap bootstrap;
     private final IdentityProvidersBootstrap idpBootstrap;
+    private final SmtpConfigBootstrap smtpBootstrap;
     private final TenantSecurity tenantSecurity;
     private final OnboardingBundleService bundleService;
     private final TenantDatabaseService databaseService;
@@ -54,6 +56,7 @@ public class TenantController {
     public TenantController(TenantService service, AuditEventRepository auditRepo,
                             UsermanagementBootstrap bootstrap,
                             IdentityProvidersBootstrap idpBootstrap,
+                            SmtpConfigBootstrap smtpBootstrap,
                             TenantSecurity tenantSecurity,
                             OnboardingBundleService bundleService,
                             TenantDatabaseService databaseService) {
@@ -61,6 +64,7 @@ public class TenantController {
         this.auditRepo = auditRepo;
         this.bootstrap = bootstrap;
         this.idpBootstrap = idpBootstrap;
+        this.smtpBootstrap = smtpBootstrap;
         this.tenantSecurity = tenantSecurity;
         this.bundleService = bundleService;
         this.databaseService = databaseService;
@@ -83,6 +87,15 @@ public class TenantController {
                 // if platform OAuth creds are configured. Bootstrap logs + swallows
                 // per-provider failures so tenant create stays clean.
                 idpBootstrap.ensureProviders(t.getRealmName(), idpBootstrap.defaultProvidersForNewTenant());
+                // Point the realm's SMTP config at the in-cluster smtp-relay so
+                // password-reset / verify-email / magic-link actions are routed
+                // through SendGrid without per-tenant credential plumbing.
+                try {
+                    smtpBootstrap.reconcileRealmSmtp(t);
+                } catch (Exception smtpErr) {
+                    log.warn("SMTP reconcile failed for new tenant {}: {}",
+                        t.getSlug(), smtpErr.getMessage());
+                }
             } catch (RuntimeException bootstrapErr) {
                 // Bootstrap failed AFTER the realm + DB row were created. Mark the
                 // tenant FAILED so operators can retry via /tenants/{id}/retry
@@ -170,6 +183,12 @@ public class TenantController {
             //       must re-trigger via a future "resend invite" endpoint.
             bootstrap.bootstrap(t, null, "system");
             idpBootstrap.ensureProviders(t.getRealmName(), idpBootstrap.defaultProvidersForNewTenant());
+            try {
+                smtpBootstrap.reconcileRealmSmtp(t);
+            } catch (Exception smtpErr) {
+                log.warn("SMTP reconcile failed during retry for tenant {}: {}",
+                    t.getSlug(), smtpErr.getMessage());
+            }
         }
         return TenantResponse.from(t, service.hostnamesFor(t.getId()));
     }

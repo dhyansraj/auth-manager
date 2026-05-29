@@ -1,0 +1,42 @@
+{{- if .Values.smtpRelay.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-smtp-relay
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: smtp-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: smtp-relay
+  template:
+    metadata:
+      labels:
+        {{- include "auth-platform.labels" . | nindent 8 }}
+        app.kubernetes.io/component: smtp-relay
+    spec:
+      containers:
+        - name: smtp-relay
+          image: {{ include "auth-platform.image" (dict "global" .Values.global "repository" .Values.smtpRelay.image.repository "tag" .Values.smtpRelay.image.tag) }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: smtp
+              containerPort: 25
+              protocol: TCP
+          env:
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.smtpRelay.sendgridSecretName | default "sendgrid-api" }}
+                  key: api-key
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+{{- end }}

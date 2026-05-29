@@ -2,6 +2,7 @@ package io.mcpmesh.auth.manager.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.email.SmtpConfigBootstrap;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.security.Permissions;
@@ -77,6 +78,7 @@ class TenantControllerWebMvcTest {
     @MockitoBean AuditEventRepository auditRepo;
     @MockitoBean UsermanagementBootstrap bootstrap;
     @MockitoBean IdentityProvidersBootstrap idpBootstrap;
+    @MockitoBean SmtpConfigBootstrap smtpBootstrap;
     @MockitoBean(name = "tenantSecurity") TenantSecurity tenantSecurity;
     @MockitoBean(name = "perms") Permissions perms;
 

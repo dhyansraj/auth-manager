@@ -51,6 +51,19 @@ cloudflare:
   account-id: ${CF_ACCOUNT_ID:}
   tunnel-id: ${CF_TUNNEL_ID:}
 
+# Per-realm SMTP defaults applied to every tenant KC realm by
+# SmtpConfigBootstrap (see io.mcpmesh.auth.manager.email). Defaults route
+# through the in-cluster smtp-relay service which forwards to SendGrid using
+# the platform API key. Override `enabled: false` in profiles where realms
+# should keep their seeded SMTP config (e.g. local-dev MailHog).
+auth-manager:
+  smtp:
+    host: ${AUTH_MANAGER_SMTP_HOST:smtp-relay.auth-platform.svc.cluster.local}
+    port: ${AUTH_MANAGER_SMTP_PORT:25}
+    from-address: ${AUTH_MANAGER_SMTP_FROM:noreply@mcp-mesh.io}
+    from-display-name-template: "{tenantDisplayName}"
+    enabled: ${AUTH_MANAGER_SMTP_ENABLED:true}
+
 # CNPG superuser connection: used by TenantDatabaseService to run CREATE
 # DATABASE / DROP DATABASE DDL when provisioning per-tenant databases on
 # the shared platform-pg cluster. Points at the maintenance `postgres`

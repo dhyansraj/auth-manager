@@ -1,0 +1,22 @@
+{{- if .Values.smtpRelay.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  # Service name kept short (not "{release}-smtp-relay") so the in-cluster DNS
+  # is stable as smtp-relay.<ns>.svc.cluster.local across helm release renames.
+  # KC realms reference this name directly in their SMTP host config.
+  name: smtp-relay
+  labels:
+    {{- include "auth-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: smtp-relay
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: smtp-relay
+  ports:
+    - name: smtp
+      port: 25
+      targetPort: 25
+      protocol: TCP
+{{- end }}
