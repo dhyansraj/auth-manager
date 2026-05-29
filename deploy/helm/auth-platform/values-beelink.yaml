@@ -16,7 +16,7 @@ authManager:
   replicas: 2
   image:
     repository: auth-manager
-    tag: "0.1.58"
+    tag: "0.1.59"
   config:
     keycloakUrl: "https://auth.mcp-mesh.io/auth"
     postgresHost: "platform-pg-rw"  # CNPG primary service (3-node HA cluster)
@@ -59,7 +59,7 @@ adminUi:
   replicas: 2
   image:
     repository: admin-ui
-    tag: "0.1.36"
+    tag: "0.1.37"
 
 platformEdge:
   # 3 replicas with anti-affinity. Cluster has 5 nodes, 3 is the sweet
