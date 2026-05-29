@@ -115,12 +115,18 @@ html, body, .login-pf {
  * keycloak.v2 renders an empty .pf-v5-c-login__header above the form;
  * inject the logo there as a ::before background image. max-width keeps it
  * sane inside the narrow right-column layout (see LAYOUT NOTE above).
+ *
+ * Dual selector: stock keycloak.v2 emits <header class="pf-v5-c-login__header">,
+ * while mcpmesh-flexible emits a bare <header> inside .pf-v5-c-login__main. One
+ * rule, both parents.
  */
-.pf-v5-c-login__header {
+.pf-v5-c-login__header,
+.pf-v5-c-login__main header {
   text-align: center;
   padding: 1.25rem 0 0.75rem !important;
 }
-.pf-v5-c-login__header::before {
+.pf-v5-c-login__header::before,
+.pf-v5-c-login__main header::before {
   content: "";
   display: block;
   background: url("../img/logo.svg") no-repeat center;
@@ -317,11 +323,15 @@ input.pf-v5-c-form-control:focus {
  * Delete this whole block if you want the icon-only layout (small ::before
  * logo + KC's "Welcome to <realm>" title).
  */
+/* Dual selectors here too — see comment above the main logo rule. */
 .pf-v5-c-login__header > .pf-v5-c-brand,
-header.pf-v5-c-login__header .pf-v5-c-brand {
+header.pf-v5-c-login__header .pf-v5-c-brand,
+.pf-v5-c-login__main header > .pf-v5-c-brand,
+.pf-v5-c-login__main header .pf-v5-c-brand {
   display: none !important;
 }
-.pf-v5-c-login__header::before {
+.pf-v5-c-login__header::before,
+.pf-v5-c-login__main header::before {
   height: 140px !important;
   width: 200px !important;
   max-width: 200px !important;

@@ -1346,14 +1346,14 @@ public class OnboardingBundleService {
             | URL purpose | Env var | In-cluster value | Public value | Use which? |
             |---|---|---|---|---|
             | JWT issuer (JWKS + UMA) | `AUTH_LIB_ISSUER_URI` | n/a | `{{kcBase}}/realms/{{realmName}}` | **Public only** |
-            | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/auth` | `{{kcBase}}` | Either; in-cluster faster |
+            | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80` | `{{kcBase}}` | Either; in-cluster faster |
             | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `https://auth.mcp-mesh.io` | In-cluster strongly preferred |
 
             ## Why the issuer URI must be public
 
             The `AUTH_LIB_ISSUER_URI` env var must be the PUBLIC URL
             `{{kcBase}}/realms/{{realmName}}` — NOT the in-cluster
-            `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/auth/realms/{{realmName}}`.
+            `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}`.
 
             auth-lib uses this URL both for JWKS fetch and for UMA permission
             lookups, and the URL **must match the JWT's `iss` claim exactly** —
@@ -1392,6 +1392,14 @@ public class OnboardingBundleService {
             against `/api/v1/tenants/{{slug}}/...` (see the backend docs for
             the code). Use the public URL `https://auth.mcp-mesh.io` only for
             local dev or one-off scripts running outside the cluster.
+
+            ## Gotcha — no `/auth/` on the in-cluster KC URL
+
+            > The in-cluster KC URL has NO `/auth/` prefix (KC's
+            > `KC_HTTP_RELATIVE_PATH=/`). The `/auth/` only exists at the public
+            > hostname because `KC_HOSTNAME` includes it. Copying
+            > `https://auth.mcp-mesh.io/auth/realms/...` and just replacing the
+            > host will 404.
 
             ## Egress consequences
 
