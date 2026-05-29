@@ -6,6 +6,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.lang.Nullable;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -41,9 +42,13 @@ import java.util.concurrent.ConcurrentMap;
  *
  * <h2>Caching</h2>
  * Per-{@code (jwt.sub, audience-set-hash)} for {@value #DEFAULT_TTL_SECONDS}
- * seconds. Backed by Redis when a {@link StringRedisTemplate} bean is on
- * the classpath; otherwise by an in-process map with lazy TTL eviction
- * (sufficient for a single replica's request bursts).
+ * seconds. Backed by Redis when a {@link StringRedisTemplate} bean is
+ * available in the application context (tenant brings their own starter);
+ * otherwise in-process map with lazy TTL eviction (sufficient for a single
+ * replica's request bursts).
+ *
+ * <p>Add {@code spring-boot-starter-data-redis} to YOUR pom if you want
+ * Redis-backed cache; not included in this lib's transitive deps.
  *
  * <h2>Failure handling</h2>
  * UMA failures are tolerated per-audience: a 403 (no policy / authz services
@@ -65,13 +70,13 @@ public class Permissions {
     private final ConcurrentMap<String, CacheEntry> localCache = new ConcurrentHashMap<>();
 
     public Permissions(AuthLibProperties props, RestTemplate restTemplate,
-                       StringRedisTemplate redis) {
+                       @Nullable StringRedisTemplate redis) {
         this(props, restTemplate, redis, Duration.ofSeconds(DEFAULT_TTL_SECONDS));
     }
 
     /** Package-private ctor used by tests to shrink/zero the TTL. */
     Permissions(AuthLibProperties props, RestTemplate restTemplate,
-                StringRedisTemplate redis, Duration ttl) {
+                @Nullable StringRedisTemplate redis, Duration ttl) {
         this.props = props;
         this.restTemplate = restTemplate;
         this.redis = redis;

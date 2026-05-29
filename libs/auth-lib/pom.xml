@@ -18,7 +18,7 @@
 
     <groupId>io.mcp-mesh</groupId>
     <artifactId>mcp-mesh-auth-lib</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <name>mcp-mesh-auth-lib</name>
     <description>Reusable Spring Boot library: JWT validation + permission enforcement against Keycloak for the mcp-mesh auth platform</description>
     <url>https://github.com/dhyansraj/auth-manager</url>
@@ -65,9 +65,15 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- Redis cache is optional: tenants who want a Redis-backed permission
+             cache must add spring-boot-starter-data-redis to their OWN pom. This
+             keeps Spring Boot's RedisAutoConfiguration from activating (and
+             attempting localhost:6379) in tenants that don't run Redis. When the
+             starter is absent, Permissions falls back to its in-process map. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -36,7 +36,20 @@ public record AuthLibProperties(
         }
     }
 
-    /** Permission cache settings. */
+    /**
+     * Permission cache settings.
+     *
+     * <p>Behavior matrix:
+     * <ul>
+     *   <li>{@code enabled=true} + a {@link org.springframework.data.redis.core.StringRedisTemplate}
+     *       bean is present in the context: cache hits Redis.</li>
+     *   <li>{@code enabled=true} + no Redis bean: cache uses an in-process map
+     *       (per-replica, lazy TTL eviction). This is the default for tenants who
+     *       do not add {@code spring-boot-starter-data-redis} to their own pom.</li>
+     *   <li>{@code enabled=false}: cache is bypassed entirely; every permission
+     *       lookup hits Keycloak's UMA endpoint.</li>
+     * </ul>
+     */
     public record Cache(
         boolean enabled,
         Duration ttl

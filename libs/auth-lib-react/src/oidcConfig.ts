@@ -1,3 +1,11 @@
+/**
+ * Minimal `User` shape we forward to user-supplied onSigninCallback. We don't
+ * import oidc-client-ts' type to avoid pulling that into the public API
+ * surface; the shape is whatever react-oidc-context hands AuthProviderProps'
+ * onSigninCallback anyway (i.e. an oidc-client-ts User | void).
+ */
+type SigninCallbackUser = unknown;
+
 export interface CreateOidcConfigOptions {
   /** Map of hostname -> OIDC realm. e.g. { 'auth.mcp-mesh.io': 'dev', 'app1.mcp-mesh.io': 't-app1' } */
   hostToRealm?: Record<string, string>;
@@ -14,6 +22,21 @@ export interface CreateOidcConfigOptions {
   postLogoutRedirectUri?: string;
   /** Override the OIDC config base. Defaults to 'https://auth.mcp-mesh.io/auth'. */
   authBase?: string;
+  /**
+   * Optional user callback invoked AFTER the lib's default URL-stripping logic.
+   * Useful for analytics / post-login navigation. If you need full control,
+   * pass a callback here — the URL strip happens before it runs.
+   *
+   * To OPT OUT of the URL strip entirely, pass `disableDefaultUrlStrip: true`
+   * and provide your own callback (or pass `() => {}` to no-op).
+   */
+  onSigninCallback?: (user: SigninCallbackUser) => void;
+  /**
+   * Disable the default URL-strip behavior. Default false. See `onSigninCallback`
+   * for context. You normally want the default ON — otherwise a page refresh
+   * after PKCE return re-submits the spent code and silently fails.
+   */
+  disableDefaultUrlStrip?: boolean;
 }
 
 export interface OidcConfig {
@@ -26,6 +49,13 @@ export interface OidcConfig {
   automaticSilentRenew: boolean;
   monitorSession: boolean;
   loadUserInfo: boolean;
+  /**
+   * Strips `?code=...&state=...&iss=...&session_state=...` from the URL after
+   * the PKCE return so a refresh doesn't re-submit the spent code. If the
+   * caller passed their own `onSigninCallback` in options, ours runs first
+   * (URL strip), then theirs. Set `disableDefaultUrlStrip: true` to bypass.
+   */
+  onSigninCallback: (user: SigninCallbackUser) => void;
 }
 
 export function createOidcConfig(opts: CreateOidcConfigOptions): OidcConfig {
@@ -49,6 +79,16 @@ export function createOidcConfig(opts: CreateOidcConfigOptions): OidcConfig {
   }
 
   const redirectUri = opts.redirectUri ?? `${window.location.origin}/`;
+
+  const userCallback = opts.onSigninCallback;
+  const stripDisabled = opts.disableDefaultUrlStrip === true;
+  const onSigninCallback = (user: SigninCallbackUser): void => {
+    if (!stripDisabled && typeof window !== 'undefined' && window.history?.replaceState) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    if (userCallback) userCallback(user);
+  };
+
   return {
     authority,
     client_id: opts.clientId,
@@ -59,5 +99,6 @@ export function createOidcConfig(opts: CreateOidcConfigOptions): OidcConfig {
     automaticSilentRenew: true,
     monitorSession: false,
     loadUserInfo: false,
+    onSigninCallback,
   };
 }

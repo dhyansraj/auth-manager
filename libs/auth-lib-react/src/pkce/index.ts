@@ -20,3 +20,9 @@ export { createOidcConfig } from '../oidcConfig';
 export type { CreateOidcConfigOptions, OidcConfig } from '../oidcConfig';
 export { AutoSignIn } from '../AutoSignIn';
 export type { AutoSignInProps } from '../AutoSignIn';
+
+// v0.3.0 SPA ergonomics (closes #97).
+// PKCE-only — BFF doesn't expose the token client-side, so these are not
+// surfaced under the './bff' entry.
+export { getAccessToken } from './getAccessToken';
+export { SessionExpiryHandler, handleSessionExpired } from './SessionExpiryHandler';

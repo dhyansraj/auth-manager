@@ -118,6 +118,7 @@ public class OnboardingBundleService {
         if (anyServiceAccount) filesGenerated.add("04-service-account.md");
         filesGenerated.add("05-theming-optional.md");
         filesGenerated.add("06-user-migration.md");
+        filesGenerated.add("07-in-cluster-vs-public.md");
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(baos)) {
@@ -135,7 +136,7 @@ public class OnboardingBundleService {
                 writeEntry(zip, "02-frontend.md", frontend);
             }
             if (anyBackend || anyServiceAccount) {
-                writeEntry(zip, "03-backend-java.md", renderBackendJava(tenant, slug, issuer, userApps, bffMode));
+                writeEntry(zip, "03-backend-java.md", renderBackendJava(tenant, realmName, slug, issuer, userApps, bffMode));
                 writeEntry(zip, "03-backend-python.md", renderBackendPython(tenant, realmName, slug, issuer, userApps, bffMode));
             }
             if (anyServiceAccount) {
@@ -143,6 +144,7 @@ public class OnboardingBundleService {
             }
             writeEntry(zip, "05-theming-optional.md", renderTheming(slug));
             writeEntry(zip, "06-user-migration.md", renderMigration(realmName));
+            writeEntry(zip, "07-in-cluster-vs-public.md", renderInClusterVsPublic(slug, realmName));
         } catch (IOException e) {
             throw new RuntimeException("Failed to build onboarding bundle zip", e);
         }
@@ -597,20 +599,30 @@ public class OnboardingBundleService {
             ## Install
 
             ```bash
-            npm install @mcpmesh/auth-lib-react@^0.1.0
+            npm install @mcpmesh/auth-lib-react@^0.3.0
             ```
 
             ## Wire up
 
             ```tsx
-            import { BffAuthProvider, usePermission } from '@mcpmesh/auth-lib-react';
+            import { PlatformAuthProvider } from '@mcpmesh/auth-lib-react';
+            import { usePermission } from '@mcpmesh/auth-lib-react/bff';
 
-            // Top-level — no clientId or issuer needed; the lib calls /_bff/me to
-            // learn who you are from the platform-edge session cookie.
-            <BffAuthProvider>
+            // Top-level — no clientId or issuer needed. The provider calls
+            // /_bff/me for identity AND /api/me on your tenant backend for
+            // authoritative permissions, exposing one unified
+            // usePlatformAuth() hook whose `permissions` Set is the union of
+            // your tenant app's atomic perms.
+            <PlatformAuthProvider meEndpoint="/api/me">
               <App />
-            </BffAuthProvider>
+            </PlatformAuthProvider>
             ```
+
+            > Back-compat: the legacy `<BffAuthProvider>` + `<MeProvider>` stack
+            > still works and is exported in 0.3.0 (marked @deprecated). New
+            > code should use `PlatformAuthProvider` — it eliminates the
+            > footgun where `useBffAuth().user.me.permissions` only carries the
+            > 6 platform-usermanagement client roles, not your app's perms.
 
             ## Login / logout
 
@@ -644,10 +656,15 @@ public class OnboardingBundleService {
             ## Permission checks
 
             ```tsx
-            import { usePermission } from '@mcpmesh/auth-lib-react';
+            import { usePermission, RequirePermission } from '@mcpmesh/auth-lib-react/bff';
 
             const canCreate = usePermission('REPORT_CREATE');
             return canCreate ? <CreateButton /> : null;
+
+            // Or as a gate around a subtree:
+            <RequirePermission permission="REPORT_CREATE" fallback={null}>
+              <CreateButton />
+            </RequirePermission>
             ```
 
             ## What to remove from existing code
@@ -674,7 +691,7 @@ public class OnboardingBundleService {
             ## Install
 
             ```bash
-            npm install @mcpmesh/auth-lib-react@^0.1.0
+            npm install @mcpmesh/auth-lib-react@^0.3.0
             ```
 
             ## Wire up
@@ -712,7 +729,7 @@ public class OnboardingBundleService {
             .replace("{{spaClientId}}", spaClientId);
     }
 
-    private String renderBackendJava(Tenant t, String slug, String issuer, List<AppInfo> apps, boolean bffMode) {
+    private String renderBackendJava(Tenant t, String realmName, String slug, String issuer, List<AppInfo> apps, boolean bffMode) {
         String firstBackend = firstBackendClientId(apps);
         String bearerOrigin = bffMode
             ? "Platform-edge issues your service the `Authorization: Bearer` header after translating "
@@ -760,7 +777,7 @@ public class OnboardingBundleService {
             <dependency>
               <groupId>io.mcp-mesh</groupId>
               <artifactId>mcp-mesh-auth-lib</artifactId>
-              <version>0.1.0</version>
+              <version>0.3.0</version>
             </dependency>
             ```
 
@@ -773,11 +790,18 @@ public class OnboardingBundleService {
               client-id: ${AUTH_LIB_CLIENT_ID:{{firstBackend}}}
               client-secret: ${AUTH_LIB_CLIENT_SECRET}
               cache:
-                # In-memory cache by default. Set to false to disable entirely
-                # (slower — every check hits KC UMA). Set to true + configure
-                # spring.data.redis.* to share cache across replicas via Redis.
+                # enabled=true + no Redis = in-process per-replica map (default).
+                # enabled=true + Redis    = shared across replicas (see below).
+                # enabled=false           = bypass cache; every check hits KC UMA.
                 enabled: true
             ```
+
+            > **Redis is optional.** As of auth-lib `0.3.0`, `spring-boot-starter-data-redis`
+            > is no longer transitively pulled in. If you want a Redis-backed
+            > permission cache, add `spring-boot-starter-data-redis` to your own
+            > pom and configure `spring.data.redis.*` (see "Multi-replica caching"
+            > below). Otherwise leave it out and the lib falls back to an in-process
+            > cache — or set `auth-lib.cache.enabled: false` to skip caching entirely.
 
             ## Where does the Bearer come from?
 
@@ -851,8 +875,130 @@ public class OnboardingBundleService {
             auth-lib auto-detects the Spring Redis bean and uses it. If Redis is
             unreachable at runtime the lib logs a warning + falls back to in-memory
             caching transparently.
+
+            ## /me endpoint
+
+            auth-lib `0.3.0+` ships `MeResponseBuilder.fromJwt(...)` — a one-liner
+            that pulls `resource_access.{{firstBackend}}.roles[]` out of the JWT,
+            uppercases them into a `Set<String>`, and assembles a `MeResponse`
+            matching the Python lib's `build_me_response(...)` shape. Frontends
+            see the same `/api/me` contract regardless of backend language.
+
+            ```java
+            import io.mcpmesh.auth.lib.dto.MeResponse;
+            import io.mcpmesh.auth.lib.dto.MeResponseBuilder;
+            import org.springframework.security.core.annotation.AuthenticationPrincipal;
+            import org.springframework.security.oauth2.jwt.Jwt;
+            import org.springframework.web.bind.annotation.GetMapping;
+            import org.springframework.web.bind.annotation.RestController;
+
+            @RestController
+            public class MeController {
+
+                @GetMapping("/api/me")
+                public MeResponse me(@AuthenticationPrincipal Jwt jwt) {
+                    return MeResponseBuilder.fromJwt(jwt, "{{firstBackend}}", new MeResponse.Tenant(
+                        "{{slug}}", "{{slug}}", "{{tenantName}}", "{{realmName}}"));
+                }
+            }
+            ```
+
+            Pass a `tenantAdminRole` (e.g. `"OWNER"`) to the 5-arg overload to
+            populate `isTenantAdmin`, or `extraPermissions` to union in static
+            capability strings beyond what's in `resource_access`.
+
+            ## Calling back into the platform admin API
+
+            See also `07-in-cluster-vs-public.md` for the in-cluster vs public
+            URL decision matrix.
+
+            If your backend needs to list/lookup users (e.g. populate an
+            instructor dropdown), do **NOT** call Keycloak's admin API directly.
+            Call the platform admin API — it does the realm-management dance for
+            you and requires only `USER_LIST` on `usermanagement` for your
+            service account.
+
+            ### Env convention
+
+            ```
+            AUTH_MGR_BASE=http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080
+            {{upperSlug}}_TENANT_SLUG={{slug}}
+            ```
+
+            For local dev (outside the cluster), point `AUTH_MGR_BASE` at the
+            public URL `https://auth.mcp-mesh.io` — same paths, just routed via
+            Cloudflare so a touch slower.
+
+            ### Token
+
+            You're already minting a `client_credentials` token using
+            `AUTH_LIB_CLIENT_ID` / `AUTH_LIB_CLIENT_SECRET` (your backend
+            client). That same bearer works for the admin API — no separate
+            credentials needed. Required permission: `USER_LIST` on
+            `usermanagement`, configured at wizard time via "Service account
+            permissions" or later via Apps → service-account → permissions PUT.
+
+            ### Example: list users by realm composite role
+
+            ```java
+            import org.springframework.web.client.RestClient;
+            import java.util.List;
+            import java.util.Map;
+
+            public class PlatformAdminClient {
+
+                private static final String AUTH_MGR_BASE =
+                    System.getenv().getOrDefault("AUTH_MGR_BASE",
+                        "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080");
+                private static final String TENANT_SLUG =
+                    System.getenv().getOrDefault("{{upperSlug}}_TENANT_SLUG", "{{slug}}");
+
+                private final RestClient http = RestClient.create();
+
+                public List<Map<String, Object>> listUsersByRole(String role,
+                                                                 String saToken,
+                                                                 int first, int max) {
+                    String url = AUTH_MGR_BASE + "/api/v1/tenants/" + TENANT_SLUG
+                        + "/users?role=" + role
+                        + "&first=" + first + "&max=" + max;
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> body = http.get()
+                        .uri(url)
+                        .header("Authorization", "Bearer " + saToken)
+                        .retrieve()
+                        .body(Map.class);
+                    return (List<Map<String, Object>>) body.get("items");
+                }
+            }
+            ```
+
+            Response shape:
+
+            ```json
+            {
+              "items": [
+                { "id": "uuid", "email": "...", "firstName": "...", "lastName": "...", "username": "..." }
+              ],
+              "first": 0,
+              "max": 200,
+              "totalItems": 42
+            }
+            ```
+
+            ### Useful endpoints
+
+            - `GET /api/v1/tenants/{slug}/users?role=X&search=Y` — list users (paged)
+            - `GET /api/v1/tenants/{slug}/users/{userId}` — lookup one user
+            - `POST /api/v1/tenants/{slug}/users` — invite a user
+            - `PUT /api/v1/tenants/{slug}/users/{userId}/roles` — update assigned roles
+
+            Role names come from your tenant manifest — download the latest from
+            auth-manager UI → Permissions tab → Download manifest.
             """)
+            .replace("{{tenantName}}", t.getDisplayName())
+            .replace("{{realmName}}", realmName)
             .replace("{{slug}}", slug)
+            .replace("{{upperSlug}}", slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_'))
             .replace("{{firstBackend}}", firstBackend)
             .replace("{{bearerOrigin}}", bearerOrigin)
             .replace("{{backendClientCredsSection}}", backendClientCredsSection)
@@ -969,10 +1115,87 @@ public class OnboardingBundleService {
 
             curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/me
             ```
+
+            ## Calling back into the platform admin API
+
+            See also `07-in-cluster-vs-public.md` for the in-cluster vs public
+            URL decision matrix.
+
+            If your backend needs to list/lookup users (e.g. populate an
+            instructor dropdown), do **NOT** call Keycloak's admin API directly.
+            Call the platform admin API — it does the realm-management dance for
+            you and requires only `USER_LIST` on `usermanagement` for your
+            service account.
+
+            ### Env convention
+
+            ```
+            AUTH_MGR_BASE=http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080
+            {{upperSlug}}_TENANT_SLUG={{slug}}
+            ```
+
+            For local dev (outside the cluster), point `AUTH_MGR_BASE` at the
+            public URL `https://auth.mcp-mesh.io` — same paths, just routed via
+            Cloudflare so a touch slower.
+
+            ### Token
+
+            You're already minting a `client_credentials` token using
+            `AUTH_LIB_CLIENT_ID` / `AUTH_LIB_CLIENT_SECRET` (your backend
+            client). That same bearer works for the admin API — no separate
+            credentials needed. Required permission: `USER_LIST` on
+            `usermanagement`, configured at wizard time via "Service account
+            permissions" or later via Apps → service-account → permissions PUT.
+
+            ### Example: list users by realm composite role
+
+            ```python
+            import os
+            import httpx
+
+            AUTH_MGR_BASE = os.environ.get(
+                "AUTH_MGR_BASE",
+                "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080",
+            )
+            TENANT_SLUG = os.environ.get("{{upperSlug}}_TENANT_SLUG", "{{slug}}")
+
+
+            def list_users_by_role(role: str, sa_token: str, first: int = 0, max_results: int = 200) -> dict:
+                url = f"{AUTH_MGR_BASE}/api/v1/tenants/{TENANT_SLUG}/users"
+                params = {"role": role, "first": first, "max": max_results}
+                headers = {"Authorization": f"Bearer {sa_token}"}
+                r = httpx.get(url, params=params, headers=headers, timeout=10.0)
+                r.raise_for_status()
+                return r.json()
+            ```
+
+            Response shape:
+
+            ```json
+            {
+              "items": [
+                { "id": "uuid", "email": "...", "firstName": "...", "lastName": "...", "username": "..." }
+              ],
+              "first": 0,
+              "max": 200,
+              "totalItems": 42
+            }
+            ```
+
+            ### Useful endpoints
+
+            - `GET /api/v1/tenants/{slug}/users?role=X&search=Y` — list users (paged)
+            - `GET /api/v1/tenants/{slug}/users/{userId}` — lookup one user
+            - `POST /api/v1/tenants/{slug}/users` — invite a user
+            - `PUT /api/v1/tenants/{slug}/users/{userId}/roles` — update assigned roles
+
+            Role names come from your tenant manifest — download the latest from
+            auth-manager UI → Permissions tab → Download manifest.
             """)
             .replace("{{tenantName}}", t.getDisplayName())
             .replace("{{realmName}}", realmName)
             .replace("{{slug}}", slug)
+            .replace("{{upperSlug}}", slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_'))
             .replace("{{issuer}}", issuer)
             .replace("{{firstBackend}}", firstBackend)
             .replace("{{bearerOrigin}}", bearerOrigin);
@@ -1105,6 +1328,84 @@ public class OnboardingBundleService {
             """)
             .replace("{{kcBase}}", KC_BASE)
             .replace("{{realmName}}", realmName);
+    }
+
+    private String renderInClusterVsPublic(String slug, String realmName) {
+        return ("""
+            # In-cluster vs public URLs
+
+            > See also `03-backend-java.md` / `03-backend-python.md` for the
+            > code that uses these URLs.
+
+            Three platform URLs your backend talks to. Two should be in-cluster,
+            one MUST stay public. Get this wrong and you'll either round-trip
+            through Cloudflare unnecessarily or get JWT validation failures.
+
+            ## Decision table
+
+            | URL purpose | Env var | In-cluster value | Public value | Use which? |
+            |---|---|---|---|---|
+            | JWT issuer (JWKS + UMA) | `AUTH_LIB_ISSUER_URI` | n/a | `{{kcBase}}/realms/{{realmName}}` | **Public only** |
+            | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/auth` | `{{kcBase}}` | Either; in-cluster faster |
+            | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `https://auth.mcp-mesh.io` | In-cluster strongly preferred |
+
+            ## Why the issuer URI must be public
+
+            The `AUTH_LIB_ISSUER_URI` env var must be the PUBLIC URL
+            `{{kcBase}}/realms/{{realmName}}` — NOT the in-cluster
+            `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/auth/realms/{{realmName}}`.
+
+            auth-lib uses this URL both for JWKS fetch and for UMA permission
+            lookups, and the URL **must match the JWT's `iss` claim exactly** —
+            otherwise signature validation fails with:
+
+            ```
+            Rejecting JWT with unknown issuer
+            ```
+
+            (grep your logs for that string and you'll land back here). This is
+            the same reason auth-manager itself uses the public URL — the
+            "trusted-issuer prefix must match KC_HOSTNAME exactly" gotcha in the
+            auth-platform repo.
+
+            ## JWKS fetching goes over public DNS — that's fine
+
+            Since the issuer URL is public, the JWKS fetch auth-lib does (to
+            verify JWT signatures) WILL traverse Cloudflare. Don't try to "fix"
+            this with a /etc/hosts override or an in-cluster rewrite — JWKS is
+            fetched rarely and aggressively cached (default ~10 minutes), so the
+            perf cost is negligible. Forcing it through an in-cluster URL just
+            breaks issuer matching for no real gain.
+
+            ## KC token endpoint — pick whatever
+
+            For `client_credentials` grants (minting service-account tokens),
+            either in-cluster or public works because the token endpoint doesn't
+            care about issuer-matching — it issues tokens, it doesn't validate
+            them. In-cluster is meaningfully faster (no TLS handshake, no
+            Cloudflare hop). Recommend in-cluster.
+
+            ## Platform admin API — prefer in-cluster
+
+            `AUTH_MGR_BASE` should default to the in-cluster service DNS:
+            `{{authMgrBase}}`. The same bearer your backend mints for KC works
+            against `/api/v1/tenants/{{slug}}/...` (see the backend docs for
+            the code). Use the public URL `https://auth.mcp-mesh.io` only for
+            local dev or one-off scripts running outside the cluster.
+
+            ## Egress consequences
+
+            All three Cloudflare-bound calls are visible at the edge and counted
+            against tunnel quota — including JWKS fetches and any admin API or
+            token calls you forget to switch to in-cluster URLs. In-cluster
+            traffic stays inside the pod network and never hits the tunnel. For
+            a chatty service hitting the admin API on every request, the
+            difference is real.
+            """)
+            .replace("{{slug}}", slug)
+            .replace("{{realmName}}", realmName)
+            .replace("{{kcBase}}", KC_BASE)
+            .replace("{{authMgrBase}}", AUTH_MGR_BASE);
     }
 
     /**
