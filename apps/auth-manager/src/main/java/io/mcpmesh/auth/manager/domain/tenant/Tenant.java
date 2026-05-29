@@ -68,6 +68,23 @@ public class Tenant {
     @Column(name = "deleted_at")
     private Instant deletedAt;
 
+    // -- Per-tenant email (V5). All optional; NULL falls back to platform
+    // defaults (see SmtpConfigBootstrap#buildSmtpConfig).
+    @Column(name = "email_from_address")
+    private String emailFromAddress;
+
+    @Column(name = "email_from_display_name")
+    private String emailFromDisplayName;
+
+    @Column(name = "email_reply_to_address")
+    private String emailReplyToAddress;
+
+    @Column(name = "sendgrid_domain_id")
+    private Integer sendgridDomainId;
+
+    @Column(name = "sendgrid_domain_valid")
+    private Boolean sendgridDomainValid;
+
     protected Tenant() {
         // JPA
     }
@@ -132,6 +149,32 @@ public class Tenant {
         return deletedAt != null;
     }
 
+    // -- Email config mutators (V5) ------------------------------------------
+
+    /**
+     * Replaces the three per-tenant email override fields atomically. Any of
+     * the three may be passed as null/blank to clear the override and fall
+     * back to the platform / KC defaults.
+     */
+    public void setEmailOverrides(String fromAddress, String fromDisplayName, String replyTo) {
+        this.emailFromAddress = blankToNull(fromAddress);
+        this.emailFromDisplayName = blankToNull(fromDisplayName);
+        this.emailReplyToAddress = blankToNull(replyTo);
+    }
+
+    /**
+     * Records (or refreshes) the SendGrid domain-auth state for this tenant.
+     * Either argument may be null when the domain hasn't been registered yet.
+     */
+    public void setSendgridDomain(Integer domainId, Boolean valid) {
+        this.sendgridDomainId = domainId;
+        this.sendgridDomainValid = valid;
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s.trim();
+    }
+
     // --- getters (no setters; mutations go through the methods above) ---
 
     public UUID getId() { return id; }
@@ -146,4 +189,9 @@ public class Tenant {
     public String getCreatedBy() { return createdBy; }
     public Instant getUpdatedAt() { return updatedAt; }
     public Instant getDeletedAt() { return deletedAt; }
+    public String getEmailFromAddress() { return emailFromAddress; }
+    public String getEmailFromDisplayName() { return emailFromDisplayName; }
+    public String getEmailReplyToAddress() { return emailReplyToAddress; }
+    public Integer getSendgridDomainId() { return sendgridDomainId; }
+    public Boolean getSendgridDomainValid() { return sendgridDomainValid; }
 }

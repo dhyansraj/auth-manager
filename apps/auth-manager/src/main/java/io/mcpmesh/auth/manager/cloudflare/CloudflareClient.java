@@ -73,17 +73,32 @@ public class CloudflareClient {
     /** POST /zones/{zoneId}/dns_records — creates a proxied CNAME. */
     public String createCnameRecord(String zoneId, String name, String target, String comment) {
         String url = API_BASE + "/zones/" + zoneId + "/dns_records";
-        ObjectNode payload = cnamePayload(name, target, comment);
+        ObjectNode payload = cnamePayload(name, target, comment, true);
         JsonNode body = send(HttpRequest.newBuilder(URI.create(url))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(payload.toString())));
         return body.path("result").path("id").asText(null);
     }
 
-    /** PUT /zones/{zoneId}/dns_records/{recordId} — updates existing. */
+    /**
+     * POST /zones/{zoneId}/dns_records — creates a DNS-only (unproxied) CNAME.
+     * Used for SendGrid DKIM CNAMEs, which MUST NOT be proxied through
+     * Cloudflare (the proxy strips response headers + DNS-CNAME chains needed
+     * by SendGrid's resolver).
+     */
+    public String createDnsOnlyCnameRecord(String zoneId, String name, String target, String comment) {
+        String url = API_BASE + "/zones/" + zoneId + "/dns_records";
+        ObjectNode payload = cnamePayload(name, target, comment, false);
+        JsonNode body = send(HttpRequest.newBuilder(URI.create(url))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(payload.toString())));
+        return body.path("result").path("id").asText(null);
+    }
+
+    /** PUT /zones/{zoneId}/dns_records/{recordId} — updates existing (proxied). */
     public void updateCnameRecord(String zoneId, String recordId, String name, String target, String comment) {
         String url = API_BASE + "/zones/" + zoneId + "/dns_records/" + recordId;
-        ObjectNode payload = cnamePayload(name, target, comment);
+        ObjectNode payload = cnamePayload(name, target, comment, true);
         send(HttpRequest.newBuilder(URI.create(url))
             .header("Content-Type", "application/json")
             .PUT(HttpRequest.BodyPublishers.ofString(payload.toString())));
@@ -149,12 +164,12 @@ public class CloudflareClient {
         }
     }
 
-    private ObjectNode cnamePayload(String name, String target, String comment) {
+    private ObjectNode cnamePayload(String name, String target, String comment, boolean proxied) {
         ObjectNode payload = mapper.createObjectNode();
         payload.put("type", "CNAME");
         payload.put("name", name);
         payload.put("content", target);
-        payload.put("proxied", true);
+        payload.put("proxied", proxied);
         payload.put("ttl", 1);
         if (comment != null) payload.put("comment", comment);
         return payload;

@@ -259,3 +259,58 @@ export interface DatabaseProvisionResult {
   password: string;
   jdbcUrl: string;
 }
+
+// ---------------------------------------------------------------------------
+// Per-tenant email config + SendGrid domain auth
+// ---------------------------------------------------------------------------
+
+export type DomainAuthStatus = 'NOT_STARTED' | 'PENDING' | 'VALID' | 'FAILED';
+
+/**
+ * Per-tenant email view returned by GET /tenants/{id}/email.
+ *
+ * {@code fromAddress} is the resolved value KC actually sends with.
+ * {@code fromAddressOverride} is the raw tenant column or null — null means
+ * we're falling back to the platform default.
+ */
+export interface TenantEmailResponse {
+  fromAddress: string;
+  fromAddressOverride: string | null;
+  fromDisplayName: string;
+  fromDisplayNameOverride: string | null;
+  replyToAddress: string | null;
+  sendgridDomainId: number | null;
+  sendgridDomainValid: boolean | null;
+  domainAuthStatus: DomainAuthStatus;
+}
+
+export interface TenantEmailUpdateRequest {
+  fromAddress: string | null;
+  fromDisplayName: string | null;
+  replyToAddress: string | null;
+}
+
+/** One SendGrid DNS CNAME with its CF-push state. */
+export interface DomainAuthCname {
+  host: string;
+  target: string;
+  pushed: boolean;
+  pushError: string | null;
+}
+
+export interface DomainAuthResponse {
+  domain: string | null;
+  sendgridDomainId: number | null;
+  valid: boolean | null;
+  zoneInOurAccount: boolean;
+  cnames: DomainAuthCname[];
+}
+
+// ---------------------------------------------------------------------------
+// Per-tenant login methods (username/password toggle + IdP listing)
+// ---------------------------------------------------------------------------
+
+export interface LoginMethodStatus {
+  passwordEnabled: boolean;
+  enabledIdpAliases: string[];
+}

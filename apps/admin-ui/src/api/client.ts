@@ -14,6 +14,10 @@ import type {
   BrandingConfig,
   DatabaseStatus,
   DatabaseProvisionResult,
+  TenantEmailResponse,
+  TenantEmailUpdateRequest,
+  DomainAuthResponse,
+  LoginMethodStatus,
 } from './types';
 
 // The admin-ui is served at /admin/* on every host. The edge maps
@@ -282,6 +286,36 @@ export const api = {
     req<DatabaseProvisionResult>(`/tenants/${tenantId}/data/postgres`, { method: 'POST' }),
   deprovisionDatabase: (tenantId: string) =>
     req<void>(`/tenants/${tenantId}/data/postgres`, { method: 'DELETE' }),
+
+  // -------------------------------------------------------------------------
+  // Per-tenant email config + SendGrid domain auth
+  // -------------------------------------------------------------------------
+  getTenantEmail: (tenantId: string) =>
+    req<TenantEmailResponse>(`/tenants/${tenantId}/email`),
+  updateTenantEmail: (tenantId: string, body: TenantEmailUpdateRequest) =>
+    req<TenantEmailResponse>(`/tenants/${tenantId}/email`, {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
+  getDomainAuthStatus: (tenantId: string) =>
+    req<DomainAuthResponse>(`/tenants/${tenantId}/email/domain-auth`),
+  startDomainAuth: (tenantId: string, domain: string) =>
+    req<DomainAuthResponse>(`/tenants/${tenantId}/email/domain-auth`, {
+      method: 'POST', body: JSON.stringify({ domain }),
+    }),
+  revalidateDomainAuth: (tenantId: string) =>
+    req<DomainAuthResponse>(`/tenants/${tenantId}/email/domain-auth/revalidate`, {
+      method: 'POST',
+    }),
+
+  // -------------------------------------------------------------------------
+  // Per-tenant login methods
+  // -------------------------------------------------------------------------
+  getLoginMethods: (tenantId: string) =>
+    req<LoginMethodStatus>(`/tenants/${tenantId}/login-methods`),
+  setPasswordEnabled: (tenantId: string, enabled: boolean) =>
+    req<LoginMethodStatus>(`/tenants/${tenantId}/login-methods/password`, {
+      method: 'PUT', body: JSON.stringify({ enabled }),
+    }),
 
   // -------------------------------------------------------------------------
   // Onboarding bundle (.zip handoff for tenant teams)

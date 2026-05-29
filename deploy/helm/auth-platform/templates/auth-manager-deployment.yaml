@@ -115,6 +115,17 @@ spec:
                   name: cloudflare-api
                   key: tunnel-id
                   optional: true
+            # SendGrid API key — used by TenantDomainAuthService to register
+            # and validate per-tenant whitelabel domains. Reuses the same
+            # `sendgrid-api` Secret the smtp-relay consumes (key=api-key).
+            # Optional: when absent the domain-auth endpoints fail fast with
+            # a clean error so operators can spot the missing wiring.
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sendgrid-api
+                  key: api-key
+                  optional: true
             # CNPG superuser password — used by TenantDatabaseService to
             # run CREATE DATABASE / DROP DATABASE DDL when operators
             # provision per-tenant databases on the shared platform-pg

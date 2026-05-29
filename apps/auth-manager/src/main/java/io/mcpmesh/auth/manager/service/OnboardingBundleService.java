@@ -119,6 +119,7 @@ public class OnboardingBundleService {
         filesGenerated.add("05-theming-optional.md");
         filesGenerated.add("06-user-migration.md");
         filesGenerated.add("07-in-cluster-vs-public.md");
+        filesGenerated.add("08-email.md");
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(baos)) {
@@ -145,6 +146,7 @@ public class OnboardingBundleService {
             writeEntry(zip, "05-theming-optional.md", renderTheming(slug));
             writeEntry(zip, "06-user-migration.md", renderMigration(realmName));
             writeEntry(zip, "07-in-cluster-vs-public.md", renderInClusterVsPublic(slug, realmName));
+            writeEntry(zip, "08-email.md", renderEmail(tenant));
         } catch (IOException e) {
             throw new RuntimeException("Failed to build onboarding bundle zip", e);
         }
@@ -1416,6 +1418,125 @@ public class OnboardingBundleService {
             .replace("{{realmName}}", realmName)
             .replace("{{kcBase}}", KC_BASE)
             .replace("{{authMgrBase}}", AUTH_MGR_BASE);
+    }
+
+    /**
+     * Renders the per-tenant SMTP integration doc. Substitutes the
+     * authenticated-domain fallback based on the tenant's current state — if
+     * the tenant has validated a SendGrid domain, From samples use it;
+     * otherwise the platform fallback {@code noreply@mcp-mesh.io} is used.
+     */
+    private String renderEmail(Tenant t) {
+        String platformFallback = "noreply@mcp-mesh.io";
+        boolean hasAuthenticatedDomain = Boolean.TRUE.equals(t.getSendgridDomainValid())
+            && t.getSendgridDomainId() != null;
+        String authenticatedDomain = null;
+        if (hasAuthenticatedDomain) {
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> settings = t.getSettings();
+            if (settings != null && settings.get("sendgrid") instanceof java.util.Map<?, ?> sg) {
+                Object d = sg.get("domain");
+                if (d instanceof String s && !s.isBlank()) authenticatedDomain = s;
+            }
+        }
+        String fromExample = authenticatedDomain != null
+            ? "noreply@" + authenticatedDomain
+            : platformFallback;
+        String volumeBlock = authenticatedDomain != null
+            ? ("- Mail is DKIM-signed by **" + authenticatedDomain + "** (your authenticated\n"
+                + "  domain). Recipients see your brand in the From line.")
+            : ("- Until you authenticate your own domain (Email tab), all mail goes\n"
+                + "  from **" + platformFallback + "** — DKIM-signed by the platform.\n"
+                + "- After domain authentication, mail is DKIM-signed by your domain;\n"
+                + "  recipients see your brand in the From line.");
+
+        return ("""
+            # Sending email from your tenant app
+
+            Your tenant app can send transactional email through the platform's
+            SMTP relay. No SendGrid API key needed in your code — the relay
+            handles auth on your behalf with the platform's credentials.
+
+            ## In-cluster config
+
+            Set on your app's deployment (helm values):
+
+            ```yaml
+              - name: SMTP_HOST
+                value: "smtp-relay.auth-platform.svc.cluster.local"
+              - name: SMTP_PORT
+                value: "25"
+              - name: SMTP_FROM
+                value: "{{fromExample}}"
+            ```
+
+            (Use `{{platformFallback}}` until you authenticate your own domain in the
+            admin UI's Email tab.)
+
+            ## Code samples
+
+            ### Spring Boot (Java)
+
+            ```yaml
+            spring:
+              mail:
+                host: ${SMTP_HOST}
+                port: ${SMTP_PORT}
+                properties:
+                  mail.smtp.auth: false
+                  mail.smtp.starttls.enable: false
+            ```
+
+            ```java
+            @Autowired JavaMailSender sender;
+            SimpleMailMessage msg = new SimpleMailMessage();
+            msg.setFrom(System.getenv("SMTP_FROM"));
+            msg.setTo("user@example.com");
+            msg.setSubject("Welcome");
+            msg.setText("Hello!");
+            sender.send(msg);
+            ```
+
+            ### FastAPI (Python) — fastapi-mail or built-in smtplib
+
+            ```python
+            import smtplib, os
+            from email.message import EmailMessage
+
+            msg = EmailMessage()
+            msg["From"] = os.environ["SMTP_FROM"]
+            msg["To"] = "user@example.com"
+            msg["Subject"] = "Welcome"
+            msg.set_content("Hello!")
+            with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as s:
+                s.send_message(msg)
+            ```
+
+            ## Optional: SendGrid analytics tagging per send
+
+            The relay adds X-SMTPAPI with your From-domain by default. Apps can ADD
+            unique args by setting their own X-SMTPAPI header (the relay's header
+            won't override one your app sets):
+
+            ```java
+            msg.addHeader("X-SMTPAPI",
+              "{\\"unique_args\\":{\\"order_id\\":\\"42\\",\\"email_type\\":\\"welcome\\"}}");
+            ```
+
+            Filter by these args in SendGrid's Email Activity dashboard.
+
+            ## Rate limits
+
+            Shared across all platform tenants: see SendGrid's plan dashboard for
+            current limits. Phase 3 backlog: per-tenant rate budgeting.
+
+            ## Volume + deliverability
+
+            {{volumeBlock}}
+            """)
+            .replace("{{fromExample}}", fromExample)
+            .replace("{{platformFallback}}", platformFallback)
+            .replace("{{volumeBlock}}", volumeBlock);
     }
 
     /**

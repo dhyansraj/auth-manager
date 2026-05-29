@@ -63,6 +63,11 @@ auth-manager:
     from-address: ${AUTH_MANAGER_SMTP_FROM:noreply@mcp-mesh.io}
     from-display-name-template: "{tenantDisplayName}"
     enabled: ${AUTH_MANAGER_SMTP_ENABLED:true}
+    # SendGrid API key used by TenantDomainAuthService to register / validate
+    # per-tenant whitelabel domains. Mounted from the same `sendgrid-api`
+    # Secret the smtp-relay uses (key=api-key). Optional: empty when SendGrid
+    # is not configured (domain-auth endpoints surface a clean error).
+    sendgrid-api-key: ${SENDGRID_API_KEY:}
 
 # CNPG superuser connection: used by TenantDatabaseService to run CREATE
 # DATABASE / DROP DATABASE DDL when provisioning per-tenant databases on

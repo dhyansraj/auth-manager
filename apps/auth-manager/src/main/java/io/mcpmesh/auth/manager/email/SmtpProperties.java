@@ -14,6 +14,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * <p>{@link #enabled()} gates the bootstrap entirely; set to false in
  * environments where KC realms should retain their seeded SMTP config (e.g.
  * the local-dev MailHog setup).
+ *
+ * <p>{@link #sendgridApiKey()} is the platform SendGrid API key used by
+ * {@code TenantDomainAuthService} to register / validate per-tenant whitelabel
+ * domains. Nullable: when blank, the domain-auth endpoints fail fast with a
+ * 503-style error so operators can spot the missing wiring.
  */
 @ConfigurationProperties("auth-manager.smtp")
 public record SmtpProperties(
@@ -21,7 +26,8 @@ public record SmtpProperties(
     Integer port,
     String fromAddress,
     String fromDisplayNameTemplate,
-    Boolean enabled
+    Boolean enabled,
+    String sendgridApiKey
 ) {
     public SmtpProperties {
         if (host == null || host.isBlank()) {
@@ -35,10 +41,17 @@ public record SmtpProperties(
             fromDisplayNameTemplate = "{tenantDisplayName}";
         }
         if (enabled == null) enabled = Boolean.TRUE;
+        // sendgridApiKey is intentionally left as-is (may be null/blank in
+        // environments without SendGrid wired up; TenantDomainAuthService
+        // surfaces a clean error message in that case).
     }
 
     public boolean isEnabled() {
         return Boolean.TRUE.equals(enabled);
+    }
+
+    public boolean hasSendgridApiKey() {
+        return sendgridApiKey != null && !sendgridApiKey.isBlank();
     }
 
     public String getHost() { return host; }

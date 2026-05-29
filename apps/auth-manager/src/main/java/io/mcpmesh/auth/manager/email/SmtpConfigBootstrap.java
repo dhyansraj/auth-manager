@@ -99,18 +99,37 @@ public class SmtpConfigBootstrap implements ApplicationRunner {
         Map<String, String> m = new LinkedHashMap<>();
         m.put("host", smtpProps.getHost());
         m.put("port", String.valueOf(smtpProps.getPort()));
-        m.put("from", smtpProps.getFromAddress());
-        m.put("fromDisplayName", renderDisplayName(t));
+        m.put("from", resolveFromAddress(t));
+        m.put("fromDisplayName", resolveDisplayName(t));
         m.put("auth", "false");
         m.put("starttls", "false");
         m.put("ssl", "false");
-        // replyTo intentionally omitted — Phase 1 leaves KC default (= from address).
-        // KC's emails are auto-marked as no-reply via copy ("Please do not reply"),
-        // tenant ops UI in Phase 2 lets operators add a real reply-to per realm.
+        // Phase 2: per-tenant Reply-To. Only emit when an override is set —
+        // KC defaults Reply-To to the From address otherwise.
+        String replyTo = t.getEmailReplyToAddress();
+        if (replyTo != null && !replyTo.isBlank()) {
+            m.put("replyTo", replyTo);
+        }
         return m;
     }
 
-    private String renderDisplayName(Tenant t) {
+    /**
+     * Resolves the From address: tenant override wins; falls back to the
+     * platform default ({@code auth-manager.smtp.from-address}).
+     */
+    private String resolveFromAddress(Tenant t) {
+        String override = t.getEmailFromAddress();
+        if (override != null && !override.isBlank()) return override;
+        return smtpProps.getFromAddress();
+    }
+
+    /**
+     * Resolves the display name: tenant override wins; otherwise the template
+     * is rendered against the tenant's display name (Phase 1 behavior).
+     */
+    private String resolveDisplayName(Tenant t) {
+        String override = t.getEmailFromDisplayName();
+        if (override != null && !override.isBlank()) return override;
         String template = smtpProps.getFromDisplayNameTemplate();
         String tenantDisplay = t.getDisplayName() == null ? "" : t.getDisplayName();
         return template.replace("{tenantDisplayName}", tenantDisplay);

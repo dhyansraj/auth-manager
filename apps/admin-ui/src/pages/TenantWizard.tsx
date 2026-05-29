@@ -3,17 +3,21 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import type { Tenant, IdentityProviderDto } from '../api/types';
 
-const DRAFT_STORAGE_KEY = 'mcpmesh.tenantwizard.draft.v1';
+// v2 = added the Email step (step 3). v1 drafts auto-discarded on load.
+const DRAFT_STORAGE_KEY = 'mcpmesh.tenantwizard.draft.v2';
 
 // File objects can't be JSON-serialized — exclude them from persisted draft.
 type PersistedDraft = {
-  step: 1 | 2 | 3 | 4 | 5;
-  maxStepReached: 1 | 2 | 3 | 4 | 5;
+  step: WizardStep;
+  maxStepReached: WizardStep;
   basics: WizardBasics;
   apps: WizardApp[];
+  email: WizardEmail;
   // manifestFile + themeFile are deliberately NOT persisted; on restore the
   // operator must re-pick those files. We track this with restoredFromDraft.
 };
+
+type WizardStep = 1 | 2 | 3 | 4 | 5 | 6;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +42,17 @@ interface WizardBasics {
   displayName: string;
   adminEmail: string;
   hostnames: WizardHostname[];
+}
+
+/**
+ * Per-tenant email config captured in the wizard. Sent as a PUT /email after
+ * tenant create. All fields optional — blank means "use platform defaults".
+ * No domain-auth here; operator handles that post-creation via the Email tab.
+ */
+interface WizardEmail {
+  fromAddress: string;
+  fromDisplayName: string;
+  replyToAddress: string;
 }
 
 type ProgressStatus = 'pending' | 'in_progress' | 'success' | 'error';
@@ -77,8 +92,8 @@ export default function TenantWizard() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const resumeId = searchParams.get('resume');
-  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
-  const [maxStepReached, setMaxStepReached] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const [step, setStep] = useState<WizardStep>(1);
+  const [maxStepReached, setMaxStepReached] = useState<WizardStep>(1);
 
   const [basics, setBasics] = useState<WizardBasics>({
     slug: '',
@@ -87,6 +102,11 @@ export default function TenantWizard() {
     hostnames: [{ host: '', backend: '' }],
   });
   const [apps, setApps] = useState<WizardApp[]>([]);
+  const [email, setEmail] = useState<WizardEmail>({
+    fromAddress: '',
+    fromDisplayName: '',
+    replyToAddress: '',
+  });
   const [manifestFile, setManifestFile] = useState<File | undefined>(undefined);
   const [themeFile, setThemeFile] = useState<File | undefined>(undefined);
 
@@ -160,6 +180,7 @@ export default function TenantWizard() {
       if (draft.maxStepReached !== undefined) setMaxStepReached(draft.maxStepReached);
       if (draft.basics) setBasics(draft.basics);
       if (draft.apps) setApps(draft.apps);
+      if (draft.email) setEmail(draft.email);
       setRestoredFromDraft(true);
     } catch {
       sessionStorage.removeItem(DRAFT_STORAGE_KEY);
@@ -170,9 +191,9 @@ export default function TenantWizard() {
     // Skip the very first render (before hydration completes) so we don't
     // overwrite a stored draft with the initial empty state.
     if (!draftHydrated.current) return;
-    const draft: PersistedDraft = { step, maxStepReached, basics, apps };
+    const draft: PersistedDraft = { step, maxStepReached, basics, apps, email };
     sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
-  }, [step, maxStepReached, basics, apps]);
+  }, [step, maxStepReached, basics, apps, email]);
 
   const clearDraft = () => sessionStorage.removeItem(DRAFT_STORAGE_KEY);
 
@@ -198,7 +219,13 @@ export default function TenantWizard() {
     return true;
   }, [apps]);
 
-  function gotoStep(target: 1 | 2 | 3 | 4 | 5) {
+  const emailValid = useMemo(() => {
+    if (email.fromAddress.trim() && !EMAIL_PATTERN.test(email.fromAddress.trim())) return false;
+    if (email.replyToAddress.trim() && !EMAIL_PATTERN.test(email.replyToAddress.trim())) return false;
+    return true;
+  }, [email]);
+
+  function gotoStep(target: WizardStep) {
     setStep(target);
     if (target > maxStepReached) setMaxStepReached(target);
   }
@@ -208,13 +235,14 @@ export default function TenantWizard() {
   function next() {
     if (step === 1 && !basicsValid) return;
     if (step === 2 && !appsValid) return;
-    const target = (step + 1) as 1 | 2 | 3 | 4 | 5;
+    if (step === 3 && !emailValid) return;
+    const target = (step + 1) as WizardStep;
     gotoStep(target);
   }
 
   function back() {
     if (step === 1) return;
-    const target = (step - 1) as 1 | 2 | 3 | 4 | 5;
+    const target = (step - 1) as WizardStep;
     setStep(target);
   }
 
@@ -279,6 +307,12 @@ export default function TenantWizard() {
           status: 'pending',
         });
       }
+    }
+    const anyEmailOverride = !!(
+      email.fromAddress.trim() || email.fromDisplayName.trim() || email.replyToAddress.trim()
+    );
+    if (anyEmailOverride) {
+      rows.push({ key: 'email', label: 'Apply email config', status: 'pending' });
     }
     if (manifestFile) rows.push({ key: 'manifest', label: `Apply manifest (${manifestFile.name})`, status: 'pending' });
     if (themeFile) rows.push({ key: 'theme', label: `Upload theme (${themeFile.name})`, status: 'pending' });
@@ -433,7 +467,19 @@ export default function TenantWizard() {
       if (!ok) { setGenerating(false); return; }
     }
 
-    // ---- 4. Manifest --------------------------------------------------------
+    // ---- 4. Email config (only when operator set any override) -------------
+    if (anyEmailOverride) {
+      const ok = await runStep(rows, setProgress, 'email', async () => {
+        await api.updateTenantEmail(tenant!.id, {
+          fromAddress: email.fromAddress.trim() === '' ? null : email.fromAddress.trim(),
+          fromDisplayName: email.fromDisplayName.trim() === '' ? null : email.fromDisplayName.trim(),
+          replyToAddress: email.replyToAddress.trim() === '' ? null : email.replyToAddress.trim(),
+        });
+      });
+      if (!ok) { setGenerating(false); return; }
+    }
+
+    // ---- 5. Manifest --------------------------------------------------------
     if (manifestFile) {
       const ok = await runStep(rows, setProgress, 'manifest', async () => {
         const text = await manifestFile.text();
@@ -442,7 +488,7 @@ export default function TenantWizard() {
       if (!ok) { setGenerating(false); return; }
     }
 
-    // ---- 5. Theme -----------------------------------------------------------
+    // ---- 6. Theme -----------------------------------------------------------
     if (themeFile) {
       const ok = await runStep(rows, setProgress, 'theme', async () => {
         await api.uploadTheme(basics.slug, themeFile);
@@ -460,6 +506,7 @@ export default function TenantWizard() {
     setMaxStepReached(1);
     setBasics({ slug: '', displayName: '', adminEmail: '', hostnames: [{ host: '', backend: '' }] });
     setApps([]);
+    setEmail({ fromAddress: '', fromDisplayName: '', replyToAddress: '' });
     setManifestFile(undefined);
     setThemeFile(undefined);
     setProgress([]);
@@ -543,15 +590,19 @@ export default function TenantWizard() {
         <Step2Apps apps={apps} onChange={setApps} />
       )}
       {step === 3 && (
-        <Step3Manifest file={manifestFile} onChange={setManifestFile} />
+        <Step3Email email={email} onChange={setEmail} tenantDisplayName={basics.displayName} />
       )}
       {step === 4 && (
-        <Step4Theme file={themeFile} onChange={setThemeFile} />
+        <Step4Manifest file={manifestFile} onChange={setManifestFile} />
       )}
       {step === 5 && (
-        <Step5Review
+        <Step5Theme file={themeFile} onChange={setThemeFile} />
+      )}
+      {step === 6 && (
+        <Step6Review
           basics={basics}
           apps={apps}
+          email={email}
           manifestFile={manifestFile}
           themeFile={themeFile}
         />
@@ -578,19 +629,19 @@ export default function TenantWizard() {
           >
             Cancel
           </button>
-          {step < 5 && (
+          {step < TOTAL_STEPS && (
             <button
               onClick={next}
-              disabled={(step === 1 && !basicsValid) || (step === 2 && !appsValid)}
+              disabled={(step === 1 && !basicsValid) || (step === 2 && !appsValid) || (step === 3 && !emailValid)}
               className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm hover:bg-slate-700 disabled:opacity-50"
             >
               Next →
             </button>
           )}
-          {step === 5 && (
+          {step === TOTAL_STEPS && (
             <button
               onClick={generate}
-              disabled={generating || !basicsValid || !appsValid}
+              disabled={generating || !basicsValid || !appsValid || !emailValid}
               className="bg-emerald-700 text-white px-3 py-1.5 rounded text-sm hover:bg-emerald-800 disabled:opacity-50"
             >
               {generating ? 'Generating…' : 'Generate'}
@@ -606,15 +657,16 @@ export default function TenantWizard() {
 // Step progress indicator
 // ---------------------------------------------------------------------------
 
-const STEP_LABELS = ['Basics', 'Apps', 'Manifest', 'Theme', 'Review'] as const;
+const STEP_LABELS = ['Basics', 'Apps', 'Email', 'Manifest', 'Theme', 'Review'] as const;
+const TOTAL_STEPS = STEP_LABELS.length;
 
 function StepProgress({
   current, maxReached, onJump,
-}: { current: number; maxReached: number; onJump: (s: 1 | 2 | 3 | 4 | 5) => void }) {
+}: { current: number; maxReached: number; onJump: (s: WizardStep) => void }) {
   return (
     <ol className="flex items-center gap-2 text-sm">
       {STEP_LABELS.map((label, i) => {
-        const n = (i + 1) as 1 | 2 | 3 | 4 | 5;
+        const n = (i + 1) as WizardStep;
         const isCurrent = n === current;
         const isReachable = n <= maxReached;
         return (
@@ -637,7 +689,7 @@ function StepProgress({
               </span>
               <span>{label}</span>
             </button>
-            {n < 5 && <span className="text-slate-300">›</span>}
+            {n < TOTAL_STEPS && <span className="text-slate-300">›</span>}
           </li>
         );
       })}
@@ -657,7 +709,7 @@ function Step1Basics({
 
   return (
     <div className="bg-white border rounded p-6 space-y-5">
-      <div className="text-sm text-slate-500">Step 1 of 5 — Basics</div>
+      <div className="text-sm text-slate-500">Step 1 of 6 — Basics</div>
 
       <label className="block">
         <div className="text-xs text-slate-600 mb-1">Slug *</div>
@@ -781,7 +833,7 @@ function Step2Apps({
   return (
     <div className="space-y-4">
       <div className="bg-white border rounded p-4 text-sm text-slate-600">
-        Step 2 of 5 — Apps. You can skip this step if the tenant has no apps yet; apps can be
+        Step 2 of 6 — Apps. You can skip this step if the tenant has no apps yet; apps can be
         added later from the tenant detail page.
       </div>
 
@@ -926,15 +978,75 @@ function Step2Apps({
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — Manifest (optional)
+// Step 3 — Email (optional)
 // ---------------------------------------------------------------------------
 
-function Step3Manifest({
+function Step3Email({
+  email, onChange, tenantDisplayName,
+}: {
+  email: WizardEmail;
+  onChange: (e: WizardEmail) => void;
+  tenantDisplayName: string;
+}) {
+  const fromBad = email.fromAddress.length > 0 && !EMAIL_PATTERN.test(email.fromAddress);
+  const replyToBad = email.replyToAddress.length > 0 && !EMAIL_PATTERN.test(email.replyToAddress);
+  return (
+    <div className="bg-white border rounded p-6 space-y-4">
+      <div className="text-sm text-slate-500">Step 3 of 6 — Email (optional)</div>
+      <div className="text-xs text-slate-500">
+        Override the platform default mail-From for this tenant. All fields
+        optional — leave blank to use <code className="font-mono">noreply@mcp-mesh.io</code>{' '}
+        and the tenant display name. Domain authentication (so users see your
+        brand in the From line) is done after creation in the Email tab.
+      </div>
+
+      <label className="block">
+        <div className="text-xs text-slate-600 mb-1">From address</div>
+        <input
+          type="email"
+          value={email.fromAddress}
+          onChange={(e) => onChange({ ...email, fromAddress: e.target.value })}
+          placeholder="noreply@mcp-mesh.io"
+          className="w-full max-w-xl border rounded px-2 py-1 font-mono text-sm"
+        />
+        {fromBad && <div className="text-red-700 text-xs mt-1">Not a valid email address</div>}
+      </label>
+
+      <label className="block">
+        <div className="text-xs text-slate-600 mb-1">From display name</div>
+        <input
+          value={email.fromDisplayName}
+          onChange={(e) => onChange({ ...email, fromDisplayName: e.target.value })}
+          placeholder={tenantDisplayName || 'Tenant display name'}
+          className="w-full max-w-xl border rounded px-2 py-1 text-sm"
+        />
+      </label>
+
+      <label className="block">
+        <div className="text-xs text-slate-600 mb-1">Reply-To address (optional)</div>
+        <input
+          type="email"
+          value={email.replyToAddress}
+          onChange={(e) => onChange({ ...email, replyToAddress: e.target.value })}
+          placeholder=""
+          className="w-full max-w-xl border rounded px-2 py-1 font-mono text-sm"
+        />
+        {replyToBad && <div className="text-red-700 text-xs mt-1">Not a valid email address</div>}
+      </label>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 4 — Manifest (optional)
+// ---------------------------------------------------------------------------
+
+function Step4Manifest({
   file, onChange,
 }: { file: File | undefined; onChange: (f: File | undefined) => void }) {
   return (
     <div className="bg-white border rounded p-6 space-y-4">
-      <div className="text-sm text-slate-500">Step 3 of 5 — Manifest (optional)</div>
+      <div className="text-sm text-slate-500">Step 4 of 6 — Manifest (optional)</div>
       <FileDrop
         accept=".yaml,.yml,application/yaml,text/yaml"
         prompt={<>Drop your <code className="font-mono">&lt;tenant&gt;-manifest.yaml</code> here</>}
@@ -957,15 +1069,15 @@ function Step3Manifest({
 }
 
 // ---------------------------------------------------------------------------
-// Step 4 — Theme (optional)
+// Step 5 — Theme (optional)
 // ---------------------------------------------------------------------------
 
-function Step4Theme({
+function Step5Theme({
   file, onChange,
 }: { file: File | undefined; onChange: (f: File | undefined) => void }) {
   return (
     <div className="bg-white border rounded p-6 space-y-4">
-      <div className="text-sm text-slate-500">Step 4 of 5 — Theme (optional)</div>
+      <div className="text-sm text-slate-500">Step 5 of 6 — Theme (optional)</div>
       <FileDrop
         accept=".zip,application/zip,application/x-zip-compressed"
         prompt={<>Drop your theme <code className="font-mono">.zip</code> here</>}
@@ -1055,14 +1167,15 @@ function FileDrop({
 }
 
 // ---------------------------------------------------------------------------
-// Step 5 — Review
+// Step 6 — Review
 // ---------------------------------------------------------------------------
 
-function Step5Review({
-  basics, apps, manifestFile, themeFile,
+function Step6Review({
+  basics, apps, email, manifestFile, themeFile,
 }: {
   basics: WizardBasics;
   apps: WizardApp[];
+  email: WizardEmail;
   manifestFile: File | undefined;
   themeFile: File | undefined;
 }) {
@@ -1121,6 +1234,18 @@ function Step5Review({
             </tbody>
           </table>
         )}
+      </div>
+
+      <div className="bg-white border rounded p-4 space-y-2 text-sm">
+        <div className="font-semibold mb-1">Email</div>
+        <dl className="grid grid-cols-[120px_1fr] gap-y-1 text-sm">
+          <dt className="text-slate-500">From</dt>
+          <dd className="font-mono">{email.fromAddress.trim() || <span className="text-slate-500">noreply@mcp-mesh.io (platform default)</span>}</dd>
+          <dt className="text-slate-500">Display name</dt>
+          <dd>{email.fromDisplayName.trim() || <span className="text-slate-500">{basics.displayName} (tenant default)</span>}</dd>
+          <dt className="text-slate-500">Reply-To</dt>
+          <dd className="font-mono">{email.replyToAddress.trim() || <span className="text-slate-500">(KC default = From)</span>}</dd>
+        </dl>
       </div>
 
       <div className="bg-white border rounded p-4 space-y-1 text-sm">

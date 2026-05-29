@@ -47,7 +47,8 @@ class SmtpConfigBootstrapTest {
             25,
             "noreply@mcp-mesh.io",
             "{tenantDisplayName}",
-            Boolean.TRUE
+            Boolean.TRUE,
+            null
         );
     }
 
@@ -124,7 +125,7 @@ class SmtpConfigBootstrapTest {
     void buildSmtpConfig_substitutes_tenantDisplayName_token_in_template() {
         Tenant t = tenantStub();
         SmtpProperties templatedProps = new SmtpProperties(
-            null, null, null, "Auth ({tenantDisplayName})", null
+            null, null, null, "Auth ({tenantDisplayName})", null, null
         );
         var bootstrap = new SmtpConfigBootstrap(admin, tenantRepo, templatedProps);
 

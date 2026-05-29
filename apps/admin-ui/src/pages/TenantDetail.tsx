@@ -6,6 +6,7 @@ import { api } from '../api/client';
 import RoutesTab from '../features/routes/RoutesTab';
 import IdentityProvidersTab from '../features/idp/IdentityProvidersTab';
 import BrandingTab from '../features/branding/BrandingTab';
+import EmailTab from '../features/email/EmailTab';
 import PermissionsTab from '../features/roles/PermissionsTab';
 import RolesTab from '../features/roles/RolesTab';
 import DataServicesTab from '../features/data-services/DataServicesTab';
@@ -13,7 +14,7 @@ import UserRolesPopover from '../features/roles/UserRolesPopover';
 import { useRolesQuery } from '../features/roles/useRolesQuery';
 import { useUserRealmRolesQueries } from '../features/roles/useUserRealmRolesQueries';
 
-type TabKey = 'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'permissions' | 'roles' | 'data-services' | 'users' | 'audit';
+type TabKey = 'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'email' | 'permissions' | 'roles' | 'data-services' | 'users' | 'audit';
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -43,6 +44,10 @@ export default function TenantDetail() {
     if (canEditRoutes)       t.push('routes');
     if (canEditIdp)          t.push('identity-providers');
     if (canEditBranding)     t.push('branding');
+    // Email tab uses TENANT_EDIT for writes, TENANT_VIEW for reads. Visible
+    // whenever the caller can see the tenant — the form is read-only without
+    // TENANT_EDIT (gated inside the tab).
+    if (canViewTenant)       t.push('email');
     if (canEditPermissions)  t.push('permissions');
     if (canEditRoles)        t.push('roles');
     // Data Services tab is read-on-VIEW, mutate-on-EDIT (the tab itself
@@ -95,8 +100,9 @@ export default function TenantDetail() {
       {tab === 'overview' && <OverviewTab tenant={t} />}
       {tab === 'apps' && <AppsTab tenantId={t.id} />}
       {tab === 'routes' && <RoutesTab slug={t.slug} />}
-      {tab === 'identity-providers' && <IdentityProvidersTab slug={t.slug} />}
+      {tab === 'identity-providers' && <IdentityProvidersTab slug={t.slug} tenantId={t.id} />}
       {tab === 'branding' && <BrandingTab slug={t.slug} />}
+      {tab === 'email' && <EmailTab tenantId={t.id} />}
       {tab === 'permissions' && <PermissionsTab id={t.id} slug={t.slug} />}
       {tab === 'roles' && <RolesTab slug={t.slug} />}
       {tab === 'data-services' && <DataServicesTab tenantId={t.id} />}
