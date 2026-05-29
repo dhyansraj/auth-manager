@@ -124,11 +124,14 @@
     <div class="${properties.kcLoginClass!}">
       <div class="${properties.kcContainerClass!}">
         <header class="${properties.kcHeaderClass!}">
-          <h1 id="kc-page-title">${msg("loginTitleHtml",(realm.displayName!''))?no_esc}</h1>
+          <#-- Nest login.ftl's "header" section inside <h1>. Mirrors
+               keycloak.v2 and avoids the duplicate-title bug from
+               rendering loginTitleHtml here AND letting login.ftl's
+               header section render as separate text below. -->
+          <h1 id="kc-page-title"><#nested "header"></h1>
         </header>
         <main class="${properties.kcMainClass!}">
           <div class="${properties.kcContentClass!}">
-            <#nested "header">
             <#nested "form">
             <#nested "info">
             <#nested "socialProviders">
