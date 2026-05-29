@@ -62,21 +62,22 @@ public class LoginMethodService {
     public static final String MCPMESH_BROWSER_FLOW = "mcpmesh-browser";
 
     /**
-     * The display name KC assigns to the Username Password Form leaf execution
-     * inside the Forms subflow of the standard browser flow. Stable across KC
-     * versions (we tested against 26.x).
+     * Provider ID of the Username Password Form leaf execution. Stable across
+     * KC versions (verified on 26.x). We match by {@code providerId} rather
+     * than {@code displayName} because KC v26 prefixes cloned-subflow
+     * displayNames with the parent flow alias (e.g. {@code "mcpmesh-browser
+     * forms"}) — the displayName is therefore unreliable.
      */
-    public static final String USERNAME_PASSWORD_EXECUTION = "Username Password Form";
+    public static final String UPF_PROVIDER_ID = "auth-username-password-form";
 
     /**
-     * Display name of the {@code Forms} subflow parent execution in the
-     * standard browser flow. Toggling the leaf UPF requirement alone leaves
-     * the Forms subflow with no executable children — KC then errors with
-     * "Unexpected error when handling authentication request to identity
-     * provider" because it tries to enter Forms but nothing inside can run.
-     * Fix: keep Forms's requirement in lock-step with UPF.
+     * Provider ID of the "Organization Identity-First Login" leaf inside the
+     * KC v26 Organization subflow. We use this as the anchor to locate the
+     * enclosing Organization subflow (which has no stable name or providerId
+     * of its own). Missing on older KC versions — see
+     * {@link #mutatePasswordRequirement}.
      */
-    public static final String FORMS_SUBFLOW_NAME = "Forms";
+    public static final String ORGANIZATION_PROVIDER_ID = "organization";
 
     private static final ActorKind ACTOR_KIND = ActorKind.USER;
 
@@ -231,7 +232,7 @@ public class LoginMethodService {
         try {
             for (AuthenticationExecutionInfoRepresentation exec :
                     realm.flows().getExecutions(flowAlias)) {
-                if (USERNAME_PASSWORD_EXECUTION.equals(exec.getDisplayName())) {
+                if (UPF_PROVIDER_ID.equals(exec.getProviderId())) {
                     String req = exec.getRequirement();
                     return "REQUIRED".equals(req) || "ALTERNATIVE".equals(req);
                 }
@@ -245,64 +246,135 @@ public class LoginMethodService {
         return false;
     }
 
+    /**
+     * Flips the password-form execution's requirement, along with the
+     * enclosing Forms subflow and (on KC v26+) the top-level Organization
+     * subflow.
+     *
+     * <h3>Why we touch three executions, not just UPF</h3>
+     *
+     * <p>KC's {@code AuthenticationSelectionResolver} recurses into all
+     * ALTERNATIVE subflows when building the login-page selection list.
+     * For each CONDITIONAL inner subflow it encounters it calls
+     * {@code Condition - user configured}, whose authenticator
+     * dereferences {@code user.credentialManager()} — which NPEs at
+     * login-page render time because no user is identified yet. When
+     * password is ON, KC's Forms path runs UPF first (identifying the
+     * user), so the inner conditional sees a non-null user and is fine.
+     * But if we set ONLY UPF to DISABLED and leave Forms ALTERNATIVE, the
+     * selection-list builder still descends into Forms looking for an
+     * alternative authenticator, hits the 2FA conditional, NPEs. Same
+     * hazard on the top-level Organization subflow (it contains a
+     * Conditional-Organization → Condition-user-configured chain).
+     *
+     * <p>Fix: set both subflows to DISABLED when password is off so the
+     * selection resolver never descends into them. On re-enable, restore
+     * to ALTERNATIVE (KC v26's default for both).
+     *
+     * <h3>Structural lookup (no display-name matching)</h3>
+     *
+     * <p>KC v26 prefixes cloned-subflow displayNames with the parent flow
+     * alias (e.g. the {@code forms} subflow becomes
+     * {@code mcpmesh-browser forms} when cloned). We therefore find
+     * executions by structure:
+     * <ul>
+     *   <li>UPF: {@code providerId == "auth-username-password-form"}.</li>
+     *   <li>Forms: the nearest preceding subflow with
+     *       {@code level == upf.level - 1}.</li>
+     *   <li>Organization: the nearest preceding {@code level == 0} subflow
+     *       before the {@code "organization"} leaf. Optional — older KCs
+     *       have no such subflow; we log and skip.</li>
+     * </ul>
+     *
+     * <h3>Always re-applies (no "already correct" skip)</h3>
+     *
+     * <p>This method never short-circuits on "already in desired state". A
+     * partially broken realm (e.g. UPF=DISABLED but Forms=ALTERNATIVE from
+     * an earlier buggy version) is repaired the next time the operator
+     * toggles the switch.
+     */
     private void mutatePasswordRequirement(String realmName, boolean enabled) {
         RealmResource realm = kcAdmin.realm(realmName);
         var executions = realm.flows().getExecutions(MCPMESH_BROWSER_FLOW);
 
-        AuthenticationExecutionInfoRepresentation forms = null;
+        // 1. Locate UPF by providerId.
         AuthenticationExecutionInfoRepresentation upf = null;
+        int upfIdx = -1;
         for (int i = 0; i < executions.size(); i++) {
             var exec = executions.get(i);
-            if (forms == null
-                && FORMS_SUBFLOW_NAME.equals(exec.getDisplayName())
-                && Boolean.TRUE.equals(exec.getAuthenticationFlow())) {
-                forms = exec;
-                continue;
+            if (UPF_PROVIDER_ID.equals(exec.getProviderId())) {
+                upf = exec;
+                upfIdx = i;
+                break;
             }
-            // UPF lives one level deeper than Forms in the standard browser
-            // flow. Match the first UPF execution after the Forms parent so
-            // we don't pick up an unrelated execution if KC ever adds one at
-            // the top level.
-            if (upf == null && USERNAME_PASSWORD_EXECUTION.equals(exec.getDisplayName())) {
-                if (forms == null) {
-                    // Defensive: if KC ever flattens the flow, still toggle the leaf.
-                    upf = exec;
-                } else if (exec.getLevel() > forms.getLevel()) {
-                    upf = exec;
+        }
+        if (upf == null) {
+            throw new RuntimeException(
+                "Cannot find Username Password Form (providerId=" + UPF_PROVIDER_ID
+                    + ") in flow " + MCPMESH_BROWSER_FLOW + " on realm " + realmName);
+        }
+
+        // 2. Locate Forms = nearest preceding subflow one level shallower than UPF.
+        AuthenticationExecutionInfoRepresentation forms = null;
+        for (int i = upfIdx - 1; i >= 0; i--) {
+            var exec = executions.get(i);
+            if (Boolean.TRUE.equals(exec.getAuthenticationFlow())
+                && exec.getLevel() == upf.getLevel() - 1) {
+                forms = exec;
+                break;
+            }
+        }
+
+        // 3. Locate Organization (KC v26+) = nearest preceding level-0 subflow
+        //    before the "organization" provider leaf.
+        AuthenticationExecutionInfoRepresentation organization = null;
+        int orgLeafIdx = -1;
+        for (int i = 0; i < executions.size(); i++) {
+            if (ORGANIZATION_PROVIDER_ID.equals(executions.get(i).getProviderId())) {
+                orgLeafIdx = i;
+                break;
+            }
+        }
+        if (orgLeafIdx >= 0) {
+            for (int i = orgLeafIdx - 1; i >= 0; i--) {
+                var exec = executions.get(i);
+                if (Boolean.TRUE.equals(exec.getAuthenticationFlow())
+                    && exec.getLevel() == 0) {
+                    organization = exec;
+                    break;
                 }
             }
         }
-
-        if (upf == null) {
-            throw new RuntimeException(
-                "Cannot find '" + USERNAME_PASSWORD_EXECUTION + "' execution in flow "
-                    + MCPMESH_BROWSER_FLOW + " on realm " + realmName);
+        if (organization == null) {
+            log.debug("LoginMethodService: realm '{}' has no Organization subflow "
+                + "(pre-KC26 or stripped flow) — skipping that mutation", realmName);
         }
 
-        String want = enabled ? "REQUIRED" : "DISABLED";
-        boolean changed = false;
+        // 4. Apply. ALTERNATIVE is KC v26's default requirement for both
+        //    subflows; REQUIRED is the default for the UPF leaf.
+        String subflowWant = enabled ? "ALTERNATIVE" : "DISABLED";
+        String upfWant = enabled ? "REQUIRED" : "DISABLED";
 
-        // Toggle the Forms subflow first — required to keep KC's flow walker
-        // from entering a subflow with no executable children when password
-        // is off.
-        if (forms != null && !want.equals(forms.getRequirement())) {
-            forms.setRequirement(want);
+        if (forms != null) {
+            forms.setRequirement(subflowWant);
             realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, forms);
             log.info("LoginMethodService: realm '{}' Forms subflow requirement → '{}'",
-                realmName, want);
-            changed = true;
+                realmName, subflowWant);
+        } else {
+            log.warn("LoginMethodService: realm '{}' has no Forms subflow parent of UPF "
+                + "— flipping leaf only", realmName);
         }
 
-        if (!want.equals(upf.getRequirement())) {
-            upf.setRequirement(want);
-            realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, upf);
-            log.info("LoginMethodService: realm '{}' Username Password Form requirement → '{}'",
-                realmName, want);
-            changed = true;
-        }
+        upf.setRequirement(upfWant);
+        realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, upf);
+        log.info("LoginMethodService: realm '{}' Username Password Form requirement → '{}'",
+            realmName, upfWant);
 
-        if (!changed) {
-            log.debug("LoginMethodService: realm '{}' password requirement already '{}'", realmName, want);
+        if (organization != null) {
+            organization.setRequirement(subflowWant);
+            realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, organization);
+            log.info("LoginMethodService: realm '{}' Organization subflow requirement → '{}'",
+                realmName, subflowWant);
         }
     }
 }

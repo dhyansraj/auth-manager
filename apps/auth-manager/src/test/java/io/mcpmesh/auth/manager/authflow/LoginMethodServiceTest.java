@@ -38,8 +38,30 @@ import static org.mockito.Mockito.when;
 /**
  * Unit tests for {@link LoginMethodService}. Stubs the KC admin client at the
  * flows() / realm() level and validates the clone-on-first-call behavior,
- * the password-toggle requirement flip, and the "no methods remaining"
- * invariant.
+ * the password-toggle requirement flip across {@code Forms}, the UPF leaf,
+ * and (KC v26+) the {@code Organization} subflow, plus the "no methods
+ * remaining" invariant.
+ *
+ * <p>Flow layouts in this test mirror the verified-live KC v26 structure of
+ * the cloned {@code mcpmesh-browser} flow on a real tenant realm:
+ *
+ * <pre>
+ * level 0: Cookie                            (authenticator)
+ * level 0: Identity Provider Redirector      (authenticator)
+ * level 0: mcpmesh-browser Organization      (subflow)        ← Organization parent
+ * level 1:   organization (Org Identity-First)  (authenticator, providerId=organization)
+ * level 1:   mcpmesh-browser Browser - Conditional Organization (subflow, CONDITIONAL)
+ * level 2:     condition-user-configured     (authenticator)
+ * level 0: mcpmesh-browser forms             (subflow)        ← Forms parent
+ * level 1:   auth-username-password-form     (authenticator, providerId=auth-username-password-form)
+ * level 1:   mcpmesh-browser Browser - Conditional 2FA (subflow, CONDITIONAL)
+ * level 2:     condition-user-configured     (authenticator)
+ * </pre>
+ *
+ * <p>Note: KC v26 prefixes cloned-subflow display names with the parent flow
+ * alias, so {@code "forms"} becomes {@code "mcpmesh-browser forms"}. We
+ * intentionally use realistic display names (and at least one arbitrary one)
+ * to guard against any future regression that hard-codes a name match.
  */
 class LoginMethodServiceTest {
 
@@ -106,24 +128,21 @@ class LoginMethodServiceTest {
         when(flowsResource.copy(eq(LoginMethodService.BUILTIN_BROWSER_FLOW), any()))
             .thenReturn(copyResp);
 
-        // For the post-mutation get() in the service return, executions show
-        // the password form as DISABLED after the flip + REQUIRED for the
-        // initial isPasswordEnabled check used by the audit/log line.
-        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
-        List<AuthenticationExecutionInfoRepresentation> execs = new ArrayList<>(List.of(formsExec, passwordExec));
-        when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW)).thenReturn(execs);
+        Kcv26FlowLayout layout = kcv26Layout("REQUIRED", "ALTERNATIVE", "ALTERNATIVE");
+        when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
+            .thenReturn(new ArrayList<>(layout.all));
 
         LoginMethodStatus status = service.setPasswordEnabled(TENANT_ID, false, "alice");
 
         verify(flowsResource).copy(eq(LoginMethodService.BUILTIN_BROWSER_FLOW), any());
         verify(realmResource).update(realmRep);
         assertThat(realmRep.getBrowserFlow()).isEqualTo(LoginMethodService.MCPMESH_BROWSER_FLOW);
-        // Both Forms and UPF must be PUT.
-        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+        // Forms, UPF, AND Organization should all be PUT.
+        verify(flowsResource, times(3)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
-        assertThat(passwordExec.getRequirement()).isEqualTo("DISABLED");
-        assertThat(formsExec.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.upf.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.forms.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.organization.getRequirement()).isEqualTo("DISABLED");
         assertThat(status.passwordEnabled()).isFalse();
         verify(audit).recordSuccess(anyString(), any(), any(), anyString(),
             anyString(), anyString(), any(), any());
@@ -137,17 +156,17 @@ class LoginMethodServiceTest {
         when(copyResp.getStatus()).thenReturn(201);
         when(flowsResource.copy(eq(LoginMethodService.BUILTIN_BROWSER_FLOW), any()))
             .thenReturn(copyResp);
-        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "DISABLED", 0);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "DISABLED", 1);
+        Kcv26FlowLayout layout = kcv26Layout("DISABLED", "DISABLED", "DISABLED");
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
+            .thenReturn(new ArrayList<>(layout.all));
 
         LoginMethodStatus status = service.setPasswordEnabled(TENANT_ID, true, "alice");
 
-        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+        verify(flowsResource, times(3)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
-        assertThat(passwordExec.getRequirement()).isEqualTo("REQUIRED");
-        assertThat(formsExec.getRequirement()).isEqualTo("REQUIRED");
+        assertThat(layout.upf.getRequirement()).isEqualTo("REQUIRED");
+        assertThat(layout.forms.getRequirement()).isEqualTo("ALTERNATIVE");
+        assertThat(layout.organization.getRequirement()).isEqualTo("ALTERNATIVE");
         assertThat(status.passwordEnabled()).isTrue();
     }
 
@@ -161,10 +180,9 @@ class LoginMethodServiceTest {
         when(copyResp.getStatus()).thenReturn(201);
         when(flowsResource.copy(eq(LoginMethodService.BUILTIN_BROWSER_FLOW), any()))
             .thenReturn(copyResp);
-        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
+        Kcv26FlowLayout layout = kcv26Layout("REQUIRED", "ALTERNATIVE", "ALTERNATIVE");
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
+            .thenReturn(new ArrayList<>(layout.all));
 
         service.setPasswordEnabled(TENANT_ID, true, "alice");
 
@@ -178,79 +196,187 @@ class LoginMethodServiceTest {
             .thenReturn(new LinkedHashSet<>(List.of("google")));
         // Realm already points at mcpmesh-browser → no clone, no realm.update().
         realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
-        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
+        Kcv26FlowLayout layout = kcv26Layout("REQUIRED", "ALTERNATIVE", "ALTERNATIVE");
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
+            .thenReturn(new ArrayList<>(layout.all));
 
         service.setPasswordEnabled(TENANT_ID, false, "alice");
 
         verify(flowsResource, never()).copy(anyString(), any());
         verify(realmResource, never()).update(any(RealmRepresentation.class));
-        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+        verify(flowsResource, times(3)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
-        assertThat(passwordExec.getRequirement()).isEqualTo("DISABLED");
-        assertThat(formsExec.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.upf.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.forms.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.organization.getRequirement()).isEqualTo("DISABLED");
     }
 
     @Test
-    void setPasswordEnabled_false_disablesBothFormsAndUpf() {
+    void setPasswordEnabled_false_disablesFormsUpfAndOrganization() {
         when(idp.listEnabledProviders(REALM))
             .thenReturn(new LinkedHashSet<>(List.of("google")));
         realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
-        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
+        Kcv26FlowLayout layout = kcv26Layout("REQUIRED", "ALTERNATIVE", "ALTERNATIVE");
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
+            .thenReturn(new ArrayList<>(layout.all));
 
         service.setPasswordEnabled(TENANT_ID, false, "alice");
 
-        // Verify both executions were PUT to KC and both ended up DISABLED.
-        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+        // All three executions must be PUT to KC and all three end DISABLED.
+        verify(flowsResource, times(3)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
-        assertThat(formsExec.getRequirement()).isEqualTo("DISABLED");
-        assertThat(passwordExec.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.forms.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.upf.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.organization.getRequirement()).isEqualTo("DISABLED");
     }
 
     @Test
-    void setPasswordEnabled_true_restoresBothFormsAndUpfToRequired() {
+    void setPasswordEnabled_true_restoresFormsToAlternative_upfToRequired_organizationToAlternative() {
         when(idp.listEnabledProviders(REALM)).thenReturn(Set.of());
         realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
-        // Both currently DISABLED (the bug-2 broken state from a prior toggle).
-        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "DISABLED", 0);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "DISABLED", 1);
+        // The broken state from a prior bug: everything DISABLED.
+        Kcv26FlowLayout layout = kcv26Layout("DISABLED", "DISABLED", "DISABLED");
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
+            .thenReturn(new ArrayList<>(layout.all));
 
         service.setPasswordEnabled(TENANT_ID, true, "alice");
 
+        verify(flowsResource, times(3)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+            any(AuthenticationExecutionInfoRepresentation.class));
+        assertThat(layout.forms.getRequirement()).isEqualTo("ALTERNATIVE");
+        assertThat(layout.upf.getRequirement()).isEqualTo("REQUIRED");
+        assertThat(layout.organization.getRequirement()).isEqualTo("ALTERNATIVE");
+    }
+
+    @Test
+    void setPasswordEnabled_repairsPartiallyBrokenState_evenWhenLeafAlreadyDisabled() {
+        // Simulates a tenant left in the bug-2 broken state:
+        // UPF=DISABLED but Forms=ALTERNATIVE, Organization=ALTERNATIVE — exactly
+        // what the previous bad fix produced. New code must still PUT all three
+        // (no "already correct, skip" early-return).
+        when(idp.listEnabledProviders(REALM))
+            .thenReturn(new LinkedHashSet<>(List.of("google")));
+        realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
+        Kcv26FlowLayout layout = kcv26Layout("DISABLED", "ALTERNATIVE", "ALTERNATIVE");
+        when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
+            .thenReturn(new ArrayList<>(layout.all));
+
+        service.setPasswordEnabled(TENANT_ID, false, "alice");
+
+        verify(flowsResource, times(3)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+            any(AuthenticationExecutionInfoRepresentation.class));
+        assertThat(layout.forms.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.upf.getRequirement()).isEqualTo("DISABLED");
+        assertThat(layout.organization.getRequirement()).isEqualTo("DISABLED");
+    }
+
+    @Test
+    void setPasswordEnabled_silentlySkipsOrganization_whenSubflowMissing_olderKc() {
+        when(idp.listEnabledProviders(REALM))
+            .thenReturn(new LinkedHashSet<>(List.of("google")));
+        realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
+        // Older-KC layout: no Organization subflow / no "organization" leaf.
+        var cookie = makeExec("Cookie", "ALTERNATIVE", "auth-cookie", false, 0);
+        var idpRedirect = makeExec("Identity Provider Redirector", "ALTERNATIVE",
+            "identity-provider-redirector", false, 0);
+        var forms = makeSubflow("forms", "ALTERNATIVE", 0);
+        var upf = makeExec("Username Password Form", "REQUIRED", "auth-username-password-form", false, 1);
+        when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
+            .thenReturn(new ArrayList<>(List.of(cookie, idpRedirect, forms, upf)));
+
+        service.setPasswordEnabled(TENANT_ID, false, "alice");
+
+        // Only Forms + UPF are PUT; Organization mutation silently skipped.
         verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
-        assertThat(formsExec.getRequirement()).isEqualTo("REQUIRED");
-        assertThat(passwordExec.getRequirement()).isEqualTo("REQUIRED");
+        assertThat(forms.getRequirement()).isEqualTo("DISABLED");
+        assertThat(upf.getRequirement()).isEqualTo("DISABLED");
+    }
+
+    @Test
+    void setPasswordEnabled_findsFormsByStructure_ignoringDisplayName() {
+        // Forms has an arbitrary displayName ("mcpmesh-browser foo" — could be
+        // any KC quirk) but is still the level-0 subflow parent of UPF.
+        when(idp.listEnabledProviders(REALM))
+            .thenReturn(new LinkedHashSet<>(List.of("google")));
+        realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
+        var cookie = makeExec("Cookie", "ALTERNATIVE", "auth-cookie", false, 0);
+        var weirdForms = makeSubflow("mcpmesh-browser foo", "ALTERNATIVE", 0);
+        var upf = makeExec("Some Random Display Name", "REQUIRED",
+            "auth-username-password-form", false, 1);
+        when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
+            .thenReturn(new ArrayList<>(List.of(cookie, weirdForms, upf)));
+
+        service.setPasswordEnabled(TENANT_ID, false, "alice");
+
+        // Forms identified despite the arbitrary displayName.
+        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+            any(AuthenticationExecutionInfoRepresentation.class));
+        assertThat(weirdForms.getRequirement()).isEqualTo("DISABLED");
+        assertThat(upf.getRequirement()).isEqualTo("DISABLED");
     }
 
     // -- helpers --------------------------------------------------------------
 
-    private static AuthenticationExecutionInfoRepresentation makeExec(String displayName, String requirement) {
-        return makeExec(displayName, requirement, 0);
-    }
-
-    private static AuthenticationExecutionInfoRepresentation makeExec(String displayName, String requirement, int level) {
+    private static AuthenticationExecutionInfoRepresentation makeExec(
+            String displayName, String requirement, String providerId,
+            boolean authenticationFlow, int level) {
         AuthenticationExecutionInfoRepresentation e = new AuthenticationExecutionInfoRepresentation();
         e.setDisplayName(displayName);
         e.setRequirement(requirement);
+        e.setProviderId(providerId);
+        e.setAuthenticationFlow(authenticationFlow);
         e.setLevel(level);
         return e;
     }
 
-    private static AuthenticationExecutionInfoRepresentation makeSubflow(String displayName, String requirement, int level) {
-        AuthenticationExecutionInfoRepresentation e = new AuthenticationExecutionInfoRepresentation();
-        e.setDisplayName(displayName);
-        e.setRequirement(requirement);
-        e.setAuthenticationFlow(true);
-        e.setLevel(level);
-        return e;
+    private static AuthenticationExecutionInfoRepresentation makeSubflow(
+            String displayName, String requirement, int level) {
+        // KC's REST returns subflow representations without a providerId.
+        return makeExec(displayName, requirement, null, true, level);
+    }
+
+    /**
+     * Builds a list of executions mirroring the live KC v26 cloned-browser
+     * structure, exposing the three mutation targets (forms, upf, organization)
+     * as named fields for assertion.
+     */
+    private static Kcv26FlowLayout kcv26Layout(
+            String upfRequirement, String formsRequirement, String organizationRequirement) {
+        Kcv26FlowLayout l = new Kcv26FlowLayout();
+        var cookie = makeExec("Cookie", "ALTERNATIVE", "auth-cookie", false, 0);
+        var kerberos = makeExec("Kerberos", "DISABLED", "auth-spnego", false, 0);
+        var idpRedirect = makeExec("Identity Provider Redirector", "ALTERNATIVE",
+            "identity-provider-redirector", false, 0);
+        l.organization = makeSubflow("mcpmesh-browser Organization", organizationRequirement, 0);
+        var orgLeaf = makeExec("Organization Identity-First Login", "ALTERNATIVE",
+            "organization", false, 1);
+        var orgConditional = makeSubflow(
+            "mcpmesh-browser Browser - Conditional Organization", "CONDITIONAL", 1);
+        var orgCondUserConfigured = makeExec("Condition - user configured", "REQUIRED",
+            "conditional-user-configured", false, 2);
+        l.forms = makeSubflow("mcpmesh-browser forms", formsRequirement, 0);
+        l.upf = makeExec("Username Password Form", upfRequirement,
+            "auth-username-password-form", false, 1);
+        var browser2fa = makeSubflow(
+            "mcpmesh-browser Browser - Conditional 2FA", "CONDITIONAL", 1);
+        var twofaCondUserConfigured = makeExec("Condition - user configured", "REQUIRED",
+            "conditional-user-configured", false, 2);
+
+        l.all = List.of(
+            cookie, kerberos, idpRedirect,
+            l.organization, orgLeaf, orgConditional, orgCondUserConfigured,
+            l.forms, l.upf, browser2fa, twofaCondUserConfigured
+        );
+        return l;
+    }
+
+    /** Bundle of the named executions in a kcv26Layout for easy assertion. */
+    private static final class Kcv26FlowLayout {
+        AuthenticationExecutionInfoRepresentation forms;
+        AuthenticationExecutionInfoRepresentation upf;
+        AuthenticationExecutionInfoRepresentation organization;
+        List<AuthenticationExecutionInfoRepresentation> all;
     }
 
     private static AuthenticationFlowRepresentation builtinFlowRepr() {
