@@ -136,13 +136,20 @@ function Row({ k, v }: { k: string, v: React.ReactNode }) {
   );
 }
 
+// SA permissions catalog. Kept in sync (manually) with TenantWizard's preset;
+// the backend validates against the live usermanagement client-roles set, so
+// anything unknown will be rejected server-side regardless of what we list.
+const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT_VIEW'];
+
 function AppsTab({ tenantId }: { tenantId: string }) {
   const qc = useQueryClient();
+  const canEditApps = usePermission('APPS_EDIT');
   const apps = useQuery({ queryKey: ['apps', tenantId], queryFn: () => api.listApps(tenantId) });
   const [showCreate, setShowCreate] = useState(false);
   const [slug, setSlug] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+  const [saModalApp, setSaModalApp] = useState<import('../api/types').App | null>(null);
 
   const create = useMutation({
     mutationFn: () => api.createApp(tenantId, { slug, displayName }),
@@ -191,19 +198,149 @@ function AppsTab({ tenantId }: { tenantId: string }) {
         </thead>
         <tbody>
           {(apps.data ?? []).map(a => (
-            <tr key={a.id} className="border-t">
+            <tr
+              key={a.id}
+              className={'border-t ' + (canEditApps ? 'cursor-pointer hover:bg-slate-50' : '')}
+              onClick={canEditApps ? () => setSaModalApp(a) : undefined}
+              title={canEditApps ? 'Click to edit service account permissions' : undefined}
+            >
               <td className="px-3 py-2 font-mono">{a.slug}</td>
               <td className="px-3 py-2">{a.displayName}</td>
               <td className="px-3 py-2 text-slate-500">{new Date(a.createdAt).toLocaleDateString()}</td>
               <td className="px-3 py-2 text-right">
-                <button onClick={() => { if (confirm(`Delete app ${a.slug}?`)) del.mutate(a.id); }}
-                        className="text-red-700 hover:underline text-xs">Delete</button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm(`Delete app ${a.slug}?`)) del.mutate(a.id);
+                  }}
+                  className="text-red-700 hover:underline text-xs"
+                >Delete</button>
               </td>
             </tr>
           ))}
           {(apps.data ?? []).length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500">No apps yet</td></tr>}
         </tbody>
       </table>
+
+      {saModalApp && (
+        <ServiceAccountPermissionsModal
+          tenantId={tenantId}
+          app={saModalApp}
+          onClose={() => setSaModalApp(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Modal for editing an app's service-account permissions (KC client roles on
+ * the `usermanagement` client). Fetches the current set on open, lets the
+ * operator toggle the SA_PERMISSION_PRESET catalog, and PUTs the new set on
+ * Save. Apps without a service account (e.g. SPA_PKCE) render a short notice
+ * instead of checkboxes.
+ *
+ * Detection: the GET endpoint returns an empty list for two distinct cases —
+ * (a) the app's client has no SA at all (SPA_PKCE), or (b) the SA exists but
+ * has zero perms granted. We can't disambiguate from the wire response alone,
+ * so we just show checkboxes-with-empty-state in both cases; the backend will
+ * reject the Save with a clear error if the SA truly doesn't exist.
+ */
+function ServiceAccountPermissionsModal({
+  tenantId, app, onClose,
+}: {
+  tenantId: string;
+  app: import('../api/types').App;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const current = useQuery({
+    queryKey: ['app-sa-perms', tenantId, app.id],
+    queryFn: () => api.getServiceAccountPermissions(tenantId, app.id),
+  });
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+
+  // Initialize the checkbox state once the GET resolves.
+  useEffect(() => {
+    if (current.data && selected === null) {
+      setSelected(new Set(current.data.permissions));
+    }
+  }, [current.data, selected]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.updateServiceAccountPermissions(tenantId, app.id, Array.from(selected ?? new Set())),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['apps', tenantId] });
+      qc.invalidateQueries({ queryKey: ['app-sa-perms', tenantId, app.id] });
+      onClose();
+    },
+  });
+
+  const toggle = (p: string) => {
+    setSelected(prev => {
+      const next = new Set(prev ?? new Set<string>());
+      if (next.has(p)) next.delete(p); else next.add(p);
+      return next;
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/30 flex items-start justify-center p-6 overflow-y-auto"
+         onClick={onClose}>
+      <div className="bg-white rounded shadow-lg w-full max-w-lg p-5 space-y-3 mt-12"
+           onClick={(e) => e.stopPropagation()}>
+        <div>
+          <h3 className="text-lg font-semibold">Service account permissions</h3>
+          <div className="text-sm text-slate-500">
+            <span>{app.displayName}</span>
+            <span className="ml-2 font-mono text-xs">({app.slug})</span>
+          </div>
+        </div>
+        <div className="text-xs text-slate-500">
+          Granted to this app's service account on the usermanagement client.
+          Tenant-app backends using client_credentials authenticate with these
+          permissions.
+        </div>
+
+        {current.isLoading && <div className="text-sm text-slate-500">Loading…</div>}
+        {current.isError && (
+          <div className="text-red-700 text-sm">{String(current.error)}</div>
+        )}
+
+        {current.data && selected !== null && (
+          <div className="space-y-1">
+            {SA_PERMISSION_PRESET.map(p => (
+              <label key={p} className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selected.has(p)}
+                  onChange={() => toggle(p)}
+                />
+                <span className="font-mono text-xs">{p}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {save.isError && (
+          <div className="text-red-700 text-xs">{String(save.error)}</div>
+        )}
+
+        <div className="flex gap-2 justify-end pt-2 border-t">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm text-slate-600 hover:text-slate-900 px-3 py-1"
+          >Cancel</button>
+          <button
+            type="button"
+            onClick={() => save.mutate()}
+            disabled={save.isPending || current.isLoading || selected === null}
+            className="bg-slate-900 text-white px-3 py-1 rounded text-sm hover:bg-slate-700 disabled:opacity-50"
+          >{save.isPending ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
     </div>
   );
 }

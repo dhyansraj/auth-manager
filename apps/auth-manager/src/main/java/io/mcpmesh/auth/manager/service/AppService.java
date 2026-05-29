@@ -289,6 +289,26 @@ public class AppService {
     }
 
     /**
+     * Current SA assignments on usermanagement for this app's service account.
+     * Returns empty list when the app's client has no service account (e.g.,
+     * SPA_PKCE) -- does NOT throw.
+     */
+    @Transactional(readOnly = true)
+    public List<String> getServiceAccountPermissions(UUID tenantId, UUID appId) {
+        App app = get(tenantId, appId);
+        Tenant tenant = tenants.get(tenantId);
+        String realmName = tenant.getRealmName();
+
+        String appClientUuid = keycloak.findClientUuid(realmName, app.getClientId()).orElse(null);
+        if (appClientUuid == null) return List.of();
+        String saUserId = keycloak.findServiceAccountUserId(realmName, appClientUuid).orElse(null);
+        if (saUserId == null) return List.of();
+
+        return keycloak.getUserClientRoles(realmName, saUserId, UsermanagementBootstrap.CLIENT_SLUG)
+            .stream().sorted().toList();
+    }
+
+    /**
      * Replaces the app's service-account user assignments on the
      * {@code usermanagement} client with the given set (additive + removal).
      * Each name must exist as a client role on {@code usermanagement} (atomic

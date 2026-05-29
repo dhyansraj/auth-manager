@@ -96,6 +96,10 @@ export const api = {
       `/tenants/${tenantId}/apps`,
       { method: 'POST', body: JSON.stringify(body) }
     ),
+  getServiceAccountPermissions: (tenantId: string, appId: string) =>
+    req<{ permissions: string[] }>(
+      `/tenants/${tenantId}/apps/${appId}/service-account/permissions`
+    ),
   updateServiceAccountPermissions: (tenantId: string, appId: string, permissions: string[]) =>
     req<{ permissions: string[] }>(
       `/tenants/${tenantId}/apps/${appId}/service-account/permissions`,

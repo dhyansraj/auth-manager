@@ -70,6 +70,16 @@ public class AppController {
         service.delete(tenantId, appId, "system");
     }
 
+    @GetMapping("/{appId}/service-account/permissions")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'APPS_EDIT')")
+    public ServiceAccountPermissionsResponse getServiceAccountPermissions(
+        @PathVariable UUID tenantId,
+        @PathVariable UUID appId
+    ) {
+        return new ServiceAccountPermissionsResponse(
+            service.getServiceAccountPermissions(tenantId, appId));
+    }
+
     @PutMapping("/{appId}/service-account/permissions")
     @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'APPS_EDIT')")
     public ServiceAccountPermissionsResponse updateServiceAccountPermissions(
