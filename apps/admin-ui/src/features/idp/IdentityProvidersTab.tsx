@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api, ApiError } from '../../api/client';
@@ -5,10 +6,14 @@ import type { IdentityProviderDto, IdentityProviderId } from '../../api/types';
 
 interface Props {
   slug: string;
+  /** Tenant UUID — required for the login-methods endpoints (UUID-keyed). */
+  tenantId: string;
 }
 
-export default function IdentityProvidersTab({ slug }: Props) {
+export default function IdentityProvidersTab({ slug, tenantId }: Props) {
   const canManage = usePermission('IDP_EDIT');
+  // Password toggle is gated on TENANT_EDIT (the LoginMethodController guard).
+  const canManagePassword = usePermission('TENANT_EDIT');
   const qc = useQueryClient();
 
   const providers = useQuery({
@@ -17,10 +22,27 @@ export default function IdentityProvidersTab({ slug }: Props) {
     enabled: !!slug,
   });
 
+  const loginMethods = useQuery({
+    queryKey: ['login-methods', tenantId],
+    queryFn: () => api.getLoginMethods(tenantId),
+    enabled: !!tenantId,
+  });
+
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: IdentityProviderId; enabled: boolean }) =>
       api.setIdentityProviderEnabled(slug, id, enabled),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['identity-providers', slug] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['identity-providers', slug] });
+      // IdP toggles may affect login-methods status (e.g. last IdP gone).
+      qc.invalidateQueries({ queryKey: ['login-methods', tenantId] });
+    },
+  });
+
+  const togglePassword = useMutation({
+    mutationFn: (enabled: boolean) => api.setPasswordEnabled(tenantId, enabled),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['login-methods', tenantId] });
+    },
   });
 
   return (
@@ -55,6 +77,12 @@ export default function IdentityProvidersTab({ slug }: Props) {
         </div>
       )}
 
+      {togglePassword.isError && (
+        <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-900">
+          {passwordErrorMessage(togglePassword.error)}
+        </div>
+      )}
+
       {providers.data && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {providers.data.map(p => (
@@ -66,10 +94,87 @@ export default function IdentityProvidersTab({ slug }: Props) {
               onToggle={(enabled) => toggle.mutate({ id: p.id, enabled })}
             />
           ))}
+          <PasswordCard
+            loginMethods={loginMethods.data ?? null}
+            canManage={canManagePassword}
+            busy={togglePassword.isPending}
+            onToggle={(enabled) => togglePassword.mutate(enabled)}
+          />
         </div>
       )}
     </div>
   );
+}
+
+function PasswordCard({
+  loginMethods,
+  canManage,
+  busy,
+  onToggle,
+}: {
+  loginMethods: { passwordEnabled: boolean; enabledIdpAliases: string[] } | null;
+  canManage: boolean;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+}) {
+  const enabled = loginMethods?.passwordEnabled ?? false;
+  const disabled = !canManage || busy;
+  const tooltip = !canManage
+    ? 'You need tenant-admin privileges to change this.'
+    : undefined;
+
+  return (
+    <div className="bg-white border rounded p-4 flex items-start gap-3">
+      <div className="shrink-0 mt-0.5">
+        <KeycloakIcon />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex justify-between items-start gap-2">
+          <div>
+            <div className="font-semibold">Username / Password</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              Let users sign in with email and password. Disable to enforce
+              social-only login (at least one identity provider must remain
+              enabled).
+            </div>
+          </div>
+          <Toggle
+            checked={enabled}
+            disabled={disabled || !loginMethods}
+            title={tooltip}
+            onChange={(next) => onToggle(next)}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KeycloakIcon() {
+  // Simple lock-style glyph: avoids pulling in a binary asset and keeps the
+  // card visually consistent with the social provider icons.
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="#475569"
+        d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9zm3 4a2 2 0 0 1 1 3.7V19h-2v-1.3A2 2 0 0 1 12 14z"
+      />
+    </svg>
+  );
+}
+
+function passwordErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 400) {
+      // Surface backend's canonical "no methods remaining" code.
+      const m = err.message.match(/login\.no_methods_remaining[^"]*/);
+      if (m) return 'Cannot disable password — at least one identity provider must remain enabled.';
+    }
+    if (err.status === 403) {
+      return 'You don’t have permission to change login methods for this tenant.';
+    }
+  }
+  return String(err);
 }
 
 function ProviderCard({

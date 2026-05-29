@@ -4,6 +4,7 @@ import io.mcpmesh.auth.manager.api.dto.AuditEventResponse;
 import io.mcpmesh.auth.manager.api.dto.CreateTenantRequest;
 import io.mcpmesh.auth.manager.api.dto.PageResponse;
 import io.mcpmesh.auth.manager.api.dto.TenantResponse;
+import io.mcpmesh.auth.manager.authflow.LoginMethodService;
 import io.mcpmesh.auth.manager.domain.tenant.TenantStatus;
 import io.mcpmesh.auth.manager.email.SmtpConfigBootstrap;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
@@ -52,6 +53,7 @@ public class TenantController {
     private final TenantSecurity tenantSecurity;
     private final OnboardingBundleService bundleService;
     private final TenantDatabaseService databaseService;
+    private final LoginMethodService loginMethods;
 
     public TenantController(TenantService service, AuditEventRepository auditRepo,
                             UsermanagementBootstrap bootstrap,
@@ -59,7 +61,8 @@ public class TenantController {
                             SmtpConfigBootstrap smtpBootstrap,
                             TenantSecurity tenantSecurity,
                             OnboardingBundleService bundleService,
-                            TenantDatabaseService databaseService) {
+                            TenantDatabaseService databaseService,
+                            LoginMethodService loginMethods) {
         this.service = service;
         this.auditRepo = auditRepo;
         this.bootstrap = bootstrap;
@@ -68,6 +71,7 @@ public class TenantController {
         this.tenantSecurity = tenantSecurity;
         this.bundleService = bundleService;
         this.databaseService = databaseService;
+        this.loginMethods = loginMethods;
     }
 
     @PostMapping
@@ -95,6 +99,23 @@ public class TenantController {
                 } catch (Exception smtpErr) {
                     log.warn("SMTP reconcile failed for new tenant {}: {}",
                         t.getSlug(), smtpErr.getMessage());
+                }
+                // Phase 2: default new tenants to social-only login (password
+                // OFF). Skipped silently when no IdPs are enabled — the
+                // LoginMethodService guard refuses to leave the tenant with
+                // zero login methods. In that case the tenant comes up with
+                // password ON (built-in browser flow, no clone yet) and the
+                // operator can flip via the UI once IdPs are configured.
+                try {
+                    if (!idpBootstrap.listEnabledProviders(t.getRealmName()).isEmpty()) {
+                        loginMethods.setPasswordEnabledForTenant(t, false, "wizard");
+                    } else {
+                        log.info("Tenant {} created with no IdPs enabled — leaving password ON (default)",
+                            t.getSlug());
+                    }
+                } catch (Exception loginErr) {
+                    log.warn("Login-method default-OFF failed for new tenant {}: {}",
+                        t.getSlug(), loginErr.getMessage());
                 }
             } catch (RuntimeException bootstrapErr) {
                 // Bootstrap failed AFTER the realm + DB row were created. Mark the

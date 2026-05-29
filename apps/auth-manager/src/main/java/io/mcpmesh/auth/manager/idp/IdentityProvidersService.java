@@ -1,10 +1,13 @@
 package io.mcpmesh.auth.manager.idp;
 
 import io.mcpmesh.auth.manager.audit.AuditService;
+import io.mcpmesh.auth.manager.authflow.LoginMethodService;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.service.TenantService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -25,13 +28,24 @@ public class IdentityProvidersService {
     private final TenantService tenants;
     private final IdentityProvidersBootstrap idp;
     private final AuditService audit;
+    private final LoginMethodService loginMethods;
 
+    /**
+     * Note the {@code @Lazy} on {@code loginMethods}: the two services have a
+     * shared dependency surface (both depend on TenantService + Keycloak
+     * admin) but neither needs the other at construction time — only at call
+     * time. Lazy injection avoids a potential bean cycle in tests that
+     * autowire both.
+     */
+    @Autowired
     public IdentityProvidersService(TenantService tenants,
                                     IdentityProvidersBootstrap idp,
-                                    AuditService audit) {
+                                    AuditService audit,
+                                    @Lazy LoginMethodService loginMethods) {
         this.tenants = tenants;
         this.idp = idp;
         this.audit = audit;
+        this.loginMethods = loginMethods;
     }
 
     public List<IdentityProviderDto> list(String slug) {
@@ -69,6 +83,19 @@ public class IdentityProvidersService {
                 "idp.enable", "identity_provider", providerId,
                 Map.of("enabled", true), ex, details);
             throw ex;
+        }
+
+        // Phase 2 invariant: refuse to disable the last IdP when password is
+        // also off. Symmetric guard to LoginMethodService.setPasswordEnabled.
+        if (!wantEnabled && currentlyEnabled) {
+            try {
+                loginMethods.checkSetIdpEnabled(tenant.getId(), providerId, false);
+            } catch (ResponseStatusException ex) {
+                audit.recordFailure(actor, ACTOR_KIND, tenant.getId(),
+                    "idp.disable", "identity_provider", providerId,
+                    Map.of("enabled", false), ex, details);
+                throw ex;
+            }
         }
 
         try {
