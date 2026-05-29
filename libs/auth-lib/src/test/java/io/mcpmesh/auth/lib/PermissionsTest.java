@@ -3,9 +3,6 @@ package io.mcpmesh.auth.lib;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.data.redis.RedisConnectionFailureException;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -86,7 +83,7 @@ class PermissionsTest {
                 throw new AssertionError("unexpected audience: " + audience);
             });
 
-        Permissions permissions = new Permissions(props, rest, null);
+        Permissions permissions = new Permissions(props, rest, new InMemoryPermissionsCache());
         Set<String> result = permissions.allFor(jwt);
 
         assertThat(result).containsExactlyInAnyOrder(
@@ -113,7 +110,7 @@ class PermissionsTest {
                     "Forbidden", null, null, null);
             });
 
-        Permissions permissions = new Permissions(props, rest, null);
+        Permissions permissions = new Permissions(props, rest, new InMemoryPermissionsCache());
         Set<String> result = permissions.allFor(jwt);
 
         // Only the orders permissions survive — invoices was skipped silently.
@@ -127,7 +124,7 @@ class PermissionsTest {
             .thenThrow(HttpClientErrorException.create(HttpStatus.FORBIDDEN,
                 "Forbidden", null, null, null));
 
-        Permissions permissions = new Permissions(props, rest, null);
+        Permissions permissions = new Permissions(props, rest, new InMemoryPermissionsCache());
         assertThat(permissions.allFor(jwt)).isEmpty();
     }
 
@@ -144,7 +141,7 @@ class PermissionsTest {
                 return List.of(Map.of("rsname", "invoice", "scopes", List.of("view")));
             });
 
-        Permissions permissions = new Permissions(props, rest, null,
+        Permissions permissions = new Permissions(props, rest, new InMemoryPermissionsCache(),
             Duration.ofSeconds(60));
         Set<String> first = permissions.allFor(jwt);
         Set<String> second = permissions.allFor(jwt);
@@ -160,7 +157,7 @@ class PermissionsTest {
         when(rest.postForObject(any(String.class), any(HttpEntity.class), eq(List.class)))
             .thenReturn(List.of(Map.of("rsname", "order", "scopes", List.of("view"))));
 
-        Permissions permissions = new Permissions(props, rest, null,
+        Permissions permissions = new Permissions(props, rest, new InMemoryPermissionsCache(),
             Duration.ofMillis(20));
         permissions.allFor(jwt);
         Thread.sleep(40);
@@ -172,24 +169,22 @@ class PermissionsTest {
 
     @Test
     void allFor_returns_empty_for_null_jwt() {
-        Permissions permissions = new Permissions(props, rest, null);
+        Permissions permissions = new Permissions(props, rest, new InMemoryPermissionsCache());
         assertThat(permissions.allFor(null)).isEmpty();
         verify(rest, never()).postForObject(any(String.class), any(HttpEntity.class), any(Class.class));
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void allFor_falls_back_to_inmemory_when_redis_throws() {
-        // Redis blows up on every op. The request must still succeed by
-        // falling through to the in-memory cache path — no exception bubbles
-        // up to the auth filter chain.
-        StringRedisTemplate redis = mock(StringRedisTemplate.class);
-        ValueOperations<String, String> ops = mock(ValueOperations.class);
-        when(redis.opsForValue()).thenReturn(ops);
-        when(ops.get(any(String.class)))
-            .thenThrow(new RedisConnectionFailureException("simulated redis down"));
-        org.mockito.Mockito.doThrow(new RedisConnectionFailureException("simulated redis down"))
-            .when(ops).set(any(String.class), any(String.class), any(Duration.class));
+    void allFor_survives_cache_impl_that_always_misses_and_swallows_writes() {
+        // Simulates a cache impl whose backing store is unreachable (e.g.
+        // Redis is down): read returns null on every call, write is a no-op
+        // (failures must be swallowed per the PermissionsCache contract).
+        // The request must still succeed — every call re-fetches from UMA.
+        PermissionsCache flakyCache = new PermissionsCache() {
+            @Override public Set<String> read(String key) { return null; }
+            @Override public void write(String key, Set<String> value, Duration ttl) { /* swallowed */ }
+        };
 
         when(rest.postForObject(any(String.class), any(HttpEntity.class), eq(List.class)))
             .thenAnswer(invocation -> {
@@ -201,19 +196,16 @@ class PermissionsTest {
                 return List.of(Map.of("rsname", "invoice", "scopes", List.of("view")));
             });
 
-        Permissions permissions = new Permissions(props, rest, redis,
+        Permissions permissions = new Permissions(props, rest, flakyCache,
             Duration.ofSeconds(60));
 
-        // First call: redis.get throws → UMA path runs → redis.set throws →
-        // result still served + cached in-memory.
         Set<String> first = permissions.allFor(jwt);
         assertThat(first).containsExactlyInAnyOrder("ORDER_VIEW", "INVOICE_VIEW");
 
-        // Second call: redis.get throws again → in-memory cache wins → no
-        // extra UMA hits beyond the two from the first call.
+        // No caching → second call re-hits UMA for both audiences.
         Set<String> second = permissions.allFor(jwt);
         assertThat(second).isEqualTo(first);
-        verify(rest, times(2)).postForObject(any(String.class), any(HttpEntity.class), eq(List.class));
+        verify(rest, times(4)).postForObject(any(String.class), any(HttpEntity.class), eq(List.class));
     }
 
     @Test
@@ -230,7 +222,7 @@ class PermissionsTest {
         when(rest.postForObject(any(String.class), any(HttpEntity.class), eq(List.class)))
             .thenReturn(List.of(Map.of("rsname", "order", "scopes", List.of("view"))));
 
-        Permissions permissions = new Permissions(disabled, rest, null,
+        Permissions permissions = new Permissions(disabled, rest, new InMemoryPermissionsCache(),
             Duration.ofSeconds(60));
         permissions.allFor(jwt);
         permissions.allFor(jwt);
@@ -245,7 +237,7 @@ class PermissionsTest {
         when(rest.postForObject(any(String.class), any(HttpEntity.class), eq(List.class)))
             .thenReturn(List.of());
 
-        Permissions permissions = new Permissions(props, rest, null);
+        Permissions permissions = new Permissions(props, rest, new InMemoryPermissionsCache());
         permissions.allFor(jwt);
 
         ArgumentCaptor<HttpEntity<MultiValueMap<String, String>>> captor =

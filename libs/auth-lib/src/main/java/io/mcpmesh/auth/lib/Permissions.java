@@ -2,11 +2,9 @@ package io.mcpmesh.auth.lib;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.lang.Nullable;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -14,7 +12,6 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -22,8 +19,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 /**
  * Aggregates a JWT's UMA permissions across one or more resource-server
@@ -42,13 +37,14 @@ import java.util.concurrent.ConcurrentMap;
  *
  * <h2>Caching</h2>
  * Per-{@code (jwt.sub, audience-set-hash)} for {@value #DEFAULT_TTL_SECONDS}
- * seconds. Backed by Redis when a {@link StringRedisTemplate} bean is
- * available in the application context (tenant brings their own starter);
- * otherwise in-process map with lazy TTL eviction (sufficient for a single
- * replica's request bursts).
+ * seconds, via the injected {@link PermissionsCache}. Default impl is
+ * {@link InMemoryPermissionsCache}; tenants who add
+ * {@code spring-boot-starter-data-redis} to their pom get
+ * {@code RedisPermissionsCache} automatically.
  *
- * <p>Add {@code spring-boot-starter-data-redis} to YOUR pom if you want
- * Redis-backed cache; not included in this lib's transitive deps.
+ * <p>Since 0.3.1 this class no longer references Spring Data Redis directly
+ * — the Redis dep stays truly optional at the classpath level even when
+ * {@link AuthLibProperties.Cache#enabled()} is true.
  *
  * <h2>Failure handling</h2>
  * UMA failures are tolerated per-audience: a 403 (no policy / authz services
@@ -61,25 +57,23 @@ public class Permissions {
 
     static final long DEFAULT_TTL_SECONDS = 60L;
     private static final String CACHE_KEY_PREFIX = "perms:";
-    private static final String CACHE_DELIMITER = "\n";
 
     private final AuthLibProperties props;
     private final RestTemplate restTemplate;
-    private final StringRedisTemplate redis;            // optional
+    private final PermissionsCache cache;
     private final Duration ttl;
-    private final ConcurrentMap<String, CacheEntry> localCache = new ConcurrentHashMap<>();
 
     public Permissions(AuthLibProperties props, RestTemplate restTemplate,
-                       @Nullable StringRedisTemplate redis) {
-        this(props, restTemplate, redis, Duration.ofSeconds(DEFAULT_TTL_SECONDS));
+                       PermissionsCache cache) {
+        this(props, restTemplate, cache, Duration.ofSeconds(DEFAULT_TTL_SECONDS));
     }
 
     /** Package-private ctor used by tests to shrink/zero the TTL. */
     Permissions(AuthLibProperties props, RestTemplate restTemplate,
-                @Nullable StringRedisTemplate redis, Duration ttl) {
+                PermissionsCache cache, Duration ttl) {
         this.props = props;
         this.restTemplate = restTemplate;
-        this.redis = redis;
+        this.cache = cache;
         this.ttl = ttl;
     }
 
@@ -94,10 +88,12 @@ public class Permissions {
         List<String> audiences = props.audiences();
         String cacheKey = cacheKey(jwt.getSubject(), audiences);
 
-        Set<String> cached = readCache(cacheKey);
-        if (cached != null) {
-            log.debug("Permissions: cache hit sub={} audiences={}", jwt.getSubject(), audiences);
-            return cached;
+        if (props.cache().enabled()) {
+            Set<String> cached = cache.read(cacheKey);
+            if (cached != null) {
+                log.debug("Permissions: cache hit sub={} audiences={}", jwt.getSubject(), audiences);
+                return cached;
+            }
         }
 
         Set<String> aggregated = new LinkedHashSet<>();
@@ -121,7 +117,9 @@ public class Permissions {
         }
 
         Set<String> result = Collections.unmodifiableSet(aggregated);
-        writeCache(cacheKey, result);
+        if (props.cache().enabled()) {
+            cache.write(cacheKey, result, ttl);
+        }
         return result;
     }
 
@@ -176,64 +174,4 @@ public class Permissions {
         Collections.sort(sorted);
         return CACHE_KEY_PREFIX + (sub == null ? "anon" : sub) + ":" + sorted.hashCode();
     }
-
-    private Set<String> readCache(String key) {
-        if (!props.cache().enabled()) return null;
-
-        if (redis != null) {
-            try {
-                String joined = redis.opsForValue().get(key);
-                return joined == null ? null : parseJoined(joined);
-            } catch (Exception e) {
-                // Redis unreachable / mis-configured / down. Don't 500 the
-                // request — fall through to in-memory cache. Once-per-minute
-                // WARN to avoid log spam.
-                warnRateLimited("readCache: redis unavailable, falling back to in-memory", e);
-                // continue to in-memory path below
-            }
-        }
-        CacheEntry entry = localCache.get(key);
-        if (entry == null) return null;
-        if (entry.expiresAt.isBefore(Instant.now())) {
-            localCache.remove(key, entry);
-            return null;
-        }
-        return entry.value;
-    }
-
-    private void writeCache(String key, Set<String> value) {
-        if (!props.cache().enabled()) return;
-
-        if (redis != null) {
-            try {
-                redis.opsForValue().set(key, String.join(CACHE_DELIMITER, value), ttl);
-                return;
-            } catch (Exception e) {
-                warnRateLimited("writeCache: redis unavailable, using in-memory fallback", e);
-                // fall through to in-memory path
-            }
-        }
-        localCache.put(key, new CacheEntry(value, Instant.now().plus(ttl)));
-    }
-
-    private volatile Instant lastRedisWarnAt = Instant.EPOCH;
-
-    private void warnRateLimited(String msg, Throwable t) {
-        Instant now = Instant.now();
-        if (now.isAfter(lastRedisWarnAt.plus(Duration.ofMinutes(1)))) {
-            log.warn("{} ({})", msg, t.getMessage());
-            lastRedisWarnAt = now;
-        }
-    }
-
-    private static Set<String> parseJoined(String joined) {
-        if (joined.isBlank()) return Set.of();
-        Set<String> out = new LinkedHashSet<>();
-        for (String s : joined.split(CACHE_DELIMITER)) {
-            if (!s.isBlank()) out.add(s);
-        }
-        return Collections.unmodifiableSet(out);
-    }
-
-    private record CacheEntry(Set<String> value, Instant expiresAt) {}
 }

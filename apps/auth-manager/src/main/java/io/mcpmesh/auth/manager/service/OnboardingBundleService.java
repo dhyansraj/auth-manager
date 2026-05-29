@@ -777,7 +777,7 @@ public class OnboardingBundleService {
             <dependency>
               <groupId>io.mcp-mesh</groupId>
               <artifactId>mcp-mesh-auth-lib</artifactId>
-              <version>0.3.0</version>
+              <version>0.3.1</version>
             </dependency>
             ```
 
@@ -796,12 +796,14 @@ public class OnboardingBundleService {
                 enabled: true
             ```
 
-            > **Redis is optional.** As of auth-lib `0.3.0`, `spring-boot-starter-data-redis`
-            > is no longer transitively pulled in. If you want a Redis-backed
-            > permission cache, add `spring-boot-starter-data-redis` to your own
-            > pom and configure `spring.data.redis.*` (see "Multi-replica caching"
-            > below). Otherwise leave it out and the lib falls back to an in-process
-            > cache — or set `auth-lib.cache.enabled: false` to skip caching entirely.
+            > **Redis is optional.** As of auth-lib `0.3.1`, tenants who want a
+            > Redis-backed permission cache need to add `spring-boot-starter-data-redis`
+            > to their pom — 0.3.1 no longer requires the JAR on the classpath even
+            > for in-memory mode (0.3.0 did, due to a typed ctor param). Leave the
+            > starter out and the lib uses an in-process cache; add it and configure
+            > `spring.data.redis.*` (see "Multi-replica caching" below) to enable the
+            > Redis-backed cache. Set `auth-lib.cache.enabled: false` to skip caching
+            > entirely.
 
             ## Where does the Bearer come from?
 

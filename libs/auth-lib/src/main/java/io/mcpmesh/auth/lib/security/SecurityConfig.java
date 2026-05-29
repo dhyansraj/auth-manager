@@ -1,6 +1,7 @@
 package io.mcpmesh.auth.lib.security;
 
 import io.mcpmesh.auth.lib.AuthLibProperties;
+import io.mcpmesh.auth.lib.PermissionsCache;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -48,18 +49,18 @@ public class SecurityConfig {
     public PermissionService permissionService(
         AuthLibProperties props,
         RestTemplate authLibRestTemplate,
-        org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis
+        PermissionsCache permissionsCache
     ) {
-        return new PermissionService(props, authLibRestTemplate, redis.getIfAvailable());
+        return new PermissionService(props, authLibRestTemplate, permissionsCache);
     }
 
     @Bean
     public io.mcpmesh.auth.lib.Permissions permissions(
         AuthLibProperties props,
         RestTemplate authLibRestTemplate,
-        org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis
+        PermissionsCache permissionsCache
     ) {
-        return new io.mcpmesh.auth.lib.Permissions(props, authLibRestTemplate, redis.getIfAvailable());
+        return new io.mcpmesh.auth.lib.Permissions(props, authLibRestTemplate, permissionsCache);
     }
 
     @Bean

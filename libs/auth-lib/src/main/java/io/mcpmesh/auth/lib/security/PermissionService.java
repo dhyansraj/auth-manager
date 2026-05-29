@@ -1,10 +1,9 @@
 package io.mcpmesh.auth.lib.security;
 
 import io.mcpmesh.auth.lib.AuthLibProperties;
+import io.mcpmesh.auth.lib.PermissionsCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -14,78 +13,60 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestTemplate;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Fetches a user's permissions from Keycloak's UMA permission endpoint and
  * returns them as Spring Security {@link GrantedAuthority} instances named
  * {@code PERMISSION_<RESOURCE>_<SCOPE>}.
  *
- * <p>Caching: if a {@link StringRedisTemplate} bean is present AND the cache
- * is enabled, results are cached under {@code authlib:perms:<jti>} with the
- * configured TTL. Cached permissions are pre-joined newline-separated.
+ * <p>Caching: results go through the injected {@link PermissionsCache}
+ * (in-memory by default; Redis if the tenant adds
+ * {@code spring-boot-starter-data-redis} to their pom). Keyed by
+ * {@code authlib:perms:<jti>} for the configured TTL.
+ *
+ * <p>Since 0.3.1 this class no longer references Spring Data Redis directly;
+ * the classpath dep is truly optional.
  */
 public class PermissionService {
 
     private static final Logger log = LoggerFactory.getLogger(PermissionService.class);
 
     private static final String CACHE_KEY_PREFIX = "authlib:perms:";
-    private static final String CACHE_DELIMITER = "\n";
 
     private final AuthLibProperties props;
     private final RestTemplate restTemplate;
-    private final StringRedisTemplate redis;  // may be null if Redis not on classpath
+    private final PermissionsCache cache;
 
     public PermissionService(AuthLibProperties props, RestTemplate restTemplate,
-                             @Autowired(required = false) StringRedisTemplate redis) {
+                             PermissionsCache cache) {
         this.props = props;
         this.restTemplate = restTemplate;
-        this.redis = redis;
+        this.cache = cache;
     }
 
     public Collection<GrantedAuthority> fetchPermissions(String accessToken, String jti) {
         if (cacheEnabled() && jti != null) {
-            try {
-                String cached = redis.opsForValue().get(CACHE_KEY_PREFIX + jti);
-                if (cached != null && !cached.isBlank()) {
-                    log.debug("PermissionService: cache hit jti={}", jti);
-                    return parseAuthorities(cached);
-                }
-            } catch (Exception e) {
-                // Redis unreachable / mis-configured / down. Don't 500 the
-                // request — fall through to a fresh UMA call. Once-per-minute
-                // WARN to avoid log spam.
-                warnRateLimited("fetchPermissions(read): redis unavailable, bypassing cache", e);
+            Set<String> cached = cache.read(CACHE_KEY_PREFIX + jti);
+            if (cached != null && !cached.isEmpty()) {
+                log.debug("PermissionService: cache hit jti={}", jti);
+                return toAuthorities(cached);
             }
         }
 
         Collection<GrantedAuthority> authorities = doUmaCall(accessToken);
 
         if (cacheEnabled() && jti != null && !authorities.isEmpty()) {
-            try {
-                String joined = String.join(CACHE_DELIMITER,
-                    authorities.stream().map(GrantedAuthority::getAuthority).toList());
-                redis.opsForValue().set(CACHE_KEY_PREFIX + jti, joined, props.cache().ttl());
-            } catch (Exception e) {
-                warnRateLimited("fetchPermissions(write): redis unavailable, skipping cache write", e);
-            }
+            Set<String> values = new LinkedHashSet<>();
+            for (GrantedAuthority a : authorities) values.add(a.getAuthority());
+            cache.write(CACHE_KEY_PREFIX + jti, values, props.cache().ttl());
         }
         return authorities;
-    }
-
-    private volatile Instant lastRedisWarnAt = Instant.EPOCH;
-
-    private void warnRateLimited(String msg, Throwable t) {
-        Instant now = Instant.now();
-        if (now.isAfter(lastRedisWarnAt.plus(Duration.ofMinutes(1)))) {
-            log.warn("{} ({})", msg, t.getMessage());
-            lastRedisWarnAt = now;
-        }
     }
 
     private Collection<GrantedAuthority> doUmaCall(String accessToken) {
@@ -103,6 +84,7 @@ public class PermissionService {
         HttpEntity<MultiValueMap<String, String>> entity = new HttpEntity<>(body, headers);
 
         try {
+            @SuppressWarnings("unchecked")
             List<Map<String, Object>> resources = restTemplate.postForObject(endpoint, entity, List.class);
             if (resources == null) return List.of();
 
@@ -127,12 +109,12 @@ public class PermissionService {
     }
 
     private boolean cacheEnabled() {
-        return props.cache() != null && props.cache().enabled() && redis != null;
+        return props.cache() != null && props.cache().enabled();
     }
 
-    private Collection<GrantedAuthority> parseAuthorities(String joined) {
+    private Collection<GrantedAuthority> toAuthorities(Set<String> values) {
         List<GrantedAuthority> out = new ArrayList<>();
-        for (String s : joined.split(CACHE_DELIMITER)) {
+        for (String s : values) {
             if (!s.isBlank()) out.add(new SimpleGrantedAuthority(s));
         }
         return out;

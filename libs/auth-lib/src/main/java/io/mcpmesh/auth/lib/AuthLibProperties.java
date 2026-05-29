@@ -41,11 +41,13 @@ public record AuthLibProperties(
      *
      * <p>Behavior matrix:
      * <ul>
-     *   <li>{@code enabled=true} + a {@link org.springframework.data.redis.core.StringRedisTemplate}
-     *       bean is present in the context: cache hits Redis.</li>
-     *   <li>{@code enabled=true} + no Redis bean: cache uses an in-process map
-     *       (per-replica, lazy TTL eviction). This is the default for tenants who
-     *       do not add {@code spring-boot-starter-data-redis} to their own pom.</li>
+     *   <li>{@code enabled=true} + {@code spring-boot-starter-data-redis} on
+     *       the classpath: cache hits Redis (via {@code RedisPermissionsCache},
+     *       autoconfigured by {@code RedisPermissionsCacheAutoConfiguration}).</li>
+     *   <li>{@code enabled=true} + no Redis starter: cache uses an in-process map
+     *       (per-replica, lazy TTL eviction — {@code InMemoryPermissionsCache}).
+     *       This is the default for tenants who do not add the Redis starter to
+     *       their own pom.</li>
      *   <li>{@code enabled=false}: cache is bypassed entirely; every permission
      *       lookup hits Keycloak's UMA endpoint.</li>
      * </ul>

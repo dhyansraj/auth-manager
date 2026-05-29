@@ -1,1 +1,2 @@
 io.mcpmesh.auth.lib.AuthLibAutoConfiguration
+io.mcpmesh.auth.lib.RedisPermissionsCacheAutoConfiguration
