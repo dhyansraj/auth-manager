@@ -1,5 +1,6 @@
 package io.mcpmesh.auth.manager.keycloak;
 
+import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.Response;
@@ -211,6 +212,37 @@ class IdentityProvidersBootstrapTest {
         bootstrap.run(null);
         // Never reaches realm interactions.
         verify(tenantRepo, never()).findAllByDeletedAtIsNullOrderByCreatedAtDesc();
+    }
+
+    @Test
+    void ensureProviders_skipsAliases_inTenantDisabledIdpsSet() {
+        // Both providers absent on the realm — if not filtered we'd create both.
+        when(googleResource.toRepresentation()).thenThrow(new NotFoundException("missing"));
+        when(githubResource.toRepresentation()).thenThrow(new NotFoundException("missing"));
+        when(idps.create(any())).thenAnswer(inv -> createdResponse());
+
+        Tenant t = new Tenant("app1", "App 1", "system", new HashMap<>());
+        // Manually plant realm name (no public setter; reuse JPA reflective set
+        // pattern used elsewhere in the suite).
+        try {
+            var rField = Tenant.class.getDeclaredField("realmName");
+            rField.setAccessible(true);
+            rField.set(t, REALM);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
+        // Operator disabled GitHub previously.
+        t.setIdpDisabled("github", true);
+
+        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        bootstrap.ensureProviders(t, Set.of("google", "github"));
+
+        // Only google should be created; github skipped because it's in the
+        // operator-disabled set on the tenant.
+        ArgumentCaptor<IdentityProviderRepresentation> cap =
+            ArgumentCaptor.forClass(IdentityProviderRepresentation.class);
+        verify(idps, times(1)).create(cap.capture());
+        assertThat(cap.getValue().getAlias()).isEqualTo("google");
     }
 
     // -------------------------------------------------------------------------

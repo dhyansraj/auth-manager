@@ -1,5 +1,6 @@
 package io.mcpmesh.auth.manager.keycloak;
 
+import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.Response;
@@ -85,7 +86,7 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
                 String realmName = t.getRealmName();
                 if (realmName == null || !realmName.startsWith(TENANT_REALM_PREFIX)) continue;
                 try {
-                    ensureProviders(realmName, configured);
+                    ensureProviders(t, configured);
                 } catch (Exception e) {
                     log.warn("IdentityProvidersBootstrap: backfill failed for realm '{}': {}",
                         realmName, e.getMessage());
@@ -118,6 +119,12 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
      *   - If already present (by alias): no-op
      *   - Else: create the IdP instance with platform defaults
      * Never throws; logs and continues on a per-provider basis.
+     *
+     * <p>This overload does NOT consult the operator-disabled set — use it
+     * only for explicit create paths (e.g. new-tenant provisioning, manifest
+     * apply) where the caller has decided the alias should exist. The
+     * {@link #ensureProviders(Tenant, Set)} overload filters disabled aliases
+     * and is what startup backfill / restart-safe paths must use.
      */
     public void ensureProviders(String realmName, Set<String> enabledProviders) {
         if (enabledProviders == null || enabledProviders.isEmpty()) return;
@@ -142,6 +149,30 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
                     providerId, realmName, e.getMessage());
             }
         }
+    }
+
+    /**
+     * Tenant-aware overload: same as {@link #ensureProviders(String, Set)}
+     * but filters out aliases the operator has explicitly disabled (recorded
+     * on {@code tenant.settings.disabledIdps}). This is the form startup
+     * backfill must use so a re-deploy doesn't resurrect IdPs the operator
+     * already removed via the admin UI.
+     */
+    public void ensureProviders(Tenant tenant, Set<String> configured) {
+        if (tenant == null) return;
+        if (configured == null || configured.isEmpty()) return;
+        Set<String> disabled = tenant.getDisabledIdps();
+        Set<String> effective = new LinkedHashSet<>();
+        for (String alias : configured) {
+            if (disabled.contains(alias.toLowerCase(java.util.Locale.ROOT))) {
+                log.debug("IdentityProvidersBootstrap: realm '{}' skipping disabled IdP '{}'",
+                    tenant.getRealmName(), alias);
+                continue;
+            }
+            effective.add(alias);
+        }
+        if (effective.isEmpty()) return;
+        ensureProviders(tenant.getRealmName(), effective);
     }
 
     /**

@@ -16,9 +16,16 @@ import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Entity
 @Table(name = "tenants")
@@ -173,6 +180,37 @@ public class Tenant {
 
     private static String blankToNull(String s) {
         return (s == null || s.isBlank()) ? null : s.trim();
+    }
+
+    // -- Operator-disabled IdP aliases (persisted in settings JSONB) ---------
+
+    /**
+     * Returns the set of IdP aliases the tenant operator has explicitly
+     * disabled. The bootstrap consults this set to avoid re-creating IdPs
+     * that were intentionally removed via the admin UI.
+     */
+    @SuppressWarnings("unchecked")
+    public Set<String> getDisabledIdps() {
+        if (settings == null) return Set.of();
+        Object node = settings.get("disabledIdps");
+        if (!(node instanceof Collection<?> c)) return Set.of();
+        return c.stream().map(Object::toString)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * Adds or removes the given alias from the operator-disabled IdP set.
+     * Mutates {@link #settings} in place; relies on JPA dirty-checking to
+     * persist on commit.
+     */
+    public void setIdpDisabled(String alias, boolean disabled) {
+        if (alias == null || alias.isBlank()) return;
+        if (settings == null) settings = new LinkedHashMap<>();
+        Set<String> current = new LinkedHashSet<>(getDisabledIdps());
+        String key = alias.toLowerCase(Locale.ROOT);
+        if (disabled) current.add(key);
+        else current.remove(key);
+        settings.put("disabledIdps", new ArrayList<>(current));
     }
 
     // --- getters (no setters; mutations go through the methods above) ---

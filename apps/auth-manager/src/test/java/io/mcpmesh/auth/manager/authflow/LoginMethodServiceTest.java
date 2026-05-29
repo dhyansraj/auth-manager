@@ -109,8 +109,9 @@ class LoginMethodServiceTest {
         // For the post-mutation get() in the service return, executions show
         // the password form as DISABLED after the flip + REQUIRED for the
         // initial isPasswordEnabled check used by the audit/log line.
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED");
-        List<AuthenticationExecutionInfoRepresentation> execs = new ArrayList<>(List.of(passwordExec));
+        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
+        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
+        List<AuthenticationExecutionInfoRepresentation> execs = new ArrayList<>(List.of(formsExec, passwordExec));
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW)).thenReturn(execs);
 
         LoginMethodStatus status = service.setPasswordEnabled(TENANT_ID, false, "alice");
@@ -118,9 +119,11 @@ class LoginMethodServiceTest {
         verify(flowsResource).copy(eq(LoginMethodService.BUILTIN_BROWSER_FLOW), any());
         verify(realmResource).update(realmRep);
         assertThat(realmRep.getBrowserFlow()).isEqualTo(LoginMethodService.MCPMESH_BROWSER_FLOW);
-        verify(flowsResource).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+        // Both Forms and UPF must be PUT.
+        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
         assertThat(passwordExec.getRequirement()).isEqualTo("DISABLED");
+        assertThat(formsExec.getRequirement()).isEqualTo("DISABLED");
         assertThat(status.passwordEnabled()).isFalse();
         verify(audit).recordSuccess(anyString(), any(), any(), anyString(),
             anyString(), anyString(), any(), any());
@@ -134,15 +137,17 @@ class LoginMethodServiceTest {
         when(copyResp.getStatus()).thenReturn(201);
         when(flowsResource.copy(eq(LoginMethodService.BUILTIN_BROWSER_FLOW), any()))
             .thenReturn(copyResp);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "DISABLED");
+        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "DISABLED", 0);
+        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "DISABLED", 1);
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(passwordExec)));
+            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
 
         LoginMethodStatus status = service.setPasswordEnabled(TENANT_ID, true, "alice");
 
-        verify(flowsResource).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
         assertThat(passwordExec.getRequirement()).isEqualTo("REQUIRED");
+        assertThat(formsExec.getRequirement()).isEqualTo("REQUIRED");
         assertThat(status.passwordEnabled()).isTrue();
     }
 
@@ -156,9 +161,10 @@ class LoginMethodServiceTest {
         when(copyResp.getStatus()).thenReturn(201);
         when(flowsResource.copy(eq(LoginMethodService.BUILTIN_BROWSER_FLOW), any()))
             .thenReturn(copyResp);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED");
+        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
+        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(passwordExec)));
+            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
 
         service.setPasswordEnabled(TENANT_ID, true, "alice");
 
@@ -172,25 +178,78 @@ class LoginMethodServiceTest {
             .thenReturn(new LinkedHashSet<>(List.of("google")));
         // Realm already points at mcpmesh-browser → no clone, no realm.update().
         realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
-        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED");
+        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
+        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
         when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
-            .thenReturn(new ArrayList<>(List.of(passwordExec)));
+            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
 
         service.setPasswordEnabled(TENANT_ID, false, "alice");
 
         verify(flowsResource, never()).copy(anyString(), any());
         verify(realmResource, never()).update(any(RealmRepresentation.class));
-        verify(flowsResource).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
             any(AuthenticationExecutionInfoRepresentation.class));
         assertThat(passwordExec.getRequirement()).isEqualTo("DISABLED");
+        assertThat(formsExec.getRequirement()).isEqualTo("DISABLED");
+    }
+
+    @Test
+    void setPasswordEnabled_false_disablesBothFormsAndUpf() {
+        when(idp.listEnabledProviders(REALM))
+            .thenReturn(new LinkedHashSet<>(List.of("google")));
+        realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
+        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "REQUIRED", 0);
+        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "REQUIRED", 1);
+        when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
+            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
+
+        service.setPasswordEnabled(TENANT_ID, false, "alice");
+
+        // Verify both executions were PUT to KC and both ended up DISABLED.
+        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+            any(AuthenticationExecutionInfoRepresentation.class));
+        assertThat(formsExec.getRequirement()).isEqualTo("DISABLED");
+        assertThat(passwordExec.getRequirement()).isEqualTo("DISABLED");
+    }
+
+    @Test
+    void setPasswordEnabled_true_restoresBothFormsAndUpfToRequired() {
+        when(idp.listEnabledProviders(REALM)).thenReturn(Set.of());
+        realmRep.setBrowserFlow(LoginMethodService.MCPMESH_BROWSER_FLOW);
+        // Both currently DISABLED (the bug-2 broken state from a prior toggle).
+        AuthenticationExecutionInfoRepresentation formsExec = makeSubflow("Forms", "DISABLED", 0);
+        AuthenticationExecutionInfoRepresentation passwordExec = makeExec("Username Password Form", "DISABLED", 1);
+        when(flowsResource.getExecutions(LoginMethodService.MCPMESH_BROWSER_FLOW))
+            .thenReturn(new ArrayList<>(List.of(formsExec, passwordExec)));
+
+        service.setPasswordEnabled(TENANT_ID, true, "alice");
+
+        verify(flowsResource, times(2)).updateExecutions(eq(LoginMethodService.MCPMESH_BROWSER_FLOW),
+            any(AuthenticationExecutionInfoRepresentation.class));
+        assertThat(formsExec.getRequirement()).isEqualTo("REQUIRED");
+        assertThat(passwordExec.getRequirement()).isEqualTo("REQUIRED");
     }
 
     // -- helpers --------------------------------------------------------------
 
     private static AuthenticationExecutionInfoRepresentation makeExec(String displayName, String requirement) {
+        return makeExec(displayName, requirement, 0);
+    }
+
+    private static AuthenticationExecutionInfoRepresentation makeExec(String displayName, String requirement, int level) {
         AuthenticationExecutionInfoRepresentation e = new AuthenticationExecutionInfoRepresentation();
         e.setDisplayName(displayName);
         e.setRequirement(requirement);
+        e.setLevel(level);
+        return e;
+    }
+
+    private static AuthenticationExecutionInfoRepresentation makeSubflow(String displayName, String requirement, int level) {
+        AuthenticationExecutionInfoRepresentation e = new AuthenticationExecutionInfoRepresentation();
+        e.setDisplayName(displayName);
+        e.setRequirement(requirement);
+        e.setAuthenticationFlow(true);
+        e.setLevel(level);
         return e;
     }
 

@@ -5,13 +5,16 @@ import io.mcpmesh.auth.manager.authflow.LoginMethodService;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
+import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -26,6 +29,7 @@ public class IdentityProvidersService {
     private static final ActorKind ACTOR_KIND = ActorKind.USER;
 
     private final TenantService tenants;
+    private final TenantRepository tenantRepo;
     private final IdentityProvidersBootstrap idp;
     private final AuditService audit;
     private final LoginMethodService loginMethods;
@@ -39,10 +43,12 @@ public class IdentityProvidersService {
      */
     @Autowired
     public IdentityProvidersService(TenantService tenants,
+                                    TenantRepository tenantRepo,
                                     IdentityProvidersBootstrap idp,
                                     AuditService audit,
                                     @Lazy LoginMethodService loginMethods) {
         this.tenants = tenants;
+        this.tenantRepo = tenantRepo;
         this.idp = idp;
         this.audit = audit;
         this.loginMethods = loginMethods;
@@ -61,6 +67,7 @@ public class IdentityProvidersService {
         return out;
     }
 
+    @Transactional
     public IdentityProviderDto setEnabled(String slug, String providerId, boolean wantEnabled, String actor) {
         if (!IdentityProvidersBootstrap.SUPPORTED_PROVIDERS.contains(providerId)) {
             throw new IllegalArgumentException("Unsupported provider: " + providerId);
@@ -68,12 +75,12 @@ public class IdentityProvidersService {
         Tenant tenant = tenants.getBySlug(slug);
 
         boolean currentlyEnabled = idp.isEnabled(tenant.getRealmName(), providerId);
-        Map<String, Object> details = Map.of(
-            "tenant_slug", slug,
-            "realm", tenant.getRealmName(),
-            "provider", providerId,
-            "enabled", wantEnabled
-        );
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("tenant_slug", slug);
+        details.put("realm", tenant.getRealmName());
+        details.put("provider", providerId);
+        details.put("enabled", wantEnabled);
+        details.put("disabledIdps", new ArrayList<>(tenant.getDisabledIdps()));
 
         if (wantEnabled && !idp.isAvailable(providerId)) {
             var ex = new ResponseStatusException(
@@ -100,12 +107,23 @@ public class IdentityProvidersService {
 
         try {
             if (wantEnabled && !currentlyEnabled) {
+                // Clear the operator-disabled mark FIRST so a concurrent
+                // bootstrap pass observes the alias as re-enabled.
+                tenant.setIdpDisabled(providerId, false);
+                tenantRepo.save(tenant);
                 idp.addProvider(tenant.getRealmName(), providerId);
+                details.put("disabledIdps", new ArrayList<>(tenant.getDisabledIdps()));
                 audit.recordSuccess(actor, ACTOR_KIND, tenant.getId(),
                     "idp.enable", "identity_provider", providerId,
                     Map.of("enabled", true), details);
             } else if (!wantEnabled && currentlyEnabled) {
+                // Record the operator's intent BEFORE removing from KC so a
+                // restart race can't re-create the IdP between the remove
+                // call and the persist.
+                tenant.setIdpDisabled(providerId, true);
+                tenantRepo.save(tenant);
                 idp.removeProvider(tenant.getRealmName(), providerId);
+                details.put("disabledIdps", new ArrayList<>(tenant.getDisabledIdps()));
                 audit.recordSuccess(actor, ACTOR_KIND, tenant.getId(),
                     "idp.disable", "identity_provider", providerId,
                     Map.of("enabled", false), details);

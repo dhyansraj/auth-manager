@@ -68,6 +68,16 @@ public class LoginMethodService {
      */
     public static final String USERNAME_PASSWORD_EXECUTION = "Username Password Form";
 
+    /**
+     * Display name of the {@code Forms} subflow parent execution in the
+     * standard browser flow. Toggling the leaf UPF requirement alone leaves
+     * the Forms subflow with no executable children — KC then errors with
+     * "Unexpected error when handling authentication request to identity
+     * provider" because it tries to enter Forms but nothing inside can run.
+     * Fix: keep Forms's requirement in lock-step with UPF.
+     */
+    public static final String FORMS_SUBFLOW_NAME = "Forms";
+
     private static final ActorKind ACTOR_KIND = ActorKind.USER;
 
     private final TenantService tenants;
@@ -238,26 +248,61 @@ public class LoginMethodService {
     private void mutatePasswordRequirement(String realmName, boolean enabled) {
         RealmResource realm = kcAdmin.realm(realmName);
         var executions = realm.flows().getExecutions(MCPMESH_BROWSER_FLOW);
-        AuthenticationExecutionInfoRepresentation match = null;
-        for (var exec : executions) {
-            if (USERNAME_PASSWORD_EXECUTION.equals(exec.getDisplayName())) {
-                match = exec;
-                break;
+
+        AuthenticationExecutionInfoRepresentation forms = null;
+        AuthenticationExecutionInfoRepresentation upf = null;
+        for (int i = 0; i < executions.size(); i++) {
+            var exec = executions.get(i);
+            if (forms == null
+                && FORMS_SUBFLOW_NAME.equals(exec.getDisplayName())
+                && Boolean.TRUE.equals(exec.getAuthenticationFlow())) {
+                forms = exec;
+                continue;
+            }
+            // UPF lives one level deeper than Forms in the standard browser
+            // flow. Match the first UPF execution after the Forms parent so
+            // we don't pick up an unrelated execution if KC ever adds one at
+            // the top level.
+            if (upf == null && USERNAME_PASSWORD_EXECUTION.equals(exec.getDisplayName())) {
+                if (forms == null) {
+                    // Defensive: if KC ever flattens the flow, still toggle the leaf.
+                    upf = exec;
+                } else if (exec.getLevel() > forms.getLevel()) {
+                    upf = exec;
+                }
             }
         }
-        if (match == null) {
+
+        if (upf == null) {
             throw new RuntimeException(
                 "Cannot find '" + USERNAME_PASSWORD_EXECUTION + "' execution in flow "
                     + MCPMESH_BROWSER_FLOW + " on realm " + realmName);
         }
+
         String want = enabled ? "REQUIRED" : "DISABLED";
-        if (want.equals(match.getRequirement())) {
-            log.debug("LoginMethodService: realm '{}' password requirement already '{}'", realmName, want);
-            return;
+        boolean changed = false;
+
+        // Toggle the Forms subflow first — required to keep KC's flow walker
+        // from entering a subflow with no executable children when password
+        // is off.
+        if (forms != null && !want.equals(forms.getRequirement())) {
+            forms.setRequirement(want);
+            realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, forms);
+            log.info("LoginMethodService: realm '{}' Forms subflow requirement → '{}'",
+                realmName, want);
+            changed = true;
         }
-        match.setRequirement(want);
-        realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, match);
-        log.info("LoginMethodService: realm '{}' Username Password Form requirement → '{}'",
-            realmName, want);
+
+        if (!want.equals(upf.getRequirement())) {
+            upf.setRequirement(want);
+            realm.flows().updateExecutions(MCPMESH_BROWSER_FLOW, upf);
+            log.info("LoginMethodService: realm '{}' Username Password Form requirement → '{}'",
+                realmName, want);
+            changed = true;
+        }
+
+        if (!changed) {
+            log.debug("LoginMethodService: realm '{}' password requirement already '{}'", realmName, want);
+        }
     }
 }
