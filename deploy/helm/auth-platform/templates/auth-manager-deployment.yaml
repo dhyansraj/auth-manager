@@ -162,6 +162,10 @@ spec:
             - name: PLATFORM_PG_SUPERUSER_URL
               value: {{ .Values.authManager.config.cnpgSuperuserUrl | quote }}
             {{- end }}
+            {{- if .Values.authManager.config.platformHost }}
+            - name: KEYCLOAK_PLATFORM_HOST
+              value: {{ .Values.authManager.config.platformHost | quote }}
+            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /config

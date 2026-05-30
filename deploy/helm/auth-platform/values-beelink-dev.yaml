@@ -74,6 +74,11 @@ authManager:
     # dev's auth-manager tries to connect to PROD's PG with dev's superuser
     # password — fails with "password authentication failed for user postgres".
     cnpgSuperuserUrl: "jdbc:postgresql://platform-pg-dev-rw.auth-platform-dev.svc.cluster.local:5432/postgres"
+    # keycloak.platform.host — used when KeycloakAdminService computes the
+    # standard redirect URI set for the platform usermanagement client.
+    # Default in code is "auth.mcp-mesh.io" (prod) — override here so dev's
+    # admin login lands at admin-dev.mcp-mesh.io, not prod's host.
+    platformHost: "auth-dev.mcp-mesh.io"
 
 # Credentials: blank for the lookup-preservation pattern (same as prod).
 # First-time install: pass `helm --set postgresql.auth.password=... --set
