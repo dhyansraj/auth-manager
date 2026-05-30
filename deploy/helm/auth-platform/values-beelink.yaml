@@ -59,7 +59,7 @@ adminUi:
   replicas: 2
   image:
     repository: admin-ui
-    tag: "0.1.39"
+    tag: "0.1.40"
 
 smtpRelay:
   enabled: true
