@@ -37,21 +37,27 @@ public class ThemeApplier {
 
     private static final Logger log = LoggerFactory.getLogger(ThemeApplier.class);
 
-    static final String KC_STATEFULSET_NAME = "platform-kc-keycloak";
     static final String RESTARTED_AT_ANNOTATION = "kubectl.kubernetes.io/restartedAt";
 
     private final Keycloak keycloak;
     private final KubernetesClient k8s;
     private final String namespace;
+    // STS name is env-specific: Bitnami names it <release>-keycloak, so prod's
+    // "platform-kc-keycloak" doesn't match dev's "platform-kc-dev-keycloak".
+    // Wired from chart via AUTH_MANAGER_THEME_KC_STATEFULSET_NAME; defaults to
+    // the prod name so unmigrated deploys keep working.
+    private final String kcStatefulSetName;
 
     public ThemeApplier(
         Keycloak keycloak,
         KubernetesClient k8s,
-        @Value("${mcpmesh.namespace:auth-platform}") String namespace
+        @Value("${mcpmesh.namespace:auth-platform}") String namespace,
+        @Value("${auth-manager.theme.kc-statefulset-name:platform-kc-keycloak}") String kcStatefulSetName
     ) {
         this.keycloak = keycloak;
         this.k8s = k8s;
         this.namespace = namespace;
+        this.kcStatefulSetName = kcStatefulSetName;
     }
 
     /**
@@ -86,7 +92,7 @@ public class ThemeApplier {
         String timestamp = Instant.now().toString();
         var resource = k8s.apps().statefulSets()
             .inNamespace(namespace)
-            .withName(KC_STATEFULSET_NAME);
+            .withName(kcStatefulSetName);
         // Use a JSON merge-patch with ONLY the changed annotation. Avoid the
         // edit()/serialize-full-object path because Fabric8's Jackson hits a
         // NullPointerException when ManagedFieldsEntry.fieldsV1 (a raw JSON
@@ -101,22 +107,22 @@ public class ThemeApplier {
         } catch (io.fabric8.kubernetes.client.KubernetesClientException e) {
             if (e.getCode() == 404) {
                 log.warn("StatefulSet {} not found in namespace {}; skipping rollout",
-                    KC_STATEFULSET_NAME, namespace);
+                    kcStatefulSetName, namespace);
                 return;
             }
             throw e;
         }
         log.info("Triggered rolling restart of {} via {}={}",
-            KC_STATEFULSET_NAME, RESTARTED_AT_ANNOTATION, timestamp);
+            kcStatefulSetName, RESTARTED_AT_ANNOTATION, timestamp);
     }
 
     public RolloutStatus getRolloutStatus() {
         StatefulSet sts = k8s.apps().statefulSets()
             .inNamespace(namespace)
-            .withName(KC_STATEFULSET_NAME)
+            .withName(kcStatefulSetName)
             .get();
         if (sts == null) {
-            log.debug("StatefulSet {} not found; reporting READY", KC_STATEFULSET_NAME);
+            log.debug("StatefulSet {} not found; reporting READY", kcStatefulSetName);
             return RolloutStatus.ready();
         }
         StatefulSetStatus status = sts.getStatus();

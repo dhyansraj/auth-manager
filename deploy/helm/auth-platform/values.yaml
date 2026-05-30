@@ -39,6 +39,12 @@ authManager:
     # Set explicitly when running side-by-side in a non-prod namespace that
     # shares prod's smtp-relay via cross-namespace DNS.
     smtpHost: ""
+    # Public + in-cluster URLs embedded in tenant onboarding bundles.
+    # Defaults are the prod values; dev overrides these to
+    # auth-dev.mcp-mesh.io + the auth-platform-dev namespace.
+    bundleKcBase: "https://auth.mcp-mesh.io/auth"
+    bundleAdminBase: "https://auth.mcp-mesh.io/admin"
+    bundleAuthMgrInClusterBase: "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080"
   env: {}
 
 # ───── admin-ui ─────

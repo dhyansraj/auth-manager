@@ -68,6 +68,18 @@ auth-manager:
     # Secret the smtp-relay uses (key=api-key). Optional: empty when SendGrid
     # is not configured (domain-auth endpoints surface a clean error).
     sendgrid-api-key: ${SENDGRID_API_KEY:}
+  # Theme-apply uses ThemeApplier to patch the Keycloak StatefulSet's
+  # rolling-restart annotation. STS name varies per env (Bitnami names it
+  # <release>-keycloak); dev overrides to "platform-kc-dev-keycloak".
+  theme:
+    kc-statefulset-name: ${AUTH_MANAGER_THEME_KC_STATEFULSET_NAME:platform-kc-keycloak}
+  # URLs embedded in tenant onboarding bundles (README, .env.example, the
+  # in-cluster admin-API code samples, etc.). Env-aware so dev downloads
+  # reference auth-dev.mcp-mesh.io + the dev-namespace service DNS.
+  bundle:
+    kc-base: ${AUTH_MANAGER_BUNDLE_KC_BASE:https://auth.mcp-mesh.io/auth}
+    admin-base: ${AUTH_MANAGER_BUNDLE_ADMIN_BASE:https://auth.mcp-mesh.io/admin}
+    auth-mgr-incluster-base: ${AUTH_MANAGER_BUNDLE_AUTH_MGR_INCLUSTER_BASE:http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080}
 
 # CNPG superuser connection: used by TenantDatabaseService to run CREATE
 # DATABASE / DROP DATABASE DDL when provisioning per-tenant databases on

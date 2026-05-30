@@ -25,6 +25,7 @@ import org.keycloak.admin.client.Keycloak;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -43,11 +44,6 @@ public class OnboardingBundleService {
 
     private static final Logger log = LoggerFactory.getLogger(OnboardingBundleService.class);
 
-    private static final String KC_BASE = "https://auth.mcp-mesh.io/auth";
-    private static final String AUTH_MGR_BASE =
-        "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080";
-    private static final String ADMIN_BASE = "https://auth.mcp-mesh.io/admin";
-
     private final TenantService tenants;
     private final AppRepository appRepo;
     private final Keycloak admin;
@@ -59,6 +55,12 @@ public class OnboardingBundleService {
     private final LoginMethodService loginMethodService;
     private final ThemeService themeService;
     private final ObjectMapper manifestYamlMapper;
+    // Public + in-cluster URLs embedded in the rendered bundle. Env-aware so
+    // dev downloads show auth-dev.mcp-mesh.io and the dev namespace service
+    // DNS. Defaults are the prod values — unmigrated deploys keep working.
+    private final String kcBase;
+    private final String adminBase;
+    private final String authMgrInClusterBase;
 
     public OnboardingBundleService(TenantService tenants,
                                    AppRepository appRepo,
@@ -69,7 +71,10 @@ public class OnboardingBundleService {
                                    TenantDatabaseService databaseService,
                                    TenantManifestService manifestService,
                                    LoginMethodService loginMethodService,
-                                   ThemeService themeService) {
+                                   ThemeService themeService,
+                                   @Value("${auth-manager.bundle.kc-base:https://auth.mcp-mesh.io/auth}") String kcBase,
+                                   @Value("${auth-manager.bundle.admin-base:https://auth.mcp-mesh.io/admin}") String adminBase,
+                                   @Value("${auth-manager.bundle.auth-mgr-incluster-base:http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080}") String authMgrInClusterBase) {
         this.tenants = tenants;
         this.appRepo = appRepo;
         this.admin = admin;
@@ -80,6 +85,9 @@ public class OnboardingBundleService {
         this.manifestService = manifestService;
         this.loginMethodService = loginMethodService;
         this.themeService = themeService;
+        this.kcBase = kcBase;
+        this.adminBase = adminBase;
+        this.authMgrInClusterBase = authMgrInClusterBase;
         YAMLFactory yf = new YAMLFactory()
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
@@ -95,7 +103,7 @@ public class OnboardingBundleService {
         Tenant tenant = tenants.get(tenantId);
         String slug = tenant.getSlug();
         String realmName = tenant.getRealmName() == null ? "t-" + slug : tenant.getRealmName();
-        String issuer = KC_BASE + "/realms/" + realmName;
+        String issuer = kcBase + "/realms/" + realmName;
 
         List<App> allApps = appRepo.findByTenantIdOrderByCreatedAtDesc(tenantId);
         List<AppInfo> userApps = new ArrayList<>();
@@ -347,7 +355,7 @@ public class OnboardingBundleService {
             .replace("{{realmName}}", realmName)
             .replace("{{issuer}}", issuer)
             .replace("{{tenantId}}", t.getId() == null ? slug : t.getId().toString())
-            .replace("{{adminBase}}", ADMIN_BASE)
+            .replace("{{adminBase}}", adminBase)
             .replace("{{modeBadge}}", modeBadge)
             .replace("{{modeExplanation}}", modeExplanation)
             .replace("{{fileList}}", fileListBlock)
@@ -573,7 +581,7 @@ public class OnboardingBundleService {
             .replace("{{tenantName}}", t.getDisplayName())
             .replace("{{timestamp}}", Instant.now().toString())
             .replace("{{issuer}}", issuer)
-            .replace("{{kcBase}}", KC_BASE)
+            .replace("{{kcBase}}", kcBase)
             .replace("{{spaBlock}}", spa)
             .replace("{{backendBlock}}", backend)
             .replace("{{serviceAccountBlock}}", sa)
@@ -677,7 +685,7 @@ public class OnboardingBundleService {
             {{helmSpaClients}}
             """)
             .replace("{{issuer}}", issuer)
-            .replace("{{kcBase}}", KC_BASE)
+            .replace("{{kcBase}}", kcBase)
             .replace("{{slug}}", slug)
             .replace("{{helmBackendClients}}", backendBlock.toString().stripTrailing())
             .replace("{{helmSpaClients}}", spaBlock.toString().stripTrailing());
@@ -693,7 +701,7 @@ public class OnboardingBundleService {
                 case "github" -> "https://github.com/settings/developers";
                 default -> "(check the provider's docs)";
             };
-            String brokerUri = KC_BASE + "/realms/" + realmName + "/broker/" + id + "/endpoint";
+            String brokerUri = kcBase + "/realms/" + realmName + "/broker/" + id + "/endpoint";
             sections.append("## ").append(displayName).append("\n\n");
             sections.append("Console: ").append(console).append("\n\n");
             sections.append("Authorized redirect URI to add:\n\n");
@@ -1075,7 +1083,7 @@ public class OnboardingBundleService {
             ### Env convention
 
             ```
-            AUTH_MGR_BASE=http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080
+            AUTH_MGR_BASE={{authMgrInClusterBase}}
             {{upperSlug}}_TENANT_SLUG={{slug}}
             ```
 
@@ -1103,7 +1111,7 @@ public class OnboardingBundleService {
 
                 private static final String AUTH_MGR_BASE =
                     System.getenv().getOrDefault("AUTH_MGR_BASE",
-                        "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080");
+                        "{{authMgrInClusterBase}}");
                 private static final String TENANT_SLUG =
                     System.getenv().getOrDefault("{{upperSlug}}_TENANT_SLUG", "{{slug}}");
 
@@ -1158,6 +1166,7 @@ public class OnboardingBundleService {
             .replace("{{firstBackend}}", firstBackend)
             .replace("{{bearerOrigin}}", bearerOrigin)
             .replace("{{backendClientCredsSection}}", backendClientCredsSection)
+            .replace("{{authMgrInClusterBase}}", authMgrInClusterBase)
             .replace("{{issuer}}", issuer);
     }
 
@@ -1286,7 +1295,7 @@ public class OnboardingBundleService {
             ### Env convention
 
             ```
-            AUTH_MGR_BASE=http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080
+            AUTH_MGR_BASE={{authMgrInClusterBase}}
             {{upperSlug}}_TENANT_SLUG={{slug}}
             ```
 
@@ -1311,7 +1320,7 @@ public class OnboardingBundleService {
 
             AUTH_MGR_BASE = os.environ.get(
                 "AUTH_MGR_BASE",
-                "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080",
+                "{{authMgrInClusterBase}}",
             )
             TENANT_SLUG = os.environ.get("{{upperSlug}}_TENANT_SLUG", "{{slug}}")
 
@@ -1356,6 +1365,7 @@ public class OnboardingBundleService {
             .replace("{{upperSlug}}", slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_'))
             .replace("{{issuer}}", issuer)
             .replace("{{firstBackend}}", firstBackend)
+            .replace("{{authMgrInClusterBase}}", authMgrInClusterBase)
             .replace("{{bearerOrigin}}", bearerOrigin);
     }
 
@@ -1478,7 +1488,7 @@ public class OnboardingBundleService {
 
             ## Step 1 — Download the starter kit
 
-            1. Open auth-manager UI: https://auth.mcp-mesh.io/admin/tenants/{{slug}}
+            1. Open auth-manager UI: {{adminBase}}/tenants/{{slug}}
             2. Go to the **Branding** tab
             3. Click **Download starter** → saves `t-{{slug}}-starter.zip`
 
@@ -1515,10 +1525,12 @@ public class OnboardingBundleService {
             ## Tip — iterate fast
 
             The Branding tab shows a "rolling out X%" badge while the theme propagates.
-            Open a private/incognito window with `https://auth.mcp-mesh.io/auth/realms/t-{{slug}}/account`
+            Open a private/incognito window with `{{kcBase}}/realms/t-{{slug}}/account`
             to preview the login styling without bouncing yourself out of the admin UI.
             """)
-            .replace("{{slug}}", slug);
+            .replace("{{slug}}", slug)
+            .replace("{{adminBase}}", adminBase)
+            .replace("{{kcBase}}", kcBase);
     }
 
     private String renderMigration(String realmName) {
@@ -1550,7 +1562,7 @@ public class OnboardingBundleService {
 
             Use the KC admin API at `{{kcBase}}/admin/realms/{{realmName}}/users` with an admin token. But prefer lazy — fewer ways to go wrong.
             """)
-            .replace("{{kcBase}}", KC_BASE)
+            .replace("{{kcBase}}", kcBase)
             .replace("{{realmName}}", realmName);
     }
 
@@ -1622,7 +1634,7 @@ public class OnboardingBundleService {
             > The in-cluster KC URL has NO `/auth/` prefix (KC's
             > `KC_HTTP_RELATIVE_PATH=/`). The `/auth/` only exists at the public
             > hostname because `KC_HOSTNAME` includes it. Copying
-            > `https://auth.mcp-mesh.io/auth/realms/...` and just replacing the
+            > `{{kcBase}}/realms/...` and just replacing the
             > host will 404.
 
             ## Egress consequences
@@ -1636,8 +1648,8 @@ public class OnboardingBundleService {
             """)
             .replace("{{slug}}", slug)
             .replace("{{realmName}}", realmName)
-            .replace("{{kcBase}}", KC_BASE)
-            .replace("{{authMgrBase}}", AUTH_MGR_BASE);
+            .replace("{{kcBase}}", kcBase)
+            .replace("{{authMgrBase}}", authMgrInClusterBase);
     }
 
     /**

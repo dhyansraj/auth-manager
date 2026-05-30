@@ -51,6 +51,21 @@ spec:
             - name: AUTH_MANAGER_SMTP_HOST
               value: {{ .Values.authManager.config.smtpHost | quote }}
             {{- end }}
+            # KC StatefulSet name patched by ThemeApplier on theme upload. Must
+            # match the actual KC release name in the deployment namespace.
+            # Same value the RBAC Role's resourceNames list scopes to.
+            - name: AUTH_MANAGER_THEME_KC_STATEFULSET_NAME
+              value: {{ .Values.authManager.kcStatefulSetName | default "platform-kc-keycloak" | quote }}
+            # URLs embedded in tenant onboarding bundles. Defaults to prod
+            # values from chart values.yaml; dev overrides to the auth-dev
+            # hostnames + dev-namespace service DNS so dev bundles are usable
+            # without manual find/replace.
+            - name: AUTH_MANAGER_BUNDLE_KC_BASE
+              value: {{ .Values.authManager.config.bundleKcBase | default "https://auth.mcp-mesh.io/auth" | quote }}
+            - name: AUTH_MANAGER_BUNDLE_ADMIN_BASE
+              value: {{ .Values.authManager.config.bundleAdminBase | default "https://auth.mcp-mesh.io/admin" | quote }}
+            - name: AUTH_MANAGER_BUNDLE_AUTH_MGR_INCLUSTER_BASE
+              value: {{ .Values.authManager.config.bundleAuthMgrInClusterBase | default "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080" | quote }}
             # Namespace used by ThemeStorage / ThemeApplier when talking to
             # the Kubernetes API. Sourced from the downward API so the same
             # image works in any namespace.

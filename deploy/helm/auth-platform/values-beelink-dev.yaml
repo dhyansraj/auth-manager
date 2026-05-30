@@ -42,14 +42,8 @@ authManager:
     tag: "0.1.66"
   # KC StatefulSet lives in this dev namespace, named after the dev Bitnami
   # KC release (platform-kc-dev). Used by the RBAC Role for theme-reload
-  # rolling-restart patches.
-  #
-  # NOTE: app code (ThemeApplier.KC_STATEFULSET_NAME) is still hardcoded to
-  # "platform-kc-keycloak" — that part is out-of-scope for this chunk. So
-  # theme uploads in dev will not trigger a KC restart automatically; do it
-  # manually with `kubectl rollout restart sts/platform-kc-dev-keycloak -n
-  # auth-platform-dev` after uploading a theme. Will be fixed when the env-
-  # aware bundle URL work lands.
+  # rolling-restart patches AND by ThemeApplier at runtime (env var
+  # AUTH_MANAGER_THEME_KC_STATEFULSET_NAME) — same value, both sides agree.
   kcStatefulSetName: "platform-kc-dev-keycloak"
   config:
     # Public OIDC issuer for dev. Tokens minted in dev will have
@@ -66,6 +60,12 @@ authManager:
     # duplicating SendGrid relay infra + keeps "From: noreply@mcp-mesh.io"
     # email coming from a domain that's only domain-authenticated once.
     smtpHost: "smtp-relay.auth-platform.svc.cluster.local"
+    # Bundle URLs — dev tenants downloading the onboarding bundle should see
+    # auth-dev.mcp-mesh.io hostnames + the dev-namespace service DNS, not
+    # the prod defaults baked into application.yaml.
+    bundleKcBase: "https://auth-dev.mcp-mesh.io/auth"
+    bundleAdminBase: "https://auth-dev.mcp-mesh.io/admin"
+    bundleAuthMgrInClusterBase: "http://auth-platform-dev-auth-manager.auth-platform-dev.svc.cluster.local:8080"
 
 # Credentials: blank for the lookup-preservation pattern (same as prod).
 # First-time install: pass `helm --set postgresql.auth.password=... --set

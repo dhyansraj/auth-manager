@@ -18,6 +18,22 @@ function SplashLoading() {
   );
 }
 
+// Surfaces a "DEV" pill next to the brand on dev/local hosts so operators
+// running both envs side-by-side can tell at a glance which one they're
+// looking at. Absence-of-badge = production; intentional, keeps prod chrome
+// clean.
+function EnvBadge() {
+  const host = typeof window !== 'undefined' ? window.location.host : '';
+  if (host.startsWith('admin-dev.') || host.startsWith('localhost')) {
+    return (
+      <span className="ml-2 inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
+        DEV
+      </span>
+    );
+  }
+  return null;
+}
+
 // Inline placement keeps the header to a single row and reads cleaner alongside
 // the branding (vs. stacking which adds vertical noise).
 function BackToAppLink() {
@@ -62,7 +78,10 @@ function AuthenticatedShell() {
       <div className="min-h-screen flex flex-col">
         <header className="bg-slate-900 text-slate-100 px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <Link to="/" className="text-lg font-semibold">auth-manager</Link>
+            <div className="flex items-center">
+              <Link to="/" className="text-lg font-semibold">auth-manager</Link>
+              <EnvBadge />
+            </div>
             <BackToAppLink />
           </div>
           <nav className="flex gap-4 text-sm items-center">
