@@ -42,10 +42,15 @@ step()  { echo; bold "── $* ──"; }
 #                             /auth/admin/* — see scripts/cf-firewall-setup.sh.
 #   - auth-dev.mcp-mesh.io  → DEV platform-edge in auth-platform-dev namespace.
 #                             Side-by-side with prod; same cluster, separate
-#                             namespace + edge release.
-#   - admin-dev.mcp-mesh.io → DEV platform-edge (same service — edge routes
-#                             admin vs auth by Host header internally). Optional
-#                             second hostname; routing works regardless.
+#                             namespace + edge release. Single hostname serves
+#                             both KC (/auth/*) and admin UI (/admin/*) — edge
+#                             router.lua routes by path regardless of host.
+#   - <tenant root domains> → prod platform-edge (each tenant's custom apex
+#                             domain that was registered via auth-manager's
+#                             routes API). Listed EXPLICITLY here (not relying
+#                             on a wildcard) because *.mcp-mesh.io can't match
+#                             non-mcp-mesh apex domains. Add new entries when
+#                             onboarding tenants with custom domains.
 #   - *.mcp-mesh.io         → prod platform-edge (catch-all for tenant
 #                             subdomains: app1.mcp-mesh.io, customer.mcp-mesh.io,
 #                             etc.). Order matters in CF tunnel ingress; this
@@ -56,6 +61,10 @@ step()  { echo; bold "── $* ──"; }
 #                             about dev, operators pick dev tenant hostnames
 #                             that they explicitly route by adding a specific
 #                             rule above the wildcard (Phase 2).
+#
+# WARNING: this script overwrites the tunnel's full ingress config, so any
+# rule added out-of-band (CF dashboard, manual API call) gets wiped on next
+# run. Tenant apex-domain rules MUST be added below to survive re-runs.
 INGRESS_RULES=$(cat <<'JSON'
 {
   "config": {
@@ -69,8 +78,16 @@ INGRESS_RULES=$(cat <<'JSON'
         "service": "http://auth-platform-dev-platform-edge.auth-platform-dev.svc.cluster.local:80"
       },
       {
-        "hostname": "admin-dev.mcp-mesh.io",
-        "service": "http://auth-platform-dev-platform-edge.auth-platform-dev.svc.cluster.local:80"
+        "hostname": "niralishappyfeetindia.com",
+        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
+      },
+      {
+        "hostname": "safeandsoundhouses.com",
+        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
+      },
+      {
+        "hostname": "maya-ai.ink",
+        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
       },
       {
         "hostname": "*.mcp-mesh.io",
@@ -90,11 +107,16 @@ JSON
 # Host header; we still need per-subdomain CNAMEs at the DNS layer for each
 # hostname that should resolve. "auth" is the platform admin/issuer host;
 # tenant subdomains (app1, etc.) are added as we onboard tenants.
-# "auth-dev" + "admin-dev" route to the side-by-side dev namespace.
-DNS_HOSTNAMES=(auth auth-dev admin-dev app1 safesound-dev)
+# "auth-dev" routes to the side-by-side dev namespace (single-host dev,
+# mirrors prod's single-host architecture).
+# Tenant apex domains (niralishappyfeetindia.com, etc.) are managed by their
+# own DNS providers — only in-zone hostnames are listed here.
+DNS_HOSTNAMES=(auth auth-dev app1 safesound-dev)
 
 # Stale CNAMEs to remove (orphaned by ingress rules dropped above).
-DNS_HOSTNAMES_TO_REMOVE=(kc)
+# - kc: superseded by auth.mcp-mesh.io
+# - admin-dev: dropped in favour of single-host dev (auth-dev only)
+DNS_HOSTNAMES_TO_REMOVE=(kc admin-dev)
 
 step "1. Verify API token"
 curl -sS -H "$H_AUTH" "$API/user/tokens/verify" | python3 -c '

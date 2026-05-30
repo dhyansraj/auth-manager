@@ -110,7 +110,7 @@ platformEdge:
   replicaCount: 1
   image:
     repository: platform-edge
-    tag: "0.1.20"
+    tag: "0.1.21"
   config:
     # Redis pointer — dev edge uses standalone Redis (not Sentinel) so
     # talk to the master service directly on the default port.
@@ -123,6 +123,13 @@ platformEdge:
     adminUiTarget:  "auth-platform-dev-admin-ui.auth-platform-dev.svc.cluster.local:80"
     kcTarget:       "platform-kc-dev-keycloak.auth-platform-dev.svc.cluster.local:80"
     platformHost: "auth-dev.mcp-mesh.io"
+    # BFF login flow must redirect browsers to dev's KC host, not prod's.
+    # Same host as platformHost — dev architecture mirrors prod (single host
+    # serves both /auth/* (KC) and /admin/* (admin UI) paths).
+    kcBrowserHost: "auth-dev.mcp-mesh.io"
+    # Realm hosting platform admin users. Same name as prod's platform realm;
+    # isolated by namespace + separate KC release, not realm name.
+    platformRealm: "dev"
     routeDefaultMaxBodyMb: 25
     # k3s cluster DNS (kube-dns/coredns ClusterIP) — same cluster as prod.
     nginxResolver: "10.43.0.10"

@@ -53,6 +53,22 @@ local COOKIE_CSRF = "bff_csrf"
 -- Methods that require CSRF protection when authenticated via cookie.
 local UNSAFE_METHODS = { POST = true, PUT = true, PATCH = true, DELETE = true }
 
+-- ─── Env-driven platform identity ────────────────────────────────────────
+-- PLATFORM_HOST  is the canonical host for the platform admin URL (auth.mcp-mesh.io
+--                in prod, auth-dev.mcp-mesh.io in dev). When a request arrives at
+--                this host, realm_from_host() returns PLATFORM_REALM rather than
+--                deriving a tenant slug from the hostname.
+-- PLATFORM_REALM is the KC realm that owns platform-level admin users
+--                (still "dev" in both prod + dev today; isolated by namespace).
+-- KC_BROWSER_HOST is the canonical KC public host the BFF redirects browsers to
+--                 during login (so KC cookies are set on the same hostname KC
+--                 eventually serves on after IdP round-trips). Defaults to
+--                 PLATFORM_HOST when unset; can be overridden for tenant-domain-
+--                 as-KC-host scenarios.
+local PLATFORM_HOST   = os.getenv("PLATFORM_HOST")   or "auth.mcp-mesh.io"
+local PLATFORM_REALM  = os.getenv("PLATFORM_REALM")  or "dev"
+local KC_BROWSER_HOST = os.getenv("KC_BROWSER_HOST") or PLATFORM_HOST
+
 -- ─── Small helpers ───────────────────────────────────────────────────────
 
 local function log_err(...)
@@ -107,12 +123,13 @@ local function strip_port(host)
 end
 
 -- Derive KC realm from Host using the same convention as admin-ui's
--- createOidcConfig: auth.mcp-mesh.io → 'dev'; otherwise t-<first-label>.
--- localhost in dev maps to 'dev'.
+-- createOidcConfig: PLATFORM_HOST → PLATFORM_REALM (defaults
+-- auth.mcp-mesh.io → 'dev'); otherwise t-<first-label>.
+-- localhost in dev maps to PLATFORM_REALM.
 local function realm_from_host(host)
-    if not host or host == "" then return "dev" end
-    if host == "auth.mcp-mesh.io" then return "dev" end
-    if host == "localhost" or host == "127.0.0.1" then return "dev" end
+    if not host or host == "" then return PLATFORM_REALM end
+    if host == PLATFORM_HOST then return PLATFORM_REALM end
+    if host == "localhost" or host == "127.0.0.1" then return PLATFORM_REALM end
 
     -- Authoritative source: Redis host:<host> hash, populated when a tenant
     -- registers a hostname via auth-manager's tenant-create / routes API.
@@ -136,17 +153,17 @@ local function realm_from_host(host)
     -- Fallback: legacy convention <slug>.<zone> → t-<slug>. Preserves dev
     -- workflows where a hostname is hit before being registered in Redis.
     local first = string.match(host, "^([^.]+)")
-    if not first or first == "" then return "dev" end
+    if not first or first == "" then return PLATFORM_REALM end
     ngx.log(ngx.WARN, "realm_from_host: no Redis mapping for host:", host, " — using fallback realm t-", first)
     return "t-" .. first
 end
 
 -- Build the issuer URL (origin + /auth/realms/<realm>). MUST always use the
--- canonical KC public host (auth.mcp-mesh.io), NOT the calling host —
--- otherwise KC sets session cookies on the calling host's domain, then
--- after the Google IdP round-trip the browser lands on auth.mcp-mesh.io
--- (KC_HOSTNAME) and the cookies aren't sent → cookie_not_found.
-local KC_BROWSER_HOST = "auth.mcp-mesh.io"
+-- canonical KC public host (KC_BROWSER_HOST — e.g. auth.mcp-mesh.io in prod,
+-- auth-dev.mcp-mesh.io in dev), NOT the calling host — otherwise KC sets
+-- session cookies on the calling host's domain, then after the Google IdP
+-- round-trip the browser lands on KC_HOSTNAME and the cookies aren't sent
+-- → cookie_not_found.
 local function browser_authority(host, realm)
     return "https://" .. KC_BROWSER_HOST .. "/auth/realms/" .. realm
 end

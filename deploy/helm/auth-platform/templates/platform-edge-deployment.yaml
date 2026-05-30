@@ -57,6 +57,10 @@ spec:
               value: {{ $kc | quote }}
             - name: PLATFORM_HOST
               value: {{ $platformHost | quote }}
+            - name: KC_BROWSER_HOST
+              value: {{ default $platformHost .Values.platformEdge.config.kcBrowserHost | quote }}
+            - name: PLATFORM_REALM
+              value: {{ default "dev" .Values.platformEdge.config.platformRealm | quote }}
             - name: ROUTE_DEFAULT_MAX_BODY_MB
               value: {{ .Values.platformEdge.config.routeDefaultMaxBodyMb | default 25 | quote }}
             - name: NGINX_RESOLVER
