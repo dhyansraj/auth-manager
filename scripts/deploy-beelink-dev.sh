@@ -209,15 +209,13 @@ helm upgrade --install platform-redis-dev bitnami/redis \
   --wait --timeout=300s $(helm_flags)
 ok "platform-redis-dev"
 
-step "6. Keycloak (platform-kc-dev, 1 pod, start-dev)"
-# start-dev: skips production-mode validations + theme/template caching by
-# default (faster iteration when fiddling with themes). We still pass the
-# theme-cache disables explicitly so behaviour is independent of dev/prod
-# mode default differences across KC versions.
-#
-# extraStartupArgs overrides Bitnami's default of `start --optimized`. We
-# pass `start-dev` as a single argument; Bitnami threads it into the entry-
-# point so KC boots in dev mode.
+step "6. Keycloak (platform-kc-dev, 1 pod, theme cache disabled)"
+# We DON'T use `start-dev` here because the Bitnami chart's extraStartupArgs
+# APPENDS rather than REPLACES the default args (`start --optimized --profile=prod`),
+# producing an invalid combined command and a CrashLoopBackOff. Instead we run
+# in normal production mode but disable theme + template caches via env vars
+# (KC_SPI_THEME_CACHE_*) — which is the only behavior we actually need for
+# fast theme iteration.
 helm upgrade --install platform-kc-dev bitnami/keycloak \
   --namespace "$NAMESPACE" \
   --version "$KC_CHART_VERSION" \
@@ -233,8 +231,8 @@ helm upgrade --install platform-kc-dev bitnami/keycloak \
   --set "externalDatabase.password=$DB_PASSWORD" \
   --set "externalDatabase.database=keycloak" \
   --set "proxy=edge" \
-  --set "production=false" \
-  --set "extraStartupArgs=start-dev" \
+  --set "proxyHeaders=xforwarded" \
+  --set "production=true" \
   --set "extraEnvVars[0].name=KC_HOSTNAME" \
   --set "extraEnvVars[0].value=$KC_PUBLIC_HOSTNAME" \
   --set "extraEnvVars[1].name=KC_HOSTNAME_STRICT" \

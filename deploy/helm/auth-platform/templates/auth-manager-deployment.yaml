@@ -156,8 +156,12 @@ spec:
             - name: CNPG_SUPERUSER_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: platform-pg-superuser-secret
+                  name: {{ .Values.authManager.cnpgSuperuserSecretName | default "platform-pg-superuser-secret" }}
                   key: password
+            {{- if .Values.authManager.config.cnpgSuperuserUrl }}
+            - name: PLATFORM_PG_SUPERUSER_URL
+              value: {{ .Values.authManager.config.cnpgSuperuserUrl | quote }}
+            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /config

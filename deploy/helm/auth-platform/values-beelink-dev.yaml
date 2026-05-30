@@ -39,12 +39,15 @@ authManager:
   replicas: 1
   image:
     repository: auth-manager
-    tag: "0.1.66"
+    tag: "0.1.67"
   # KC StatefulSet lives in this dev namespace, named after the dev Bitnami
   # KC release (platform-kc-dev). Used by the RBAC Role for theme-reload
   # rolling-restart patches AND by ThemeApplier at runtime (env var
   # AUTH_MANAGER_THEME_KC_STATEFULSET_NAME) — same value, both sides agree.
   kcStatefulSetName: "platform-kc-dev-keycloak"
+  # CNPG superuser secret in the dev namespace. CNPG names it after the
+  # cluster + "-superuser" suffix.
+  cnpgSuperuserSecretName: "platform-pg-dev-superuser-secret"
   config:
     # Public OIDC issuer for dev. Tokens minted in dev will have
     # iss="https://auth-dev.mcp-mesh.io/auth/realms/<realm>".
@@ -66,6 +69,11 @@ authManager:
     bundleKcBase: "https://auth-dev.mcp-mesh.io/auth"
     bundleAdminBase: "https://auth-dev.mcp-mesh.io/admin"
     bundleAuthMgrInClusterBase: "http://auth-platform-dev-auth-manager.auth-platform-dev.svc.cluster.local:8080"
+    # cnpg-superuser-pool JDBC URL. Override the application.yaml default which
+    # hardcodes the prod namespace (platform-pg-rw.auth-platform). Without this,
+    # dev's auth-manager tries to connect to PROD's PG with dev's superuser
+    # password — fails with "password authentication failed for user postgres".
+    cnpgSuperuserUrl: "jdbc:postgresql://platform-pg-dev-rw.auth-platform-dev.svc.cluster.local:5432/postgres"
 
 # Credentials: blank for the lookup-preservation pattern (same as prod).
 # First-time install: pass `helm --set postgresql.auth.password=... --set
@@ -82,7 +90,7 @@ adminUi:
   replicas: 1
   image:
     repository: admin-ui
-    tag: "0.1.38"
+    tag: "0.1.39"
 
 # Dev shares prod's smtp-relay — no separate relay deployment in this
 # namespace. (auth-manager + KC realms reach it via cross-namespace DNS
