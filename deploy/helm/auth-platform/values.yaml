@@ -22,12 +22,23 @@ authManager:
     limits:
       cpu: "1000m"
       memory: "1Gi"
+  # Name of the Keycloak StatefulSet that auth-manager is allowed to patch
+  # (rolling-restart annotation) when a tenant theme ConfigMap changes.
+  # Bitnami's keycloak chart names the STS as <release>-keycloak, so this
+  # must match the KC helm release in the deployment namespace.
+  # Override in dev (separate KC release) e.g. "platform-kc-dev-keycloak".
+  kcStatefulSetName: "platform-kc-keycloak"
   config:
     activeProfile: "k8s"
     serverPort: 8080
     keycloakUrl: ""                 # auto-derived from KC service if blank (set in templates)
     postgresHost: ""                # auto-derived
     redisHost: ""                   # auto-derived
+    # Override of AUTH_MANAGER_SMTP_HOST. Leave blank to fall back to the
+    # default baked into application.yaml (smtp-relay.auth-platform.svc...).
+    # Set explicitly when running side-by-side in a non-prod namespace that
+    # shares prod's smtp-relay via cross-namespace DNS.
+    smtpHost: ""
   env: {}
 
 # ───── admin-ui ─────

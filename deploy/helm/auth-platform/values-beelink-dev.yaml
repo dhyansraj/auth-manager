@@ -1,0 +1,121 @@
+# DEV environment overrides for the beelink k3s cluster.
+#
+# Runs side-by-side with the prod release of the same chart, in a separate
+# namespace (auth-platform-dev), backed by separate stateful components:
+#
+#   | Component  | Prod release         | Dev release             |
+#   |------------|----------------------|-------------------------|
+#   | Namespace  | auth-platform        | auth-platform-dev       |
+#   | CNPG       | platform-pg          | platform-pg-dev (1 ins) |
+#   | Keycloak   | platform-kc-keycloak | platform-kc-dev-keyclk  |
+#   | Redis      | platform-redis (HA)  | platform-redis-dev (1)  |
+#   | auth-mgr   | 2 replicas           | 1 replica               |
+#   | admin-ui   | 2 replicas           | 1 replica               |
+#   | edge       | 3 replicas           | 1 replica               |
+#   | smtp-relay | 1 replica            | (disabled — share prod) |
+#   | hostnames  | auth/admin.mcp-mesh  | auth-dev/admin-dev.…    |
+#
+# Shared from prod (cross-namespace DNS, no per-env duplication):
+#   - smtp-relay (smtp-relay.auth-platform.svc.cluster.local)
+#   - SendGrid credentials (sendgrid-api Secret — copied at deploy time)
+#   - Cloudflare API creds (cloudflare-api Secret — copied at deploy time)
+#   - Google/GitHub OAuth platform creds (platform-oauth-providers — copied)
+#   - Cloudflare tunnel (prod's cloudflared connector handles auth-dev routes)
+#
+# Same images as prod — no version drift between envs (registry + tags
+# identical). What differs is sizing + the infra targets we point at.
+#
+# Operator must set DB_PASSWORD + KC_ADMIN_PASSWORD env vars before invoking
+# scripts/deploy-beelink-dev.sh (same guard as the prod script). These can
+# legitimately differ from prod's values — dev creds are independent.
+
+global:
+  imageRegistry: "192.168.10.1:5000"
+  storageClass: "longhorn"
+
+authManager:
+  # Single replica for dev. Bootstrap runners are idempotent so HA isn't
+  # needed for the bring-up flows we test in dev.
+  replicas: 1
+  image:
+    repository: auth-manager
+    tag: "0.1.66"
+  # KC StatefulSet lives in this dev namespace, named after the dev Bitnami
+  # KC release (platform-kc-dev). Used by the RBAC Role for theme-reload
+  # rolling-restart patches.
+  #
+  # NOTE: app code (ThemeApplier.KC_STATEFULSET_NAME) is still hardcoded to
+  # "platform-kc-keycloak" — that part is out-of-scope for this chunk. So
+  # theme uploads in dev will not trigger a KC restart automatically; do it
+  # manually with `kubectl rollout restart sts/platform-kc-dev-keycloak -n
+  # auth-platform-dev` after uploading a theme. Will be fixed when the env-
+  # aware bundle URL work lands.
+  kcStatefulSetName: "platform-kc-dev-keycloak"
+  config:
+    # Public OIDC issuer for dev. Tokens minted in dev will have
+    # iss="https://auth-dev.mcp-mesh.io/auth/realms/<realm>".
+    keycloakUrl: "https://auth-dev.mcp-mesh.io/auth"
+    # CNPG primary service in the dev namespace.
+    postgresHost: "platform-pg-dev-rw"
+    # Redis is standalone in dev (single pod, no Sentinel) — no quorum
+    # discovery overhead, slightly faster start, no HA. Fine for dev.
+    redisSentinel:
+      enabled: false
+    redisHost: "platform-redis-dev-master"
+    # Point dev pods at prod's smtp-relay across namespaces. Avoids
+    # duplicating SendGrid relay infra + keeps "From: noreply@mcp-mesh.io"
+    # email coming from a domain that's only domain-authenticated once.
+    smtpHost: "smtp-relay.auth-platform.svc.cluster.local"
+
+# Credentials: blank for the lookup-preservation pattern (same as prod).
+# First-time install: pass `helm --set postgresql.auth.password=... --set
+# keycloak.auth.adminPassword=...` (or pre-create the dev secret out-of-
+# band). Subsequent upgrades preserve whatever is already in the Secret.
+postgresql:
+  auth:
+    password: ""
+keycloak:
+  auth:
+    adminPassword: ""
+
+adminUi:
+  replicas: 1
+  image:
+    repository: admin-ui
+    tag: "0.1.38"
+
+# Dev shares prod's smtp-relay — no separate relay deployment in this
+# namespace. (auth-manager + KC realms reach it via cross-namespace DNS
+# at smtp-relay.auth-platform.svc.cluster.local, set via authManager.config
+# .smtpHost above.)
+smtpRelay:
+  enabled: false
+
+platformEdge:
+  # Single replica for dev. Anti-affinity in the template is a soft
+  # preference so it remains satisfiable with one pod.
+  replicaCount: 1
+  image:
+    repository: platform-edge
+    tag: "0.1.20"
+  config:
+    # Redis pointer — dev edge uses standalone Redis (not Sentinel) so
+    # talk to the master service directly on the default port.
+    redisHost: "platform-redis-dev-master.auth-platform-dev.svc.cluster.local"
+    redisPort: 6379
+    redisSentinelEnabled: false
+    # In-namespace service FQDNs (full DNS so nginx resolver works — its
+    # cosocket lookups don't honour /etc/resolv.conf's search list).
+    adminApiTarget: "auth-platform-dev-auth-manager.auth-platform-dev.svc.cluster.local:8080"
+    adminUiTarget:  "auth-platform-dev-admin-ui.auth-platform-dev.svc.cluster.local:80"
+    kcTarget:       "platform-kc-dev-keycloak.auth-platform-dev.svc.cluster.local:80"
+    platformHost: "auth-dev.mcp-mesh.io"
+    routeDefaultMaxBodyMb: 25
+    # k3s cluster DNS (kube-dns/coredns ClusterIP) — same cluster as prod.
+    nginxResolver: "10.43.0.10"
+
+# No separate cloudflared connector for dev. Prod's tunnel routes
+# auth-dev.mcp-mesh.io + admin-dev.mcp-mesh.io to this namespace's
+# platform-edge svc (see scripts/cf-setup-tunnel.sh).
+cloudflared:
+  enabled: false

@@ -44,6 +44,13 @@ spec:
               value: {{ .Values.authManager.config.activeProfile | quote }}
             - name: SPRING_CONFIG_ADDITIONAL_LOCATION
               value: file:/config/
+            {{- if .Values.authManager.config.smtpHost }}
+            # SMTP host override — used when this release runs in a non-prod
+            # namespace and needs to point at prod's smtp-relay via cross-
+            # namespace DNS (smtp-relay.<prod-ns>.svc.cluster.local).
+            - name: AUTH_MANAGER_SMTP_HOST
+              value: {{ .Values.authManager.config.smtpHost | quote }}
+            {{- end }}
             # Namespace used by ThemeStorage / ThemeApplier when talking to
             # the Kubernetes API. Sourced from the downward API so the same
             # image works in any namespace.

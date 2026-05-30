@@ -35,15 +35,27 @@ step()  { echo; bold "── $* ──"; }
 # Service URLs use Kubernetes DNS: <svc>.<namespace>.svc.cluster.local
 #
 # Hostname routing notes:
-#   - auth.mcp-mesh.io  → platform-edge (admin UI + auth-manager + KC under /auth,
-#                         including the KC admin console at /auth/admin/*).
-#                         IP-restriction for the admin paths is enforced at the
-#                         Cloudflare WAF layer on path /auth/admin/* — see
-#                         scripts/cf-firewall-setup.sh.
-#   - *.mcp-mesh.io     → platform-edge (catch-all for tenant subdomains:
-#                         app1.mcp-mesh.io, customer.mcp-mesh.io, etc.).
-#                         Order matters in CF tunnel ingress; this MUST come
-#                         after the more specific entries above.
+#   - auth.mcp-mesh.io      → prod platform-edge (admin UI + auth-manager + KC
+#                             under /auth, including the KC admin console at
+#                             /auth/admin/*). IP-restriction for the admin paths
+#                             is enforced at the Cloudflare WAF layer on path
+#                             /auth/admin/* — see scripts/cf-firewall-setup.sh.
+#   - auth-dev.mcp-mesh.io  → DEV platform-edge in auth-platform-dev namespace.
+#                             Side-by-side with prod; same cluster, separate
+#                             namespace + edge release.
+#   - admin-dev.mcp-mesh.io → DEV platform-edge (same service — edge routes
+#                             admin vs auth by Host header internally). Optional
+#                             second hostname; routing works regardless.
+#   - *.mcp-mesh.io         → prod platform-edge (catch-all for tenant
+#                             subdomains: app1.mcp-mesh.io, customer.mcp-mesh.io,
+#                             etc.). Order matters in CF tunnel ingress; this
+#                             MUST come after the more specific entries above.
+#                             Dev tenant hostnames (e.g. <tenant>-dev.mcp-mesh.io
+#                             created in dev) currently still hit prod edge via
+#                             this catch-all; until per-tenant routing learns
+#                             about dev, operators pick dev tenant hostnames
+#                             that they explicitly route by adding a specific
+#                             rule above the wildcard (Phase 2).
 INGRESS_RULES=$(cat <<'JSON'
 {
   "config": {
@@ -51,6 +63,14 @@ INGRESS_RULES=$(cat <<'JSON'
       {
         "hostname": "auth.mcp-mesh.io",
         "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
+      },
+      {
+        "hostname": "auth-dev.mcp-mesh.io",
+        "service": "http://auth-platform-dev-platform-edge.auth-platform-dev.svc.cluster.local:80"
+      },
+      {
+        "hostname": "admin-dev.mcp-mesh.io",
+        "service": "http://auth-platform-dev-platform-edge.auth-platform-dev.svc.cluster.local:80"
       },
       {
         "hostname": "*.mcp-mesh.io",
@@ -70,7 +90,8 @@ JSON
 # Host header; we still need per-subdomain CNAMEs at the DNS layer for each
 # hostname that should resolve. "auth" is the platform admin/issuer host;
 # tenant subdomains (app1, etc.) are added as we onboard tenants.
-DNS_HOSTNAMES=(auth app1 safesound-dev)
+# "auth-dev" + "admin-dev" route to the side-by-side dev namespace.
+DNS_HOSTNAMES=(auth auth-dev admin-dev app1 safesound-dev)
 
 # Stale CNAMEs to remove (orphaned by ingress rules dropped above).
 DNS_HOSTNAMES_TO_REMOVE=(kc)

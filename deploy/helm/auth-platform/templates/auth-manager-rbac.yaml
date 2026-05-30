@@ -27,14 +27,16 @@ rules:
   resources: ["configmaps"]
   verbs: ["get", "list", "create", "update", "patch", "delete"]
 # Patch the platform-kc StatefulSet's pod-template annotations to trigger a
-# rolling restart (kubectl rollout restart equivalent).
+# rolling restart (kubectl rollout restart equivalent). STS name varies per
+# environment (Bitnami chart names it <release>-keycloak) — parameterized
+# via .Values.authManager.kcStatefulSetName.
 - apiGroups: ["apps"]
   resources: ["statefulsets"]
-  resourceNames: ["platform-kc-keycloak"]
+  resourceNames: [{{ .Values.authManager.kcStatefulSetName | default "platform-kc-keycloak" | quote }}]
   verbs: ["get", "patch", "update"]
 - apiGroups: ["apps"]
   resources: ["statefulsets/status"]
-  resourceNames: ["platform-kc-keycloak"]
+  resourceNames: [{{ .Values.authManager.kcStatefulSetName | default "platform-kc-keycloak" | quote }}]
   verbs: ["get"]
 # Patch deployments so CloudflaredReloader can trigger cloudflared rollouts
 # after tunnel ingress changes. Same pattern as the StatefulSet patch above
