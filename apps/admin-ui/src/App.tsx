@@ -24,7 +24,10 @@ function SplashLoading() {
 // clean.
 function EnvBadge() {
   const host = typeof window !== 'undefined' ? window.location.host : '';
-  if (host.startsWith('admin-dev.') || host.startsWith('localhost')) {
+  // Dev env hostnames: auth-dev.mcp-mesh.io (canonical single-host architecture
+  // mirroring prod), legacy admin-dev.* (since removed but kept for safety),
+  // and localhost (vite dev server).
+  if (host.startsWith('auth-dev.') || host.startsWith('admin-dev.') || host.startsWith('localhost')) {
     return (
       <span className="ml-2 inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
         DEV
