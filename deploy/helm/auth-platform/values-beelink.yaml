@@ -16,7 +16,7 @@ authManager:
   replicas: 2
   image:
     repository: auth-manager
-    tag: "0.1.66"
+    tag: "0.1.67"
   config:
     keycloakUrl: "https://auth.mcp-mesh.io/auth"
     postgresHost: "platform-pg-rw"  # CNPG primary service (3-node HA cluster)
@@ -59,7 +59,7 @@ adminUi:
   replicas: 2
   image:
     repository: admin-ui
-    tag: "0.1.38"
+    tag: "0.1.39"
 
 smtpRelay:
   enabled: true
