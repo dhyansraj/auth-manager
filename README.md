@@ -1,54 +1,74 @@
 # auth-manager
 
-Multi-tenant authentication & authorization platform built on Keycloak, OpenResty, and a Spring Boot control plane. Designed for self-hosted Kubernetes (currently targeting k3s).
+Multi-tenant authentication & authorization platform — "auth-as-a-service" — built on Keycloak, an OpenResty/Lua edge, and a Spring Boot control plane. Self-hosted on Kubernetes (beelink k3s).
 
-**Status:** Pre-Phase 0 (planning complete, scaffold not yet built).
+Each tenant gets its own Keycloak realm: users, identity providers, client apps, custom theme, and SMTP config. Operators manage tenants through **auth-manager** via the admin UI; tenant teams integrate their apps using the published auth libraries.
+
+**Status:** Live in production. Two fully-isolated environments run side-by-side on the same cluster — **prod** (`auth-platform` namespace, HA) and **dev** (`auth-platform-dev`, single-replica throwaway tenants). They share the same Helm chart and image registry; only sizing and infra targets differ.
 
 ## What is this?
 
 A control plane that:
 
 - Provisions Keycloak realms, clients, roles, resources, and policies per tenant — declaratively or via UI.
-- Federates external identity providers (Google, Microsoft, GitHub, SAML) per tenant realm. One Google OAuth client serves many tenants instead of one per app.
+- Federates external identity providers (Google, GitHub, SAML) per tenant realm. One shared OAuth client serves many tenants instead of one per app.
 - Routes traffic at the edge (OpenResty + Lua + Redis) based on hostname, with dynamic tenant onboarding (no kubectl-apply per new tenant).
-- Ships a Spring Boot consumer library (`auth-lib`) that any app can drop in to get JWT validation, permission caching, and `@Secured("PERMISSION_*")`-style authorization with one `pom.xml` dependency.
+- Ships consumer libraries (Java, Python, React) that any app can drop in for JWT validation, permission caching, and `@Secured("PERMISSION_*")`-style authorization.
 - Optionally watches `Tenant`/`App` CRDs for GitOps-style declarative tenancy.
 
-## Where the design lives
+## Documentation
 
-**[`PLAN.org`](./PLAN.org)** — single canonical design document. Read this first. It covers architecture, component-by-component design (with real code), Helm chart layout, IdP brokering strategy, security model, data model, REST API, UI design, naming conventions, version pinning, local-first dev loop, k3d setup, brownfield migration from existing per-app Cloudflare Tunnels, and a six-phase roadmap.
+| Doc | What it covers |
+| --- | --- |
+| **[`OPERATOR-GUIDE.org`](./OPERATOR-GUIDE.org)** | Operate the live platform — architecture, URLs, deployment, operator workflows, gotchas, daily checklist. |
+| **[`PLAN.org`](./PLAN.org)** | Design doc + rationale — component design with code, and the *why* behind decisions (search for `~WHY:~`). |
+| **[`BACKLOG.org`](./BACKLOG.org)** | Prioritized open work. |
 
-If you want to know *why* a decision was made, search PLAN.org for the relevant `~WHY:~` paragraph.
-
-## Repo layout (target — built out across Phase 0)
+## Repo layout
 
 ```
 apps/
-  auth-manager/         Spring Boot control-plane backend
+  auth-manager/         Spring Boot control-plane backend (Java 21, Spring Boot 4.0.6)
   admin-ui/             React + Vite admin SPA
-  tenant-operator/      java-operator-sdk reconciler for Tenant/App CRDs
-  keycloak-event-spi/   Keycloak event listener → auth-manager
+  app1-backend/         Sample tenant backend (auth-lib integration reference)
+  app1-ui/              Sample tenant React SPA
+  auth-client-sample/   Minimal OIDC client example
+  tenant-operator/      java-operator-sdk reconciler for Tenant/App CRDs (scaffolded)
+  keycloak-event-spi/   Keycloak event listener SPI (scaffolded)
 libs/
-  auth-lib/             Consumer library (JWT validation + permission cache)
+  auth-lib/             Java consumer library — JWT validation + permission cache (Maven Central: mcp-mesh-auth-lib)
+  auth-lib-react/       React hooks/components for BFF auth (npm: @mcpmesh/auth-lib-react)
+  auth-lib-python/      Python/FastAPI consumer library (PyPI: mcp-mesh-auth-lib)
 deploy/
-  helm/auth-platform/   Umbrella Helm chart + per-component subcharts
+  helm/auth-platform/   Umbrella Helm chart (auth-manager, admin-ui, platform-edge, cloudflared, smtp-relay)
+  cnpg/                 CloudNativePG manifests
   k3d/                  Local cluster bootstrap
-dev/                    Layer-1 local dev stack (Docker Compose)
-scripts/                Bootstrap, seed, mkcert helpers
-.github/workflows/      CI pipelines
+dev/
+  compose.yaml          Layer-1 local dev stack (Postgres, Redis, Keycloak, OpenResty, Mailhog)
+  openresty/            platform-edge: OpenResty + Lua BFF (sessions, CSRF, routing, token refresh)
+  smtp-relay/           Go SMTP relay → SendGrid
+scripts/                Deploy, Cloudflare tunnel, provisioning, seed helpers
 ```
+
+## Published libraries
+
+| Library | Registry | Version |
+| --- | --- | --- |
+| `mcp-mesh-auth-lib` (Java) | Maven Central | 0.3.1 |
+| `mcp-mesh-auth-lib` (Python) | PyPI | 0.1.0 |
+| `@mcpmesh/auth-lib-react` | npm | 0.3.0 |
 
 ## Getting started
 
-Phase 0 (scaffolding) hasn't been built yet. Once it's in place, the dev loop will be:
+To operate the live platform, see **[`OPERATOR-GUIDE.org`](./OPERATOR-GUIDE.org)**.
+
+For the local dev loop:
 
 ```bash
-make dev                                    # Layer 1: Docker Compose deps
+make dev    # Layer 1: Docker Compose deps (Postgres, Redis, Keycloak, OpenResty, Mailhog)
 cd apps/auth-manager && mvn spring-boot:run -Dspring-boot.run.profiles=local
 cd apps/admin-ui     && npm run dev
 ```
-
-See [`PLAN.org` → Local-First Development Loop](./PLAN.org) for details.
 
 ## License
 

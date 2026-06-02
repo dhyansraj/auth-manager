@@ -110,7 +110,7 @@ platformEdge:
   replicaCount: 1
   image:
     repository: platform-edge
-    tag: "0.1.21"
+    tag: "0.1.22"
   config:
     # Redis pointer — dev edge uses standalone Redis (not Sentinel) so
     # talk to the master service directly on the default port.

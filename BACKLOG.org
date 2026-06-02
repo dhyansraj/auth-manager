@@ -1,0 +1,337 @@
+#+TITLE: auth-manager Backlog
+#+AUTHOR: Dhyan
+#+STARTUP: showall
+#+OPTIONS: toc:2 num:nil
+
+Snapshot at handoff to Opus 4.8. Pulled from internal task list; descriptions
+expanded with the context that's not in the one-line task subjects. IDs match
+the in-conversation tracker so we can grep history if needed.
+
+* CRITICAL
+** [#A] #115 — =cf-setup-tunnel.sh= wipes dynamically-added tenant ingress rules
+   :PROPERTIES:
+   :TASK: 115
+   :STATUS: pending
+   :END:
+
+   Re-running =scripts/cf-setup-tunnel.sh= replaces the tunnel's full ingress
+   config with the script's static template. Any tenant ingress entries that
+   were added at runtime by auth-manager's =CloudflareTunnelService= (when a
+   tenant is provisioned) get silently dropped → tunnel routes traffic to
+   the wrong service → tenants go dark.
+
+   Confirmed live: all 3 tenants (Maya, HF, SNS) went down at once when this
+   was re-run during dev-env bring-up; restored manually by curl PUT-ing
+   them back into the tunnel config.
+
+   *Fix:* either (a) read the current ingress config, merge static rules in,
+   PUT the merged set, or (b) move all tenant entries to auth-manager and
+   make the script's job idempotent for *platform* hosts only (auth, admin,
+   auth-dev, admin-dev). Option (b) is cleaner — one writer per concern.
+
+** [#A] #92 — CNPG superuser password drift on every redeploy
+   :PROPERTIES:
+   :TASK: 92
+   :STATUS: pending
+   :END:
+
+   CNPG regenerates the =postgres= superuser secret on every helm upgrade
+   that touches the cluster CR (or sometimes for no obvious reason at all).
+   Our auth-manager pods read the superuser password from
+   =platform-pg-superuser-secret= at boot — if the secret was rotated but
+   the PG cluster still has the *previous* password, auth-manager 401s out
+   on its bootstrap connection.
+
+   Current workaround (manual, every deploy): before =helm upgrade=,
+   =ALTER USER postgres WITH PASSWORD ...= with the secret's current value.
+   Bites both prod and dev.
+
+   *Fix candidates:* (a) set =enableSuperuserAccess: true= + manage the
+   secret ourselves (sealed-secret or external-secrets), pin it, and skip
+   CNPG's rotation; (b) write a pre-upgrade hook that ALTERs the role to
+   match the secret before pods come up. (a) is cleaner; CNPG explicitly
+   supports user-owned superuser secrets.
+
+* USER-FACING UX
+** [#B] #90 — Onboarding wizard: auto-verify admin email + Users tab "Mark verified" action
+   :PROPERTIES:
+   :TASK: 90
+   :STATUS: pending
+   :END:
+
+   New tenants land with =emailVerified=false= on the operator-provisioned
+   admin user. The admin can't pass email-verification flows (we don't even
+   have email delivery wired for the operator at the moment), and there's
+   no UI button to flip the flag — operator must hit KC admin REST manually.
+
+   *Scope:*
+   - =TenantOnboardingService= sets =emailVerified=true= on the operator
+     account during creation
+   - Users tab in admin UI: per-row action "Mark email verified" calling a
+     new =POST /tenants/{id}/users/{userId}/verify-email= endpoint that
+     PUTs =emailVerified=true= via KC admin API
+   - Audit log entry for the action
+
+** [#B] #94 — Wizard / IdP setup: auto-link IdP login to operator-provisioned local user
+   :PROPERTIES:
+   :TASK: 94
+   :STATUS: pending
+   :END:
+
+   When an operator provisions =dhyan@example.com= as the admin user and
+   enables Google IdP, then logs in via Google with the same email — KC
+   creates a *brokered* user with a different UUID instead of linking to
+   the local account. Operator ends up with two accounts: the local one
+   has the roles, the brokered one is empty → 403 on everything.
+
+   *Fix:* enable KC's =Automatic Link= first-broker-login authenticator
+   (variant of the existing First Broker Login flow) for the platform +
+   tenant realms during creation. Match on email. If a local user with
+   that email exists, link the IdP identity to it instead of creating a
+   new user.
+
+   Realm-creation flow lives in =KeycloakAdminService.createRealm= and
+   =IdentityProvidersBootstrap= for platform realm. Both need the new
+   first-broker-login flow wired.
+
+** [#B] #93 — PermissionsTab: persistent error display on manifest upload failure
+   :PROPERTIES:
+   :TASK: 93
+   :STATUS: pending
+   :END:
+
+   Manifest upload errors currently flash a toast that disappears in ~5s.
+   If the manifest fails server-side validation (duplicate perm IDs,
+   unknown role refs, JSON parse errors), operator misses the message
+   and re-uploads the same broken file. We need an inline error panel
+   that *stays* visible until dismissed or until a successful upload
+   replaces it.
+
+   Reference impl: how =TenantWizard= displays validation errors on the
+   review step — same pattern, slot into PermissionsTab between the
+   upload button and the role list.
+
+** [#B] #103 — Email tab UX polish: error messages + auto-validate + status polling
+   :PROPERTIES:
+   :TASK: 103
+   :STATUS: pending
+   :END:
+
+   The Email tab in tenant detail currently:
+   - shows raw exception messages when CF/SendGrid API calls fail (URL +
+     status code → confusing to operators)
+   - requires a manual "Validate" button click after DKIM CNAME setup
+     instead of auto-validating once the CNAMEs are resolvable
+   - has no live status indicator while validation is running (just
+     shows the final result on next page refresh)
+
+   *Scope:* friendly error mapping (table of known CF/SG status codes →
+   operator-readable messages), automatic =/validate= POST 30s after
+   any DKIM CNAME update, spinner while polling.
+
+   Related: #104 (same area).
+
+** [#B] #104 — =TenantDomainAuthService.revalidate= doesn't persist =sendgrid_domain_valid=
+   :PROPERTIES:
+   :TASK: 104
+   :STATUS: pending
+   :END:
+
+   =TenantDomainAuthService.revalidate(tenantId)= calls SendGrid's
+   =/whitelabel/domains/{id}/validate=, gets back =valid: true=, but the
+   Tenant entity's =sendgridDomainValid= column isn't updated. UI keeps
+   showing the red "Failed ✗" badge even after backend confirms validity.
+
+   Probably a missing =tenantRepository.save(tenant)= after the field
+   assignment, or the assignment is on a detached copy. ~10-line fix
+   once located. Check =TenantDomainAuthService.java= around the
+   =revalidate= method.
+
+* DEV-ENV POLISH
+** [#B] #113 — =deploy-beelink-dev.sh=: auto-handle CNPG enableSuperuserAccess + seed chart secret
+   :PROPERTIES:
+   :TASK: 113
+   :STATUS: pending
+   :END:
+
+   First-time dev deploy required two manual fixups that the script
+   should handle:
+   1. =kubectl patch cluster platform-pg-dev --type=merge -p
+      '{"spec":{"enableSuperuserAccess":true}}'= — without this, the
+      superuser secret CNPG creates is empty.
+   2. The chart's secret template uses lookup-preservation, so on first
+      install the secret is created with blank passwords. Need to
+      pass =--set postgresql.auth.password=$DB_PASSWORD --set
+      keycloak.auth.adminPassword=$KC_ADMIN_PASSWORD= on first
+      install only, then drop them on subsequent upgrades (or patch
+      the secret out-of-band).
+
+   Both got fixed manually but the script silently does the wrong
+   thing on a fresh namespace. Make it idempotent + first-run-aware.
+
+** [#B] #114 — =scripts/theme-dev-sync.sh= — fswatch + kubectl cp to dev KC pod
+   :PROPERTIES:
+   :TASK: 114
+   :STATUS: pending
+   :END:
+
+   Theme iteration loop on dev is still slow: edit .ftl/.css → docker
+   build of theme-materializer init container → push → restart KC pod
+   → wait for boot. We talked about a faster path: fswatch the local
+   theme directory, =kubectl cp= changed files directly into the
+   running dev KC pod's =/opt/keycloak/themes/mcpmesh-flexible/=, and
+   touch a file that KC's template cache (disabled in dev) re-reads.
+
+   Should be a ~30-line shell script. Only safe in dev because we set
+   =KC_SPI_THEME_CACHE_THEMES=false= +
+   =KC_SPI_THEME_CACHE_TEMPLATES=false= on the dev KC release.
+
+** [#C] #117 — KC session defaults: bump idle to 4h on tenant realm creation
+   :PROPERTIES:
+   :TASK: 117
+   :STATUS: pending
+   :END:
+
+   We bumped =ssoSessionIdleTimeout= from 30m → 4h and =accessTokenLifespan=
+   from 5m → 15m on Maya's realm manually after the BFF refresh investigation.
+   New tenants still get the KC defaults (30m / 5m). =KeycloakAdminService
+   .createRealm= should set the new defaults at realm creation time so
+   we don't have to remember per-tenant.
+
+   Values to set on the RealmRepresentation:
+   - =ssoSessionIdleTimeout= = 14400 (4h)
+   - =ssoSessionMaxLifespan= = 86400 (24h)
+   - =accessTokenLifespan= = 900 (15m)
+   - =offlineSessionIdleTimeout= leave at default
+
+* CROSS-TEAM (not in our repo, but worth tracking)
+** [#B] Maya frontend — chat draft persistence to sessionStorage
+   :PROPERTIES:
+   :TASK: (not filed in our backlog — Maya team task)
+   :STATUS: pending
+   :END:
+
+   Maya's chat input should save the draft to =sessionStorage= on every
+   keystroke and restore it on mount. This protects against any reload
+   path, not just the 401-redirect we just fixed (also browser crash,
+   network drop, user-initiated reload).
+
+   We surfaced this from the BFF cookie investigation; the cookie
+   re-issue fix (#118, shipped in platform-edge 0.1.22) makes this no
+   longer urgent, but it's still good defense-in-depth.
+
+* DEFERRED
+** [#D] #110 — Phase 2: dev→prod migration tool
+   :PROPERTIES:
+   :TASK: 110
+   :STATUS: pending
+   :END:
+
+   One-shot CLI that copies a realm + its theme + tenant config from
+   dev to prod (or vice versa). Needed once we're regularly iterating
+   in dev and want to promote validated state. Not blocking anything
+   right now — the dev env (#109) is up and we can re-create state in
+   prod by hand if needed.
+
+** [#D] #111 — Phase 3: twin-env continuous sync (defer)
+   :PROPERTIES:
+   :TASK: 111
+   :STATUS: pending
+   :END:
+
+   Continuous dev↔prod sync was scoped in the dev-env conversation but
+   the user explicitly said defer. Don't pick up unless we hit a real
+   need.
+
+** [#D] BFF single-flight refresh + KC reuse-detection policy review
+   :PROPERTIES:
+   :TASK: (not filed — was P1 before #118 shipped, now P3)
+   :STATUS: pending
+   :END:
+
+   Maya claude's hypothesis was that concurrent /api/* bursts could
+   cause two parallel refresh attempts → first rotates the refresh
+   token, second submits the stale one → KC refuse-detection revokes
+   the token family → session dies. Evidence didn't actually support
+   this (the failure mode we hit was cookie Max-Age expiry, not refresh
+   reuse — Redis session was alive when "death" occurred), but it's a
+   latent issue under burst load.
+
+   *If we ever decide to fix:*
+   - Add a Redis-based mutex in =maybe_refresh= (=SET NX PX=) so only
+     the first concurrent request actually calls KC; the others wait
+     and re-read the session
+   - OR set realm's =refreshTokenMaxReuse=1= to give us one free retry
+     under race
+
+   Currently P3 because the symptom is gone and we have no evidence of
+   the race actually firing.
+
+** [#D] BFF dead-cookie silent 401 loop UX
+   :PROPERTIES:
+   :TASK: (not filed)
+   :STATUS: pending
+   :END:
+
+   If the browser has a =bff_sid= cookie but the Redis session is gone
+   (TTL'd out while tab was backgrounded, manual session invalidation
+   from admin, etc.), every /api/* returns 401 with no =Set-Cookie:
+   bff_sid=; Max-Age=0= to clear the dead cookie. SPAs either need to
+   redirect-on-401 (Maya's wrapper) or sit there showing errors.
+
+   Cleaner contract: when load_session returns nil for a sid that the
+   browser sent, BFF should =clear_session_cookies()= so the next
+   request goes through the no-cookie path → BFF auto-redirects to KC.
+   Already done in some paths (=/_bff/me= line 730, =maybe_refresh=
+   failure paths) but not in the catch-all =enforce_auth= →
+   =try_inject_bearer_from_cookie= path.
+
+   ~5-line fix in bff.lua but worth verifying we're not breaking any
+   intentional silent-401 callers first.
+
+* RECENTLY SHIPPED (for handoff context)
+
+These are completed but useful context for picking up next session:
+
+| ID  | Subject                                                                 |
+|-----+-------------------------------------------------------------------------|
+| 118 | BFF cookie re-issue on silent refresh (platform-edge 0.1.22)            |
+| 117 | (note: was already partially done — Maya realm bumped manually)         |
+| 116 | platform-edge: parameterize KC_BROWSER_HOST + platform realm            |
+| 112 | Phase 1.5: env-aware app code (theme reload, bundle URLs, EnvBadge)     |
+| 109 | Phase 1: standalone DEV env (auth-platform-dev namespace)               |
+| 107 | Login methods v2: realm-attribute + theme CSS for social-only UX        |
+| 106 | Login methods: IdP disable persistence + password-off flow breakage     |
+| 105 | Onboarding bundle: fix render bugs + tenant-state summary               |
+| 102 | Login methods: username/password toggle per tenant                      |
+| 101 | Phase 2 SMTP: per-tenant email + auto domain auth                       |
+| 100 | SMTP relay Phase 2: per-tenant From + auto-domain-auth                  |
+| 99  | SMTP relay Phase 1: Go service + helm chart + auth-manager bootstrap    |
+| 98  | auth-lib 0.3.1: actually decouple Redis from classpath                  |
+| 97  | auth-lib-react 0.3.0: bundle SPA ergonomics fixes                       |
+| 96  | Java auth-lib 0.3.0: MeResponseBuilder.fromJwt helper                   |
+| 95  | auth-lib-react 0.3.0: unify BFF auth + permissions under one provider   |
+| 91  | Permissions tab: download + upload manifest round-trip + bundle include |
+| 89  | auth-lib 0.3.0: decouple cache Redis from Spring Boot autoconfig        |
+
+* OPERATIONAL NOTES (relevant to several backlog items)
+
+- Prod release versions (current as of handoff):
+  - auth-manager: 0.1.67
+  - admin-ui: 0.1.40
+  - platform-edge: *0.1.22* (just shipped — cookie re-issue fix)
+  - smtp-relay: 0.1.0
+
+- Dev release: same image tags, separate namespace =auth-platform-dev=,
+  separate CNPG (=platform-pg-dev=), separate KC (=platform-kc-dev=),
+  shared SMTP relay (cross-namespace).
+
+- Memory entries that matter for these items:
+  - =project_bff_cookie_refresh_gotcha.md= — why #118 was tricky to debug
+  - =project_deployment_gotchas.md= — covers #92, #113 territory
+  - =project_k8s_deployment.md= — image build/push pipeline
+  - =project_cf_tunnel.md= — context for #115
+
+- =OPERATOR-GUIDE.org= in repo root is the canonical "how does this all
+  work" doc — written this session, covers architecture / URLs /
+  deployment / workflows / gotchas.

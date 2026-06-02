@@ -790,6 +790,16 @@ function _M.maybe_refresh(sid, sess)
         last_seen_at  = now,
     }, SESSION_TTL)
     log_info("refresh: rotated access_token sid=", sid:sub(1, 8))
+    -- Re-issue cookies so browser Max-Age tracks the rolling session TTL,
+    -- not the original login time.
+    add_set_cookie(build_cookie(COOKIE_SID, sid, {
+        max_age = SESSION_TTL, http_only = true, secure = true, same_site = "Strict",
+    }))
+    if sess.csrf and sess.csrf ~= "" then
+        add_set_cookie(build_cookie(COOKIE_CSRF, sess.csrf, {
+            max_age = SESSION_TTL, http_only = false, secure = true, same_site = "Strict",
+        }))
+    end
     return tok.access_token
 end
 

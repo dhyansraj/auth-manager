@@ -1,0 +1,689 @@
+#+TITLE: mcp-mesh Auth Platform — Operator Guide
+#+AUTHOR: Dhyan
+#+OPTIONS: toc:3 num:t
+#+STARTUP: indent overview
+
+* Overview
+
+The auth platform provides multi-tenant authentication-as-a-service for tenant
+apps running on the beelink k3s cluster. Each tenant gets a Keycloak realm with
+its own users, IdPs (Google/GitHub), client apps, custom theme, and SMTP
+configuration. Operators (you) manage tenants through =auth-manager= via the
+=admin-ui=; tenant teams integrate their apps using the published auth
+libraries (=mcp-mesh-auth-lib= for Java/Python, =@mcpmesh/auth-lib-react= for
+React).
+
+The platform runs in two fully-isolated environments, side-by-side on the
+same cluster: =prod= (HA, real users) and =dev= (single-replica, throwaway
+tenants for testing). Both share the same chart + image registry; only sizing
+and infra targets differ.
+
+* Architecture
+
+#+BEGIN_SRC text
+  ┌──────────────────────────────── Internet ────────────────────────────────┐
+  │                                                                          │
+  │   Browser hits                                                           │
+  │   - auth.mcp-mesh.io/admin/      ← operator UI (prod)                    │
+  │   - auth-dev.mcp-mesh.io/admin/  ← operator UI (dev)                     │
+  │   - niralishappyfeetindia.com    ← tenant app (HF)                       │
+  │   - safeandsoundhouses.com       ← tenant app (SNS)                      │
+  │   - maya-ai.ink                  ← tenant app (Maya)                     │
+  │   - app1.mcp-mesh.io             ← tenant app (legacy)                   │
+  └────────────────────────────────────┬─────────────────────────────────────┘
+                                       │
+                            Cloudflare tunnel
+                       (single connector, 2 cloudflared pods)
+                                       │
+        ┌──────────────────────────────┼──────────────────────────────┐
+        │                                                              │
+   ┌────▼─────────────────────────────────┐  ┌──────────────────────▼────┐
+   │   auth-platform namespace (PROD)     │  │ auth-platform-dev (DEV)   │
+   │                                      │  │                           │
+   │   platform-edge (3 replicas)         │  │  platform-edge (1)        │
+   │     ├─ nginx + OpenResty + Lua       │  │    same image             │
+   │     ├─ BFF cookie sessions in Redis  │  │    different env vars     │
+   │     └─ routes by Host + path         │  │                           │
+   │            │                         │  │  platform-kc-dev (1)      │
+   │            ├──→ KC (3 pods STS)      │  │    Bitnami chart          │
+   │            ├──→ auth-manager (2)     │  │    cache off (env vars)   │
+   │            ├──→ admin-ui (2)         │  │                           │
+   │            └──→ tenant apps (NS:happyfeet, etc.)                   │
+   │                                      │  │  auth-manager (1)         │
+   │   platform-pg (CNPG, 3-instance HA)  │  │  admin-ui (1)             │
+   │   platform-redis (Sentinel HA)       │  │                           │
+   │   platform-kc-keycloak (3-pod STS)   │  │  platform-pg-dev (CNPG, 1)│
+   │   smtp-relay → SendGrid              │  │  platform-redis-dev (1)   │
+   │                                      │  │                           │
+   │                                      │  │  smtp-relay: SHARED w/    │
+   │                                      │  │   prod (cross-NS DNS)     │
+   └──────────────────────────────────────┘  └───────────────────────────┘
+#+END_SRC
+
+** Two-environment model
+
+| Component        | Prod (=auth-platform=)    | Dev (=auth-platform-dev=)     |
+|------------------+---------------------------+--------------------------------|
+| CNPG cluster     | =platform-pg= (3 inst HA) | =platform-pg-dev= (1 inst)    |
+| KC StatefulSet   | =platform-kc-keycloak= (3) | =platform-kc-dev-keycloak= (1) |
+| Redis            | =platform-redis= (Sentinel) | =platform-redis-dev= (standalone) |
+| auth-manager     | 2 replicas                 | 1 replica                       |
+| admin-ui         | 2 replicas                 | 1 replica                       |
+| platform-edge    | 3 replicas                 | 1 replica                       |
+| smtp-relay       | 1 replica                  | (disabled — shares prod's)     |
+| cloudflared      | 2 replicas                 | (disabled — uses prod's tunnel) |
+| Public hostname  | =auth.mcp-mesh.io=         | =auth-dev.mcp-mesh.io=          |
+| Theme cache      | enabled (prod perf)        | DISABLED (fast iteration)       |
+| Platform realm   | =dev= (in prod KC)         | =dev= (in dev KC)               |
+| Tenant realms    | =t-<slug>=                 | =t-<slug>=                      |
+
+The dev env is a side-by-side replica of prod with separate state. Tenants
+created in dev exist only in dev's KC + DB. Promotion is currently manual
+(re-create in prod); future Phase 2 will add a migration tool (task #110).
+
+* URLs cheat sheet
+
+** Prod
+
+| Purpose                    | URL                                                       |
+|----------------------------+-----------------------------------------------------------|
+| Admin UI                   | https://auth.mcp-mesh.io/admin/                           |
+| KC admin console           | https://auth.mcp-mesh.io/auth/admin/master/console/       |
+| BFF login                  | https://auth.mcp-mesh.io/_bff/login                       |
+| Platform admin API         | https://auth.mcp-mesh.io/api/v1/...                       |
+| OIDC issuer (platform)     | https://auth.mcp-mesh.io/auth/realms/dev                  |
+| Tenant: HF                 | https://niralishappyfeetindia.com                         |
+| Tenant: SNS                | https://safeandsoundhouses.com                            |
+| Tenant: Maya               | https://maya-ai.ink                                       |
+| Tenant: app1 (legacy)      | https://app1.mcp-mesh.io                                  |
+| Tenant: SafeSound-dev      | https://safesound-dev.mcp-mesh.io                         |
+
+** Dev
+
+| Purpose                    | URL                                                       |
+|----------------------------+-----------------------------------------------------------|
+| Admin UI                   | https://auth-dev.mcp-mesh.io/admin/                       |
+| KC admin console           | https://auth-dev.mcp-mesh.io/auth/admin/master/console/   |
+| BFF login                  | https://auth-dev.mcp-mesh.io/_bff/login                   |
+| Platform admin API         | https://auth-dev.mcp-mesh.io/api/v1/...                   |
+| OIDC issuer (platform)     | https://auth-dev.mcp-mesh.io/auth/realms/dev              |
+
+The dev admin UI shows an amber **DEV** badge in the header for visual
+disambiguation.
+
+** Cross-cutting paths (both envs serve at any tenant subdomain)
+
+| Path                  | Backend                | Notes                              |
+|-----------------------+------------------------+------------------------------------|
+| =/auth/*=             | KC                     | OIDC + admin console + JWKS        |
+| =/admin/*=            | admin-ui               | Operator UI (gated by perms)       |
+| =/api/v1/*=           | auth-manager           | Platform admin API                 |
+| =/actuator/*=         | auth-manager           | Health, metrics                    |
+| =/_bff/login=         | bff.lua                | Browser login flow                 |
+| =/_bff/callback=      | bff.lua                | OIDC callback                      |
+| =/_bff/me=            | bff.lua                | Current session JSON               |
+| =/_bff/logout=        | bff.lua                | Clear session + redirect           |
+| =/_bff/csrf=          | bff.lua                | Issue CSRF cookie                  |
+| =/.well-known/openid-configuration= | KC          | Public OIDC discovery              |
+
+* Components inventory
+
+** Source code
+
+| Component         | Path                                                  | Language    |
+|-------------------+-------------------------------------------------------+-------------|
+| auth-manager      | =apps/auth-manager/=                                  | Java/Spring |
+| admin-ui          | =apps/admin-ui/=                                      | React/TS    |
+| platform-edge     | =dev/openresty/= (Dockerfile + Lua scripts)           | OpenResty/Lua |
+| smtp-relay        | =dev/smtp-relay/=                                     | Go          |
+| auth-lib (Java)   | =libs/auth-lib/=                                      | Java        |
+| auth-lib (Python) | =libs/auth-lib-python/=                               | Python      |
+| auth-lib-react    | =libs/auth-lib-react/=                                | TypeScript  |
+| Helm chart        | =deploy/helm/auth-platform/=                          | YAML        |
+| Parent theme      | =deploy/helm/auth-platform/themes/mcpmesh-flexible/=  | FreeMarker + CSS |
+
+** Image registry
+
+All images live in =192.168.10.1:5000= (insecure HTTP registry on beelink).
+Pulled by cluster nodes over the LAN.
+
+** Latest deployed image tags (as of writing)
+
+| Image            | Tag      |
+|------------------+----------|
+| auth-manager     | =0.1.67= |
+| admin-ui         | =0.1.40= |
+| platform-edge    | =0.1.21= |
+| smtp-relay       | =0.1.0=  |
+
+Bump the tag in =deploy/helm/auth-platform/values-beelink.yaml= (prod) and/or
+=values-beelink-dev.yaml= (dev) when deploying new versions.
+
+** Published libraries
+
+| Library                    | Registry              | Current version |
+|----------------------------+-----------------------+-----------------|
+| =mcp-mesh-auth-lib= (Java) | Maven Central         | =0.3.1=         |
+| =mcp-mesh-auth-lib= (Py)   | PyPI                  | =0.1.0=         |
+| =@mcpmesh/auth-lib-react=  | npm                   | =0.3.0=         |
+
+Released via =gh workflow run release-libs.yml=.
+
+* Deployment
+
+** Prerequisites
+
+- =kubectl= context pointing at beelink k3s
+- =helm= 3.x
+- SSH access to =beelink1= (where Docker daemon + registry live)
+- Mutagen sync of repo to =beelink1:/home/dhyanraj/workspace/github/auth-manager=
+- =gh= CLI authenticated (for library releases)
+- Cloudflare API token in =cloudflare-api= Secret (already created)
+- SendGrid API key in =sendgrid-api= Secret (already created)
+- Google + GitHub OAuth creds in =platform-oauth-providers= Secret
+
+** Prod deployment
+
+#+BEGIN_SRC bash
+# Sync CNPG superuser password (drifts on every redeploy — known issue #92)
+PASS=$(ssh beelink1 'kubectl get secret platform-pg-superuser-secret -n auth-platform -o jsonpath="{.data.password}" | base64 -d')
+ssh beelink1 "kubectl exec -n auth-platform platform-pg-1 -c postgres -- psql -U postgres -c \"ALTER USER postgres WITH PASSWORD '${PASS}';\""
+
+# Build + push image (auth-manager example; same pattern for admin-ui + platform-edge + smtp-relay)
+ssh beelink1 'cd ~/workspace/github/auth-manager && \
+  docker build -f apps/auth-manager/Dockerfile -t 192.168.10.1:5000/auth-manager:0.1.68 . && \
+  docker push 192.168.10.1:5000/auth-manager:0.1.68'
+
+# Bump tag in values-beelink.yaml (edit by hand or sed)
+# tag: "0.1.67" → tag: "0.1.68"
+
+# Helm upgrade
+ssh beelink1 'cd ~/workspace/github/auth-manager && \
+  helm upgrade auth-platform deploy/helm/auth-platform \
+    -n auth-platform -f deploy/helm/auth-platform/values-beelink.yaml \
+    --reuse-values'
+
+# Watch rollout
+ssh beelink1 'kubectl rollout status -n auth-platform deployment/auth-platform-auth-manager --timeout=180s'
+#+END_SRC
+
+** Dev deployment
+
+Same pattern, different values file:
+
+#+BEGIN_SRC bash
+PASS=$(ssh beelink1 'kubectl get secret platform-pg-dev-superuser-secret -n auth-platform-dev -o jsonpath="{.data.password}" | base64 -d')
+ssh beelink1 "kubectl exec -n auth-platform-dev platform-pg-dev-1 -c postgres -- psql -U postgres -c \"ALTER USER postgres WITH PASSWORD '${PASS}';\""
+
+ssh beelink1 'cd ~/workspace/github/auth-manager && \
+  helm upgrade auth-platform-dev deploy/helm/auth-platform \
+    -n auth-platform-dev -f deploy/helm/auth-platform/values-beelink-dev.yaml \
+    --reuse-values'
+
+ssh beelink1 'kubectl rollout status -n auth-platform-dev deployment/auth-platform-dev-auth-manager --timeout=180s'
+#+END_SRC
+
+** First-time dev cluster setup (already done)
+
+See =scripts/deploy-beelink-dev.sh=. Creates:
+1. =auth-platform-dev= namespace
+2. CNPG cluster =platform-pg-dev= (1 instance)
+3. Bitnami Redis (standalone)
+4. Bitnami KC release =platform-kc-dev= (1 pod, =production=true=,
+   theme caches off via =KC_SPI_THEME_CACHE_*= env vars)
+5. Copies =sendgrid-api=, =cloudflare-api=, =platform-oauth-providers=
+   Secrets from prod namespace
+6. Helm release =auth-platform-dev=
+
+To bring up a fresh dev cluster:
+#+BEGIN_SRC bash
+DB_PASSWORD='<strong>' KC_ADMIN_PASSWORD='<strong>' \
+  bash scripts/deploy-beelink-dev.sh
+#+END_SRC
+
+Follow-up after first deploy: patch CNPG cluster to enable superuser
+(=kubectl patch cluster platform-pg-dev -n auth-platform-dev --type=merge -p
+'{"spec":{"enableSuperuserAccess":true}}'=), then manually =ALTER USER postgres=
+to match the secret. Seed the =dev= platform realm + admin user (see Operator
+Workflows below). Tracked in task #113 (script polish).
+
+** Cloudflare tunnel updates
+
+The single CF tunnel routes all public hostnames to either prod or dev
+platform-edge. Re-run =scripts/cf-setup-tunnel.sh= to add a new hostname,
+but BEWARE: re-running today WIPES dynamically-added tenant rules (task
+#115, CRITICAL). Until #115 is fixed, after re-running, manually restore
+tenant root domain ingress for =niralishappyfeetindia.com=,
+=safeandsoundhouses.com=, =maya-ai.ink= using:
+
+#+BEGIN_SRC bash
+CF_TOKEN=$(ssh beelink1 'kubectl get secret cloudflare-api -n auth-platform -o jsonpath="{.data.api-token}" | base64 -d')
+CF_ACCT=$(ssh beelink1 'kubectl get secret cloudflare-api -n auth-platform -o jsonpath="{.data.account-id}" | base64 -d')
+CF_TUNN=$(ssh beelink1 'kubectl get secret cloudflare-api -n auth-platform -o jsonpath="{.data.tunnel-id}" | base64 -d')
+
+curl -sf -X PUT -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+  -d '{"config":{"ingress":[
+    {"hostname":"auth.mcp-mesh.io","service":"http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"},
+    {"hostname":"auth-dev.mcp-mesh.io","service":"http://auth-platform-dev-platform-edge.auth-platform-dev.svc.cluster.local:80"},
+    {"hostname":"niralishappyfeetindia.com","service":"http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"},
+    {"hostname":"safeandsoundhouses.com","service":"http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"},
+    {"hostname":"maya-ai.ink","service":"http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"},
+    {"hostname":"*.mcp-mesh.io","service":"http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"},
+    {"service":"http_status:404"}
+  ]}}' \
+  "https://api.cloudflare.com/client/v4/accounts/$CF_ACCT/cfd_tunnel/$CF_TUNN/configurations"
+#+END_SRC
+
+* Operator workflows
+
+** Logging in (prod)
+
+1. Browse to https://auth.mcp-mesh.io/admin/
+2. Hit "Sign in" → redirects through BFF → KC realm =dev= login page
+3. Enter platform-admin credentials
+4. Land on Tenants list
+
+The platform realm is =dev= (yes, even in prod — naming legacy, doesn't
+imply "dev environment"). It holds platform operator users only; tenant
+users live in their own =t-<slug>= realms.
+
+** Logging in (dev)
+
+Same flow at https://auth-dev.mcp-mesh.io/admin/.
+
+Current dev admin credentials (rotate via UI when comfortable):
+- username: =admin=
+- email:    =admin@platform.dev=
+- temporary password: (recorded separately when seeded; KC forces change on first login)
+
+DEV badge in header confirms you're in the dev environment.
+
+To distinguish the two in Chrome's password manager, save dev's credentials
+under a DIFFERENT username (e.g., =dev-admin=) than prod's. Chrome groups
+credentials by registered domain (mcp-mesh.io) and will conflate them
+otherwise.
+
+** Creating a new tenant
+
+In admin UI → Tenants → "+ New tenant":
+
+1. **Basics**: slug (e.g., =happyfeet=), display name, primary admin email,
+   environment (DEV / PROD — affects only which env you're operating in;
+   each env has its own list).
+2. **Apps**: at minimum one CONFIDENTIAL_BACKEND client. Pick from
+   profile dropdown (CONFIDENTIAL_BACKEND / SPA_PKCE / SERVICE_ACCOUNT_ONLY).
+   Tick =USER_LIST= on service account permissions if app needs to call
+   platform admin API for user lookups.
+3. **Hostnames**: primary public hostname. If it's =*.mcp-mesh.io= we own
+   the DNS; otherwise tenant needs to point CNAME at our CF tunnel.
+4. **Identity Providers**: Google / GitHub toggles. Each must have the
+   tenant's broker redirect URI added to its OAuth console (see
+   =01-broker-urls.md= in the onboarding bundle).
+5. **Email**: From address (defaults =noreply@mcp-mesh.io= until tenant
+   authenticates own domain), display name (defaults to tenant displayName).
+6. **Default roles**: pick from manifest if uploading one.
+7. **Manifest** (optional): upload =tenant-manifest.yaml= to seed
+   permissions + role bundles.
+8. **Branding** (optional): upload theme zip.
+9. **Review + Generate**: creates KC realm, clients, IdPs, SMTP config, CF DNS
+   CNAME, tunnel ingress rule, theme upload. Returns onboarding bundle for
+   the tenant team.
+
+** Configuring Identity Providers post-creation
+
+Tenant detail → Identity Providers tab. Three toggle cards:
+- **Google** — enabled if =google= creds present in =platform-oauth-providers= Secret
+- **GitHub** — same for GitHub
+- **Username / Password** — UX-only toggle (realm attribute drives
+  =mcp-no-password= body class on the theme; CSS hides the password form
+  when set). Server-side login flow is unchanged; KC will still accept
+  password POSTs if anyone bypasses the UI.
+
+Server-side guard: refuses to disable last login method (zero IdPs + password
+off would lock everyone out).
+
+Per-tenant disabled IdPs are persisted in =tenant.settings.disabledIdps=
+(JSONB). IdentityProvidersBootstrap respects this on startup so deploys
+don't resurrect operator-removed providers.
+
+** Configuring email
+
+Tenant detail → Email tab.
+
+Three fields per tenant:
+- From address (must match an authenticated SendGrid domain OR fall back to
+  =noreply@mcp-mesh.io=)
+- From display name (defaults to tenant display name)
+- Reply-to address (optional; blank = KC defaults to From)
+
+**Domain authentication** (one-shot, automated when tenant CF zone is in our
+account):
+1. Enter the domain to authenticate (e.g., =niralishappyfeetindia.com=)
+2. Click "Authenticate domain"
+3. Backend: SendGrid POST =/v3/whitelabel/domains= → returns 3 CNAMEs
+4. Backend: CF API creates each CNAME with =proxied: false= in the tenant's
+   CF zone (looked up via =/zones?name=<parent>=). If zone not in our account
+   → CNAMEs returned as manual-add instructions.
+5. Backend: SendGrid POST =/validate=
+6. Click "Re-verify" after DNS propagates (~30s)
+7. From address can now use the authenticated domain
+
+**Known UX bug**: =sendgrid_domain_valid= flag doesn't reliably persist after
+revalidate. Manual workaround: =UPDATE auth_manager.tenants SET
+sendgrid_domain_valid = true WHERE slug='<slug>';= (task #104).
+
+** Theming
+
+**Stock theme**: tenants inherit =mcpmesh-flexible= parent theme. Provides
+4 layouts (centered / split-left / split-right / bleed) selected via
+=mcpLayoutVariant= message in tenant's =messages_en.properties=.
+
+**Per-tenant override**: tenant detail → Branding tab → "Download starter"
+gets the zip skeleton. Edit, re-zip, upload. ConfigMap regenerated,
+=ThemeApplier= patches KC StatefulSet =restartedAt= annotation to trigger
+rolling restart (~3-5 min). Theme is live cluster-wide.
+
+** Service account permissions
+
+For tenant backends needing to call platform admin API (e.g., list users
+by role for dropdowns):
+
+Tenant detail → Apps tab → click the backend client row → modal opens with
+checkboxes. Tick =USER_LIST= (or other perms from preset
+=[USER_LIST, USER_INVITE, USER_DISABLE, AUDIT_VIEW]=). Save. Audited.
+
+Tenant backend then mints a =client_credentials= token using its
+=AUTH_LIB_CLIENT_ID= + =AUTH_LIB_CLIENT_SECRET= and calls
+=GET ${AUTH_MGR_BASE}/api/v1/tenants/<slug>/users?role=<role>= with the
+bearer token.
+
+** Login methods
+
+Identity Providers tab also has a **Username / Password** toggle.
+
+When toggled off:
+- Realm attribute =mcpmesh.passwordLoginEnabled = "false"= written
+- =mcpmesh-flexible= template reads attribute, adds =mcp-no-password=
+  body class
+- CSS hides username/password form, sign-in button, forgot-password link
+- Only IdP buttons render
+
+Server-side login flow unchanged (this is UX gating, not enforcement). A
+determined attacker could POST credentials directly to KC's
+=/login-actions/authenticate= — server-side enforcement requires a custom
+KC SPI, out of scope today.
+
+** Deleting a tenant
+
+Tenant detail → "Delete" button (top right).
+- Soft-deletes the DB row (=tenants.deleted_at= set)
+- Disables the KC realm (=enabled = false=)
+- Removes hostname routing (Redis route blob cleared)
+- Removes CF tunnel ingress rule + DNS CNAME via CloudflareTunnelService
+
+KC realm is NOT hard-deleted (data preserved for forensics). Operator can
+purge manually via KC admin console if needed.
+
+* Tenant team onboarding
+
+** What the tenant team receives
+
+After tenant creation, operator clicks "Download bundle" → ZIP containing:
+
+| File                        | Purpose                                          |
+|-----------------------------+--------------------------------------------------|
+| =README.md=                 | Tenant info + admin console URL + index          |
+| =.env.example=              | Env vars for tenant backend                      |
+| =helm-values-snippet.yaml=  | Suggested helm shape                             |
+| =tenant-manifest.yaml=      | Current permissions + roles catalog              |
+| =01-broker-urls.md=         | Redirect URIs to add in Google/GitHub consoles   |
+| =02-frontend.md=            | React/SPA integration                            |
+| =03-backend-java.md=        | Spring Boot integration                          |
+| =03-backend-python.md=      | FastAPI integration                              |
+| =04-service-account.md=     | Service account token + perm grant (CONFIDENTIAL_BACKEND tenants) |
+| =05-theming-optional.md=    | Custom theme upload                              |
+| =06-user-migration.md=      | Lazy migration from existing user DB             |
+| =07-in-cluster-vs-public.md=| URL routing decisions for backend                |
+| =08-email.md=               | Sending email via SMTP relay                     |
+
+Bundle URLs are env-aware: dev tenants get =auth-dev.mcp-mesh.io= URLs;
+prod tenants get =auth.mcp-mesh.io= URLs.
+
+** Tenant team integration checklist
+
+1. Bump deps: =mcp-mesh-auth-lib= 0.3.1 (Java) / 0.1.0 (Python),
+   =@mcpmesh/auth-lib-react= 0.3.0
+2. Backend: =@RequirePermission= annotations + =auth-lib= autoconfig
+3. Backend: implement =GET /api/me= using =MeResponseBuilder.fromJwt= (Java)
+   or =build_me_response()= (Python)
+4. Frontend: wrap app in =<PlatformAuthProvider meEndpoint="/api/me">=
+5. Frontend: use =bffFetch= (not raw =fetch=) for POST/PUT/DELETE — handles
+   CSRF automatically
+6. Sending email: configure app's SMTP client with
+   =SMTP_HOST=smtp-relay.auth-platform.svc.cluster.local=, port 25, no auth
+7. (Optional) Authenticate own From domain via admin UI → Email tab
+
+* Common ops
+
+** Password rotation
+
+*** SendGrid API key
+1. SendGrid UI → Settings → API Keys → revoke old, create new (Mail Send
+   scope only)
+2. =kubectl create secret generic sendgrid-api -n auth-platform
+   --from-literal=api-key=<NEW> --dry-run=client -o yaml | kubectl apply -f -=
+3. =kubectl rollout restart deployment auth-platform-smtp-relay -n auth-platform=
+4. Repeat for dev: same secret name in =auth-platform-dev= namespace
+
+*** CF API token
+1. Cloudflare dashboard → My Profile → API Tokens → rotate
+2. Patch the =cloudflare-api= Secret with new value
+3. Restart auth-manager + cloudflared (consumers)
+
+*** KC admin password (prod)
+1. Log into KC admin console
+2. Master realm → Users → admin → Credentials → Reset
+3. Update =auth-platform-auth-manager= Secret's =keycloak-admin-password= field
+4. Restart auth-manager
+
+*** CNPG superuser password (prod or dev)
+Currently CNPG drifts on every redeploy (#92). Workaround on each deploy:
+=kubectl exec -n <ns> <pg-pod-0> -c postgres -- psql -U postgres -c "ALTER
+USER postgres WITH PASSWORD '<value from secret>';"=
+
+*** Tenant client_secret (e.g., =happyfeet-backend=)
+Admin UI → Apps → click app → "Regenerate secret" (or via KC admin console
+→ realm → Clients → tenant client → Credentials → Regenerate)
+
+** CNPG superuser drift recovery
+
+Symptom: =FATAL: password authentication failed for user "postgres"= in
+auth-manager logs. Data Services tab stuck on "Loading...".
+
+Fix:
+#+BEGIN_SRC bash
+PASS=$(ssh beelink1 'kubectl get secret platform-pg-superuser-secret -n auth-platform -o jsonpath="{.data.password}" | base64 -d')
+ssh beelink1 "kubectl exec -n auth-platform platform-pg-1 -c postgres -- psql -U postgres -c \"ALTER USER postgres WITH PASSWORD '${PASS}';\""
+ssh beelink1 'kubectl rollout restart deployment auth-platform-auth-manager -n auth-platform'
+#+END_SRC
+
+For dev: same command with =platform-pg-dev-superuser-secret= +
+=auth-platform-dev= namespace + =platform-pg-dev-1= pod.
+
+** CF tunnel ingress restoration
+
+If tenant URLs return 404 after =cf-setup-tunnel.sh= re-run, restore using
+the inline JSON in the Deployment → "Cloudflare tunnel updates" section above.
+
+** Theme iteration in dev
+
+The dev KC has theme cache DISABLED (=KC_SPI_THEME_CACHE_*= env vars).
+Iterate without redeploying:
+
+#+BEGIN_SRC bash
+# Watch local theme dir, kubectl-cp changes to the dev KC pod
+# (Phase 2 task #114 will package this as scripts/theme-dev-sync.sh; for now manual)
+ssh beelink1 'kubectl cp <local-file> auth-platform-dev/platform-kc-dev-keycloak-0:/opt/bitnami/keycloak/themes/mcpmesh-flexible/login/template.ftl'
+# Refresh login page in browser — change visible immediately
+#+END_SRC
+
+For tenant-specific themes, target =/opt/bitnami/keycloak/themes/t-<slug>/=
+instead of =mcpmesh-flexible=.
+
+** Re-deploy after code change
+
+Rule of thumb:
+- Changed Java in =apps/auth-manager/=? Rebuild auth-manager image, bump
+  tag, helm upgrade
+- Changed React in =apps/admin-ui/=? Rebuild admin-ui image
+- Changed Lua in =dev/openresty/=? Rebuild platform-edge image
+- Changed Go in =dev/smtp-relay/=? Rebuild smtp-relay image
+- Changed Helm chart only? Just =helm upgrade --reuse-values=
+- Changed parent theme in =deploy/helm/auth-platform/themes/mcpmesh-flexible/=?
+  =helm upgrade= picks up the ConfigMap change. For prod KC to pick up
+  the materialized files, rolling restart the KC StatefulSet
+  (=kubectl rollout restart sts/platform-kc-keycloak -n auth-platform=).
+  For dev, theme cache is off so changes are picked up on next page render.
+
+* Reference
+
+** Hostnames + DNS
+
+All CNAMEs under =mcp-mesh.io= (Cloudflare zone ID
+=2d42b23a17e9d4e0b200742acb76864d=) point at the same CF tunnel UUID
+=9af01cd7-9f73-4b00-a99c-c8ce9c91f0e1=. The tunnel ingress (managed via
+=cf-setup-tunnel.sh= + =CloudflareTunnelService=) routes by Host header to
+either prod or dev platform-edge.
+
+Tenant root domains (=niralishappyfeetindia.com=, =safeandsoundhouses.com=,
+=maya-ai.ink=) also point at the same tunnel — each has its own CF zone in
+our account (all under the same Cloudflare account
+=e81ff2a2f2f57681f7de12758165a514=).
+
+** Cluster resources
+
+| Resource              | Prod                         | Dev                              |
+|-----------------------+------------------------------+----------------------------------|
+| Namespace             | =auth-platform=              | =auth-platform-dev=              |
+| Helm release          | =auth-platform=              | =auth-platform-dev=              |
+| CNPG cluster          | =platform-pg=                | =platform-pg-dev=                |
+| CNPG superuser Secret | =platform-pg-superuser-secret= | =platform-pg-dev-superuser-secret= |
+| CNPG app Secret       | =platform-pg-app=            | =platform-pg-dev-app-secret=     |
+| KC release            | =platform-kc=                | =platform-kc-dev=                |
+| KC admin Secret       | =platform-kc-keycloak=       | =platform-kc-dev-keycloak=       |
+| Redis release         | =platform-redis=             | =platform-redis-dev=             |
+| Chart secret          | =auth-platform-auth-manager= | =auth-platform-dev-auth-manager= |
+
+** Shared Secrets (created once in =auth-platform=, copied at dev deploy)
+
+| Secret name              | Keys                                  | Purpose                  |
+|--------------------------+---------------------------------------+--------------------------|
+| =cloudflare-api=         | =api-token=, =account-id=, =tunnel-id= | CF DNS + tunnel ingress |
+| =sendgrid-api=           | =api-key=                              | SMTP relay forwarding    |
+| =platform-oauth-providers= | =google-*=, =github-*=               | Per-realm IdP credentials |
+
+** Database schemas
+
+In prod DB =authmanager= (CNPG, owner =authmanager= user):
+- =auth_manager.tenants=           — slug, displayName, realmName, deletedAt, settings (JSONB)
+- =auth_manager.tenant_hostnames=  — public hostnames per tenant
+- =auth_manager.apps=              — KC clients per tenant
+- =auth_manager.app_manifests=     — pending applies
+- =auth_manager.audit_events=      — operator actions
+- =auth_manager.onboarding_jobs=   — wizard state
+- =auth_manager.user_cache=        — KC user shadow rows
+
+Migrations live in =apps/auth-manager/src/main/resources/db/migration/=
+(Flyway, V1-V5).
+
+** Application config
+
+=apps/auth-manager/src/main/resources/application.yaml= holds the
+in-code defaults. Helm chart overrides via env vars in
+=deploy/helm/auth-platform/templates/auth-manager-deployment.yaml=.
+
+Notable env vars wired through helm values:
+- =AUTH_MANAGER_THEME_KC_STATEFULSET_NAME=
+- =AUTH_MANAGER_BUNDLE_KC_BASE= / =BUNDLE_ADMIN_BASE= / =BUNDLE_AUTH_MGR_INCLUSTER_BASE=
+- =AUTH_MANAGER_SMTP_HOST= / =SMTP_FROM_ADDRESS= / =SMTP_SENDGRID_API_KEY=
+- =PLATFORM_PG_SUPERUSER_URL= / =CNPG_SUPERUSER_PASSWORD=
+- =KEYCLOAK_PLATFORM_HOST=
+- =KEYCLOAK_ADMIN_PASSWORD= / =KC_ADMIN_PASSWORD=
+- =SPRING_DATASOURCE_URL= / =USERNAME= / =PASSWORD=
+- =SPRING_DATA_REDIS_*= (Sentinel config)
+
+** Library exports
+
+=mcp-mesh-auth-lib= (Java 0.3.1):
+- =io.mcpmesh.auth.lib.dto.MeResponse= — record DTO
+- =io.mcpmesh.auth.lib.dto.MeResponseBuilder.fromJwt(jwt, clientId, tenant)=
+
+=@mcpmesh/auth-lib-react= (0.3.0):
+- =PlatformAuthProvider= — single provider (BFF + tenant /api/me)
+- =usePlatformAuth= — unified context hook
+- =usePermission(perm)= / =<RequirePermission permission="...">= — gating
+- =bffFetch(url, opts)= — drop-in for fetch, handles CSRF
+- =BffAuthProvider= / =useBffAuth= — deprecated, kept for back-compat
+
+* Known gotchas / open issues
+
+** #92 CNPG superuser drift on every redeploy (CRITICAL)
+The =postgres= user password is reset to ??? after every CNPG pod restart.
+Workaround: =ALTER USER postgres WITH PASSWORD '<secret value>'= manually
+before every deploy. Real fix: switch off the postgres superuser entirely
+to a dedicated =tenant_provisioner= role with =CREATEDB= + =CREATEROLE=
+that we control. Bites both envs.
+
+** #115 cf-setup-tunnel.sh wipes tenant ingress rules (CRITICAL)
+Re-running the script destroys CloudflareTunnelService-added tenant rules
+(=niralishappyfeetindia.com=, =safeandsoundhouses.com=, =maya-ai.ink=). Must
+manually restore using the curl block in the Deployment section. Real fix:
+read current ingress, MERGE static + tenant rules, preserve unknowns.
+
+** #104 sendgrid_domain_valid doesn't persist after revalidate
+Operators clicking "Re-verify" in the Email tab see "Authenticated ✓" but
+the DB flag stays false. Subsequent save of From address rejected with
+=email.unauthorized_from_domain=. Manual UPDATE on
+=auth_manager.tenants.sendgrid_domain_valid= unblocks.
+
+** #103 PermissionsTab error display
+Operators get raw =ApiError: HTTP 400 {timestamp...}= JSON dumped on upload
+failure. Should parse structured error code and show a friendly message.
+
+** #113 deploy-beelink-dev.sh polish
+First-install bugs: doesn't enable CNPG superuserAccess automatically, doesn't
+seed =postgres-password= / =keycloak-admin-password= into the chart's secret.
+
+** #114 theme-dev-sync.sh missing
+Should script the kubectl cp loop for fast theme iteration in dev.
+
+** #90 Wizard auto-verify admin email
+After tenant create, operator must manually mark admin user's email verified.
+
+** #94 IdP auto-link operator user
+When operator-provisioned user later logs in via Google, KC creates a NEW
+account instead of linking to the existing one. Manual fix per user today.
+
+* Phase roadmap
+
+| Phase | Status | Description                                                 |
+|-------+--------+-------------------------------------------------------------|
+| 1     | ✅     | Standalone DEV environment (separate KC + PG + auth-mgr)    |
+| 1.5   | ✅     | Env-aware app code (theme reload + bundle URLs + DEV badge) |
+| 2     | ⏳     | Dev→prod migration tool (export/import tenant config)       |
+| 3     | parked | Twin-env continuous sync                                    |
+
+* Daily checklist (when working on the platform)
+
+1. =git status= clean, on =main=
+2. SSH to =beelink1= works
+3. =kubectl get pods -n auth-platform= — all 1/1 Running
+4. =kubectl get pods -n auth-platform-dev= — all 1/1 Running
+5. CNPG drift check: =psql -U postgres -c 'SELECT 1'= via secret password
+   (both envs)
+6. Latest commit deployed: compare =git log -1= short SHA against tags in
+   =values-beelink.yaml= / =values-beelink-dev.yaml=
+7. =curl https://auth.mcp-mesh.io/admin/= → 200
+8. =curl https://auth-dev.mcp-mesh.io/admin/= → 200
+9. CF tunnel ingress includes all tenant root domains (check before any
+   =cf-setup-tunnel.sh= re-run)
