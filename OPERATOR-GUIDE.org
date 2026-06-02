@@ -185,9 +185,12 @@ Released via =gh workflow run release-libs.yml=.
 ** Prod deployment
 
 #+BEGIN_SRC bash
-# Sync CNPG superuser password (drifts on every redeploy — known issue #92)
-PASS=$(ssh beelink1 'kubectl get secret platform-pg-superuser-secret -n auth-platform -o jsonpath="{.data.password}" | base64 -d')
-ssh beelink1 "kubectl exec -n auth-platform platform-pg-1 -c postgres -- psql -U postgres -c \"ALTER USER postgres WITH PASSWORD '${PASS}';\""
+# LEGACY (#92) — only needed until the live prod cluster is migrated to the
+# pinned-secret model (see "One-time migration" below). Once migrated, CNPG
+# keeps the postgres password in sync with platform-pg-superuser-secret and
+# this pre-step can be dropped:
+# PASS=$(ssh beelink1 'kubectl get secret platform-pg-superuser-secret -n auth-platform -o jsonpath="{.data.password}" | base64 -d')
+# ssh beelink1 "kubectl exec -n auth-platform platform-pg-1 -c postgres -- psql -U postgres -c \"ALTER USER postgres WITH PASSWORD '${PASS}';\""
 
 # Build + push image (auth-manager example; same pattern for admin-ui + platform-edge + smtp-relay)
 ssh beelink1 'cd ~/workspace/github/auth-manager && \
@@ -212,8 +215,10 @@ ssh beelink1 'kubectl rollout status -n auth-platform deployment/auth-platform-a
 Same pattern, different values file:
 
 #+BEGIN_SRC bash
-PASS=$(ssh beelink1 'kubectl get secret platform-pg-dev-superuser-secret -n auth-platform-dev -o jsonpath="{.data.password}" | base64 -d')
-ssh beelink1 "kubectl exec -n auth-platform-dev platform-pg-dev-1 -c postgres -- psql -U postgres -c \"ALTER USER postgres WITH PASSWORD '${PASS}';\""
+# LEGACY (#92) — drop once the live dev cluster is migrated (see "One-time
+# migration" below):
+# PASS=$(ssh beelink1 'kubectl get secret platform-pg-dev-superuser-secret -n auth-platform-dev -o jsonpath="{.data.password}" | base64 -d')
+# ssh beelink1 "kubectl exec -n auth-platform-dev platform-pg-dev-1 -c postgres -- psql -U postgres -c \"ALTER USER postgres WITH PASSWORD '${PASS}';\""
 
 ssh beelink1 'cd ~/workspace/github/auth-manager && \
   helm upgrade auth-platform-dev deploy/helm/auth-platform \
@@ -237,15 +242,18 @@ See =scripts/deploy-beelink-dev.sh=. Creates:
 
 To bring up a fresh dev cluster:
 #+BEGIN_SRC bash
-DB_PASSWORD='<strong>' KC_ADMIN_PASSWORD='<strong>' \
+DB_PASSWORD='<strong>' KC_ADMIN_PASSWORD='<strong>' PG_SUPERUSER_PASSWORD='<strong>' \
   bash scripts/deploy-beelink-dev.sh
 #+END_SRC
 
-Follow-up after first deploy: patch CNPG cluster to enable superuser
-(=kubectl patch cluster platform-pg-dev -n auth-platform-dev --type=merge -p
-'{"spec":{"enableSuperuserAccess":true}}'=), then manually =ALTER USER postgres=
-to match the secret. Seed the =dev= platform realm + admin user (see Operator
-Workflows below). Tracked in task #113 (script polish).
+The script now pre-creates =platform-pg-dev-superuser-secret= as a basic-auth
+secret (=username=postgres=) and sets =enableSuperuserAccess: true= on the
+inline Cluster CR, so CNPG pins the =postgres= password to that secret instead
+of drifting (#92). No more post-deploy =patch= / =ALTER USER= dance on a fresh
+namespace.
+
+Follow-up after first deploy: seed the =dev= platform realm + admin user (see
+Operator Workflows below).
 
 ** Cloudflare tunnel updates
 
@@ -487,15 +495,26 @@ prod tenants get =auth.mcp-mesh.io= URLs.
 4. Restart auth-manager
 
 *** CNPG superuser password (prod or dev)
-Currently CNPG drifts on every redeploy (#92). Workaround on each deploy:
+The =postgres= password is now pinned to =platform-pg-superuser-secret= (prod)
+/ =platform-pg-dev-superuser-secret= (dev) via =enableSuperuserAccess: true=
+(#92). To rotate: update the secret's =password= (basic-auth, =username=postgres=)
+and let CNPG reconcile it onto the role.
+
+LEGACY (only until the live cluster is migrated — see "One-time migration"):
+CNPG used to drift the password on every redeploy, requiring a manual
 =kubectl exec -n <ns> <pg-pod-0> -c postgres -- psql -U postgres -c "ALTER
-USER postgres WITH PASSWORD '<value from secret>';"=
+USER postgres WITH PASSWORD '<value from secret>';"= before each deploy.
 
 *** Tenant client_secret (e.g., =happyfeet-backend=)
 Admin UI → Apps → click app → "Regenerate secret" (or via KC admin console
 → realm → Clients → tenant client → Credentials → Regenerate)
 
-** CNPG superuser drift recovery
+** CNPG superuser drift recovery (LEGACY — until live clusters migrated)
+
+NOTE: drift is fixed in code (#92) via =enableSuperuserAccess: true= + a pinned
+operator-owned superuser secret. This runbook is only needed on clusters that
+have NOT yet had the one-time migration applied (see "One-time migration"
+below). Once migrated, the symptom below stops occurring.
 
 Symptom: =FATAL: password authentication failed for user "postgres"= in
 auth-manager logs. Data Services tab stuck on "Loading...".
@@ -509,6 +528,40 @@ ssh beelink1 'kubectl rollout restart deployment auth-platform-auth-manager -n a
 
 For dev: same command with =platform-pg-dev-superuser-secret= +
 =auth-platform-dev= namespace + =platform-pg-dev-1= pod.
+
+** CNPG superuser pinning — one-time migration (#92)
+
+The code/manifest fix prevents drift going forward, but the EXISTING prod and
+dev clusters were created WITHOUT =enableSuperuserAccess= and with a
+CNPG-auto-generated superuser secret. They each need a one-time migration to
+adopt the pinned-secret model. Until that's done, they will still drift and the
+LEGACY recovery steps above remain necessary.
+
+Per cluster (prod shown; for dev use the =-dev= names + =auth-platform-dev= NS):
+
+1. Create/replace the superuser secret as a =kubernetes.io/basic-auth= secret
+   with =username=postgres= and the password the DB CURRENTLY uses (read it
+   from the existing secret first so we don't change the live password):
+   #+BEGIN_SRC bash
+   PASS=$(ssh beelink1 'kubectl get secret platform-pg-superuser-secret -n auth-platform -o jsonpath="{.data.password}" | base64 -d')
+   ssh beelink1 "kubectl create secret generic platform-pg-superuser-secret \
+     -n auth-platform --type=kubernetes.io/basic-auth \
+     --from-literal=username=postgres --from-literal=password='${PASS}' \
+     --dry-run=client -o yaml | kubectl apply -f -"
+   #+END_SRC
+2. Ensure the CR has =enableSuperuserAccess: true=. For prod, re-apply the
+   updated manifest:
+   #+BEGIN_SRC bash
+   ssh beelink1 'cd ~/workspace/github/auth-manager && kubectl apply -f deploy/cnpg/pg-cluster.yaml'
+   #+END_SRC
+   For dev, re-running =scripts/deploy-beelink-dev.sh= applies the inline CR
+   with the flag set (or =kubectl patch cluster platform-pg-dev -n
+   auth-platform-dev --type=merge -p '{"spec":{"enableSuperuserAccess":true}}'=).
+3. Let CNPG reconcile — it syncs the =postgres= role password to the secret.
+   Verify =psql -U postgres -c 'SELECT 1'= works with the secret's password.
+
+After this, drift stops and the LEGACY =ALTER USER= pre-steps + recovery runbook
+are no longer needed for that cluster.
 
 ** CF tunnel ingress restoration
 
@@ -627,12 +680,15 @@ Notable env vars wired through helm values:
 
 * Known gotchas / open issues
 
-** #92 CNPG superuser drift on every redeploy (CRITICAL)
-The =postgres= user password is reset to ??? after every CNPG pod restart.
-Workaround: =ALTER USER postgres WITH PASSWORD '<secret value>'= manually
-before every deploy. Real fix: switch off the postgres superuser entirely
-to a dedicated =tenant_provisioner= role with =CREATEDB= + =CREATEROLE=
-that we control. Bites both envs.
+** #92 CNPG superuser drift on every redeploy (FIXED IN CODE — migration pending)
+The =postgres= password used to be reset by CNPG on every reconcile because
+=enableSuperuserAccess= defaulted to false (CNPG ≥1.21). Fixed in code via
+=enableSuperuserAccess: true= + a pinned operator-owned basic-auth superuser
+secret (=username=postgres=) — CNPG now syncs the role password to the secret
+instead of rotating it. A ONE-TIME live-cluster migration is still required for
+the existing prod + dev clusters (see "CNPG superuser pinning — one-time
+migration" under Common ops). The LEGACY =ALTER USER= workaround remains only
+until each cluster is migrated.
 
 ** #115 cf-setup-tunnel.sh wipes tenant ingress rules (CRITICAL)
 Re-running the script destroys CloudflareTunnelService-added tenant rules
@@ -680,7 +736,8 @@ account instead of linking to the existing one. Manual fix per user today.
 3. =kubectl get pods -n auth-platform= — all 1/1 Running
 4. =kubectl get pods -n auth-platform-dev= — all 1/1 Running
 5. CNPG drift check: =psql -U postgres -c 'SELECT 1'= via secret password
-   (both envs)
+   (both envs). LEGACY (#92) — only meaningful on clusters not yet migrated to
+   the pinned-secret model; once migrated, drift no longer occurs.
 6. Latest commit deployed: compare =git log -1= short SHA against tags in
    =values-beelink.yaml= / =values-beelink-dev.yaml=
 7. =curl https://auth.mcp-mesh.io/admin/= → 200

@@ -31,8 +31,12 @@ ok()    { printf "  \033[32m✓\033[0m %s\n" "$*"; }
 step()  { echo; bold "── $* ──"; }
 
 # ─── Ingress rules (HOSTNAME → in-cluster service URL) ───────────────────
-# Edit this block to add new public hostnames.
 # Service URLs use Kubernetes DNS: <svc>.<namespace>.svc.cluster.local
+#
+# This script OWNS only the platform hostnames below. Step 3 does a
+# read-merge-write against the live tunnel config: it refreshes these
+# platform rules and PRESERVES every other ingress rule (tenant custom apex
+# domains, etc.) that auth-manager's CloudflareTunnelService adds at runtime.
 #
 # Hostname routing notes:
 #   - auth.mcp-mesh.io      → prod platform-edge (admin UI + auth-manager + KC
@@ -45,12 +49,6 @@ step()  { echo; bold "── $* ──"; }
 #                             namespace + edge release. Single hostname serves
 #                             both KC (/auth/*) and admin UI (/admin/*) — edge
 #                             router.lua routes by path regardless of host.
-#   - <tenant root domains> → prod platform-edge (each tenant's custom apex
-#                             domain that was registered via auth-manager's
-#                             routes API). Listed EXPLICITLY here (not relying
-#                             on a wildcard) because *.mcp-mesh.io can't match
-#                             non-mcp-mesh apex domains. Add new entries when
-#                             onboarding tenants with custom domains.
 #   - *.mcp-mesh.io         → prod platform-edge (catch-all for tenant
 #                             subdomains: app1.mcp-mesh.io, customer.mcp-mesh.io,
 #                             etc.). Order matters in CF tunnel ingress; this
@@ -62,45 +60,14 @@ step()  { echo; bold "── $* ──"; }
 #                             that they explicitly route by adding a specific
 #                             rule above the wildcard (Phase 2).
 #
-# WARNING: this script overwrites the tunnel's full ingress config, so any
-# rule added out-of-band (CF dashboard, manual API call) gets wiped on next
-# run. Tenant apex-domain rules MUST be added below to survive re-runs.
-INGRESS_RULES=$(cat <<'JSON'
-{
-  "config": {
-    "ingress": [
-      {
-        "hostname": "auth.mcp-mesh.io",
-        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
-      },
-      {
-        "hostname": "auth-dev.mcp-mesh.io",
-        "service": "http://auth-platform-dev-platform-edge.auth-platform-dev.svc.cluster.local:80"
-      },
-      {
-        "hostname": "niralishappyfeetindia.com",
-        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
-      },
-      {
-        "hostname": "safeandsoundhouses.com",
-        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
-      },
-      {
-        "hostname": "maya-ai.ink",
-        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
-      },
-      {
-        "hostname": "*.mcp-mesh.io",
-        "service": "http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
-      },
-      {
-        "service": "http_status:404"
-      }
-    ]
-  }
-}
-JSON
-)
+# Tenant custom apex domains (niralishappyfeetindia.com, maya-ai.ink, etc.) are
+# NOT listed here — they are managed at runtime by auth-manager's
+# CloudflareTunnelService via its own read-merge-write. Step 3 preserves them
+# verbatim, so re-running this script no longer wipes tenant routes.
+#
+# Service URLs (single source of truth for the platform edges):
+PROD_EDGE_SVC="http://auth-platform-platform-edge.auth-platform.svc.cluster.local:80"
+DEV_EDGE_SVC="http://auth-platform-dev-platform-edge.auth-platform-dev.svc.cluster.local:80"
 
 # Hostnames to ensure as DNS CNAMEs.
 # The *.mcp-mesh.io wildcard ingress is matched by the tunnel based on the
@@ -133,7 +100,53 @@ ZONE_JSON=$(curl -sS -H "$H_AUTH" "$API/zones?name=$CF_ZONE")
 ZONE_ID=$(echo "$ZONE_JSON" | python3 -c 'import sys, json; print(json.load(sys.stdin)["result"][0]["id"])')
 ok "zone_id: $ZONE_ID"
 
-step "3. PUT tunnel ingress config"
+step "3. Merge tunnel ingress config (preserve tenant rules)"
+# Read the current live config, then merge: refresh the script-owned platform
+# hostnames and PRESERVE all other (tenant) rules. This is critical — the
+# auth-manager backend (CloudflareTunnelService) adds per-tenant apex-domain
+# ingress rules at runtime; a blind overwrite here would wipe them.
+CUR_CFG=$(curl -sS -H "$H_AUTH" \
+  "$API/accounts/$CF_ACCOUNT_ID/cfd_tunnel/$CF_TUNNEL_ID/configurations")
+
+INGRESS_RULES=$(echo "$CUR_CFG" | PROD_EDGE_SVC="$PROD_EDGE_SVC" DEV_EDGE_SVC="$DEV_EDGE_SVC" python3 -c '
+import sys, json, os
+
+prod = os.environ["PROD_EDGE_SVC"]
+dev  = os.environ["DEV_EDGE_SVC"]
+
+d = json.load(sys.stdin)
+if not d.get("success"):
+    print("  failed to read current config:", d.get("errors"), file=sys.stderr)
+    sys.exit(1)
+
+current = d.get("result", {}).get("config", {}).get("ingress", [])
+
+# Hostnames this script owns (refreshed/overwritten by us).
+owned = {"auth.mcp-mesh.io", "auth-dev.mcp-mesh.io", "*.mcp-mesh.io"}
+
+# Preserve every rule whose hostname is not script-owned and that is not the
+# hostname-less catch-all. Keep service + any other fields (originRequest, ...)
+# verbatim.
+preserved = [
+    r for r in current
+    if r.get("hostname") and r.get("hostname") not in owned
+]
+
+merged = (
+    [
+        {"hostname": "auth.mcp-mesh.io", "service": prod},
+        {"hostname": "auth-dev.mcp-mesh.io", "service": dev},
+    ]
+    + preserved
+    + [
+        {"hostname": "*.mcp-mesh.io", "service": prod},
+        {"service": "http_status:404"},
+    ]
+)
+
+print(json.dumps({"config": {"ingress": merged}}))
+')
+
 RESP=$(curl -sS -X PUT -H "$H_AUTH" -H "$H_JSON" \
   "$API/accounts/$CF_ACCOUNT_ID/cfd_tunnel/$CF_TUNNEL_ID/configurations" \
   -d "$INGRESS_RULES")

@@ -15,7 +15,20 @@
 # (CNPG bootstrap.initdb only supports a single database).
 #
 # Credentials live in K8s Secrets managed out-of-band, NOT in this manifest.
-# Operator creates platform-pg-app-secret with username/password before apply.
+# Operator PRE-CREATES both secrets before applying this manifest:
+#   - platform-pg-app-secret      (bootstrap.initdb owner creds for `authmanager`)
+#   - platform-pg-superuser-secret (the `postgres` superuser creds)
+# Both MUST be type kubernetes.io/basic-auth with keys `username` + `password`.
+# The superuser secret needs username: postgres and a strong password, e.g.:
+#   kubectl create secret generic platform-pg-superuser-secret -n auth-platform \
+#     --type=kubernetes.io/basic-auth \
+#     --from-literal=username=postgres --from-literal=password='<strong>'
+#
+# With enableSuperuserAccess: true AND this operator-owned (user-supplied)
+# superuser secret, CNPG keeps the `postgres` role's DB password in sync with
+# the secret on every reconcile and does NOT rotate/regenerate it. This is what
+# eliminates the #92 drift: the old manual `ALTER USER postgres WITH PASSWORD`
+# pre-step before every helm upgrade is no longer needed once migrated.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -38,6 +51,10 @@ spec:
       secret:
         name: platform-pg-app-secret
 
+  # Pin the `postgres` superuser password to an operator-owned secret. Without
+  # this (CNPG ≥1.21 defaults enableSuperuserAccess: false), CNPG disables the
+  # superuser password and re-asserts that on every reconcile → #92 drift.
+  enableSuperuserAccess: true
   superuserSecret:
     name: platform-pg-superuser-secret
 

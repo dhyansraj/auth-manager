@@ -11,7 +11,7 @@ the in-conversation tracker so we can grep history if needed.
 ** [#A] #115 — =cf-setup-tunnel.sh= wipes dynamically-added tenant ingress rules
    :PROPERTIES:
    :TASK: 115
-   :STATUS: pending
+   :STATUS: code-complete; deploy-pending
    :END:
 
    Re-running =scripts/cf-setup-tunnel.sh= replaces the tunnel's full ingress
@@ -29,10 +29,23 @@ the in-conversation tracker so we can grep history if needed.
    make the script's job idempotent for *platform* hosts only (auth, admin,
    auth-dev, admin-dev). Option (b) is cleaner — one writer per concern.
 
+   *Fix landed (option (b)):* =scripts/cf-setup-tunnel.sh= step 3 was
+   converted from a blind full-overwrite PUT into a read-merge-write — it now
+   GETs the live tunnel config, refreshes only the script-owned platform
+   hostnames (=auth.mcp-mesh.io=, =auth-dev.mcp-mesh.io=, =*.mcp-mesh.io=, and
+   the =http_status:404= catch-all), and PRESERVES all other (tenant
+   apex-domain) ingress rules that auth-manager's =CloudflareTunnelService=
+   adds at runtime. The hardcoded tenant entries (niralishappyfeetindia.com,
+   safeandsoundhouses.com, maya-ai.ink) were removed from the script —
+   they're runtime-managed now.
+
+   *Remaining work:* just re-deploy / re-run the corrected script — no live
+   migration needed, the next run is safe and self-healing.
+
 ** [#A] #92 — CNPG superuser password drift on every redeploy
    :PROPERTIES:
    :TASK: 92
-   :STATUS: pending
+   :STATUS: code-complete; migration-pending
    :END:
 
    CNPG regenerates the =postgres= superuser secret on every helm upgrade
@@ -42,15 +55,30 @@ the in-conversation tracker so we can grep history if needed.
    the PG cluster still has the *previous* password, auth-manager 401s out
    on its bootstrap connection.
 
-   Current workaround (manual, every deploy): before =helm upgrade=,
-   =ALTER USER postgres WITH PASSWORD ...= with the secret's current value.
-   Bites both prod and dev.
+   Root cause: neither CR set =enableSuperuserAccess=, which defaults to
+   *false* since CNPG 1.21 — so CNPG disables the =postgres= password and
+   re-asserts that on every reconcile.
 
-   *Fix candidates:* (a) set =enableSuperuserAccess: true= + manage the
-   secret ourselves (sealed-secret or external-secrets), pin it, and skip
-   CNPG's rotation; (b) write a pre-upgrade hook that ALTERs the role to
-   match the secret before pods come up. (a) is cleaner; CNPG explicitly
-   supports user-owned superuser secrets.
+   *Code fix landed (approach (a)):* =enableSuperuserAccess: true= +
+   operator-owned, pinned basic-auth superuser secret (=username=postgres=).
+   With a user-supplied superuser secret, CNPG syncs the role password TO
+   the secret on each reconcile (no rotation), eliminating the drift.
+   - Prod CR =deploy/cnpg/pg-cluster.yaml=: flag added; header documents the
+     operator pre-creating the basic-auth secret.
+   - Dev =scripts/deploy-beelink-dev.sh=: now pre-creates
+     =platform-pg-dev-superuser-secret= (basic-auth, =PG_SUPERUSER_PASSWORD=
+     env var) and sets the flag on the inline CR.
+   - Docs updated (OPERATOR-GUIDE: #92 entry, rotation, recovery runbook,
+     deploy pre-steps marked LEGACY; one-time migration note added).
+
+   *Remaining work — one-time live-cluster migration:* the EXISTING prod +
+   dev clusters were created without the flag + with CNPG-generated secrets,
+   so they still drift until migrated. Steps: create the basic-auth
+   superuser secret with the password the DB currently uses, ensure the CR
+   has =enableSuperuserAccess: true= (re-apply =pg-cluster.yaml= for prod),
+   reconcile. See OPERATOR-GUIDE "CNPG superuser pinning — one-time
+   migration". Did NOT touch =CnpgSuperuserDataSourceConfig.java= /
+   =TenantDatabaseService.java= — the app already reads the secret correctly.
 
 * USER-FACING UX
 ** [#B] #90 — Onboarding wizard: auto-verify admin email + Users tab "Mark verified" action
