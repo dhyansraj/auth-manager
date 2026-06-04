@@ -18,7 +18,7 @@
 
     <groupId>io.mcp-mesh</groupId>
     <artifactId>mcp-mesh-auth-lib</artifactId>
-    <version>0.3.1</version>
+    <version>0.3.2</version>
     <name>mcp-mesh-auth-lib</name>
     <description>Reusable Spring Boot library: JWT validation + permission enforcement against Keycloak for the mcp-mesh auth platform</description>
     <url>https://github.com/dhyansraj/auth-manager</url>
@@ -47,8 +47,11 @@
     </scm>
 
     <properties>
-        <java.version>21</java.version>
-        <maven.compiler.release>21</maven.compiler.release>
+        <!-- Java 17 baseline: compiles to Java 17 bytecode so the lib runs on the
+             mesh java-runtime:17 image as well as Java 21. Spring Boot 4.0.x /
+             Spring Framework 7.0.x ship Java 17 bytecode, so 17 is a valid target. -->
+        <java.version>17</java.version>
+        <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
