@@ -2,6 +2,10 @@ package io.mcpmesh.auth.lib.security;
 
 import io.mcpmesh.auth.lib.AuthLibProperties;
 import io.mcpmesh.auth.lib.PermissionsCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -32,6 +36,8 @@ import org.springframework.web.client.RestTemplate;
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
     @Bean
     public JwtDecoder jwtDecoder(AuthLibProperties props) {
@@ -69,10 +75,20 @@ public class SecurityConfig {
     }
 
     @Bean
+    @ConditionalOnMissingBean(SecurityFilterChain.class)
     public SecurityFilterChain authLibSecurityFilterChain(
         HttpSecurity http,
-        PermissionJwtAuthenticationConverter converter
+        PermissionJwtAuthenticationConverter converter,
+        @Value("${auth-lib.dev-mode:false}") boolean devMode
     ) throws Exception {
+        if (devMode) {
+            log.warn("auth-lib dev-mode ENABLED: all requests permitted, JWT validation DISABLED — never use in production");
+            http
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+            return http.build();
+        }
         http
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

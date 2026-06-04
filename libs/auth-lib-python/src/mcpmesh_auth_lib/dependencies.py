@@ -27,6 +27,43 @@ bearer_scheme = HTTPBearer(auto_error=False)
 # without needing to re-parse the Authorization header.
 RAW_TOKEN_CLAIM = "_raw_token"
 
+# Marker threaded into synthetic claims so downstream code can tell that the
+# request was served by the dev-mode bypass (no real token was verified).
+DEV_MODE_CLAIM = "_dev_mode"
+
+_DEV_MODE_WARNED = False
+
+
+def _warn_dev_mode_once() -> None:
+    global _DEV_MODE_WARNED
+    if not _DEV_MODE_WARNED:
+        _DEV_MODE_WARNED = True
+        logger.warning(
+            "auth-lib dev_mode ENABLED: auth bypassed, synthetic user injected "
+            "-- never use in production"
+        )
+
+
+def _dev_claims(settings: AuthLibSettings) -> Dict[str, Any]:
+    """Build synthetic JWT-like claims for dev-mode.
+
+    Shapes ``resource_access`` so the configured client carries
+    ``dev_user_roles``, mirroring the real claims path that
+    ``build_me_response`` / ``ClaimRolesPermissions`` read from.
+    """
+    roles = list(settings.dev_user_roles)
+    resource_access = {client: {"roles": list(roles)} for client in settings.effective_audiences}
+    return {
+        "sub": "dev-user",
+        "email": settings.dev_user_email,
+        "preferred_username": settings.dev_user_email,
+        "name": settings.dev_user_email,
+        "realm_access": {"roles": list(roles)},
+        "resource_access": resource_access,
+        RAW_TOKEN_CLAIM: "",
+        DEV_MODE_CLAIM: True,
+    }
+
 
 def _state(request: Request) -> Any:
     state = getattr(request.app, "state", None)
@@ -52,6 +89,7 @@ def get_permissions(request: Request) -> Permissions:
 def current_user(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     validator: JwtValidator = Depends(get_validator),
+    settings: AuthLibSettings = Depends(get_settings),
 ) -> Dict[str, Any]:
     """FastAPI dependency that returns the decoded JWT claims dict.
 
@@ -59,7 +97,13 @@ def current_user(
     issuer / audience fails verification. The raw token is threaded into the
     returned dict under :data:`RAW_TOKEN_CLAIM` so downstream dependencies can
     perform UMA calls without re-parsing headers.
+
+    When ``settings.dev_mode`` is enabled, this SHORT-CIRCUITS: no token is
+    required and a synthetic user is returned (see :func:`_dev_claims`).
     """
+    if settings.dev_mode:
+        _warn_dev_mode_once()
+        return _dev_claims(settings)
     if creds is None or not creds.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_token")
     try:
@@ -73,8 +117,15 @@ def current_user(
 def optional_user(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     validator: JwtValidator = Depends(get_validator),
+    settings: AuthLibSettings = Depends(get_settings),
 ) -> Optional[Dict[str, Any]]:
-    """Like :func:`current_user` but returns ``None`` instead of raising 401."""
+    """Like :func:`current_user` but returns ``None`` instead of raising 401.
+
+    In ``dev_mode`` the synthetic user is returned (never ``None``).
+    """
+    if settings.dev_mode:
+        _warn_dev_mode_once()
+        return _dev_claims(settings)
     if creds is None or not creds.credentials:
         return None
     try:
@@ -99,7 +150,17 @@ def require_permission(permission: str) -> Callable[..., None]:
     def _checker(
         claims: Dict[str, Any] = Depends(current_user),
         perms: Permissions = Depends(get_permissions),
+        settings: AuthLibSettings = Depends(get_settings),
     ) -> None:
+        if settings.dev_mode:
+            # Grant in dev-mode. If dev_user_roles is set, only those are
+            # granted; if empty, grant everything.
+            if not settings.dev_user_roles or permission in settings.dev_user_roles:
+                return
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"missing_permission:{permission}",
+            )
         token = claims.get(RAW_TOKEN_CLAIM, "")
         if permission not in perms.all_for(token, claims):
             raise HTTPException(
@@ -119,7 +180,15 @@ def require_any_permission(*permissions: str) -> Callable[..., None]:
     def _checker(
         claims: Dict[str, Any] = Depends(current_user),
         perms: Permissions = Depends(get_permissions),
+        settings: AuthLibSettings = Depends(get_settings),
     ) -> None:
+        if settings.dev_mode:
+            if not settings.dev_user_roles or (set(settings.dev_user_roles) & permset):
+                return
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"missing_permission_any:{sorted(permset)}",
+            )
         token = claims.get(RAW_TOKEN_CLAIM, "")
         granted = perms.all_for(token, claims)
         if not (granted & permset):
@@ -160,7 +229,15 @@ def require_role(role: str, *, client: Optional[str] = None) -> Callable[..., No
     if not role:
         raise ValueError("require_role(role) needs a non-empty string")
 
-    def _checker(claims: Dict[str, Any] = Depends(current_user)) -> None:
+    def _checker(
+        claims: Dict[str, Any] = Depends(current_user),
+        settings: AuthLibSettings = Depends(get_settings),
+    ) -> None:
+        if settings.dev_mode:
+            if not settings.dev_user_roles or role in settings.dev_user_roles:
+                return
+            detail = f"missing_role:{client}:{role}" if client is not None else f"missing_role:{role}"
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
         if client is not None:
             res = claims.get("resource_access")
             if isinstance(res, dict):

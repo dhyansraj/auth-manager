@@ -66,6 +66,34 @@ class AuthLibSettings(BaseSettings):
     # Services configured.
     permissions_source: Literal["claims", "uma"] = "claims"
 
+    # ---- dev-mode bypass ---------------------------------------------------
+    # When enabled, the FastAPI dependencies (current_user / optional_user /
+    # require_permission / require_role) SHORT-CIRCUIT: no Bearer token is
+    # required, a synthetic user is injected, and permission/role checks are
+    # granted (optionally scoped to ``dev_user_roles``). This lets a tenant run
+    # locally without the edge or a real token. NEVER enable in production.
+    # Mirrors the Java auth-lib's ``auth-lib.dev-mode``.
+    dev_mode: bool = False
+    dev_user_email: str = "dev@example.com"
+    # Roles the synthetic user carries (under the configured client in
+    # ``resource_access``). If non-empty, dev-mode permission/role checks are
+    # restricted to this set; if empty, all checks are granted.
+    dev_user_roles: List[str] = Field(default_factory=list)
+
+    @field_validator("dev_user_roles", mode="before")
+    @classmethod
+    def _split_dev_user_roles(cls, v):  # type: ignore[override]
+        # Support comma-separated env var: AUTH_LIB_DEV_USER_ROLES=ORDER_VIEW,ORDER_EDIT
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            if s.startswith("["):
+                # let pydantic handle JSON
+                return v
+            return [p.strip() for p in s.split(",") if p.strip()]
+        return v
+
     @field_validator("permissions_source", mode="before")
     @classmethod
     def _normalize_permissions_source(cls, v):  # type: ignore[override]
