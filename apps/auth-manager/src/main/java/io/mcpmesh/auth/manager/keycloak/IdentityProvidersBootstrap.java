@@ -368,9 +368,9 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
         // sensible defaults from the provider template, but we set them explicitly
         // so the button looks consistent across realms.
         if ("google".equals(providerId)) {
-            rep.setDisplayName("Google");
+            rep.setDisplayName("Continue with Google");
         } else if ("github".equals(providerId)) {
-            rep.setDisplayName("GitHub");
+            rep.setDisplayName("Continue with GitHub");
         }
         rep.setConfig(config);
         return rep;
