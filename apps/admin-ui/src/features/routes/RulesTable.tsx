@@ -55,7 +55,7 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
         <thead className="bg-slate-50 text-left">
           <tr>
             <th className="px-3 py-2 w-10">#</th>
-            <th className="px-3 py-2">Path</th>
+            <th className="px-3 py-2 min-w-[16rem]">Path</th>
             <th className="px-3 py-2 w-32">Auth Mode</th>
             <th className="px-3 py-2 w-48">Target</th>
             <th
@@ -73,14 +73,14 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
               <span className="ml-1 text-slate-400 cursor-help">(?)</span>
             </th>
             <th
-              className="px-3 py-2 w-28"
+              className="px-3 py-2 w-16"
               title="Skip CSRF check on cookie-authed mutations. Use for third-party UIs (Redis Commander, Grafana) that don't send X-CSRF-Token. Only meaningful when Auth Mode is REQUIRED."
             >
               Bypass CSRF
               <span className="ml-1 text-slate-400 cursor-help">(?)</span>
             </th>
             <th
-              className="px-3 py-2 w-32"
+              className="px-3 py-2 w-20"
               title="Max request body size in MB. Default 25 if blank. Max 100 (Cloudflare tunnel ceiling). 413 returned if exceeded."
             >
               Max body (MB)
@@ -102,6 +102,7 @@ export default function RulesTable({ rules, targetKeys, ruleErrors, readOnly, on
                     value={r.path}
                     placeholder="/api/*"
                     disabled={readOnly}
+                    title={r.path}
                     onChange={e => update(i, { path: e.target.value })}
                     className={
                       'w-full border rounded px-2 py-1 font-mono text-sm disabled:bg-slate-100 ' +
