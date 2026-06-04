@@ -131,7 +131,51 @@ public class RoutingConfigService {
         List<RoutingRule> sorted = incoming.rules().stream()
             .sorted(RoutingConfigService::compareSpecificity)
             .toList();
-        return new RoutingConfig(sorted, incoming.targets());
+        return new RoutingConfig(sorted, normalizeTargets(incoming.targets()));
+    }
+
+    /**
+     * Normalize every target value to a scheme-less {@code host[:port][/path]}
+     * form so the edge ({@code router.lua}) can safely prepend {@code http://}
+     * when proxying. An operator-supplied target with a scheme (e.g.
+     * {@code http://192.168.10.50:3000}) would otherwise produce
+     * {@code http://http://192.168.10.50:3000} and trip nginx's "invalid port
+     * in upstream" 500. Keys are preserved; null/blank values pass through to
+     * existing validation untouched.
+     */
+    static Map<String, String> normalizeTargets(Map<String, String> targets) {
+        if (targets == null || targets.isEmpty()) {
+            return targets;
+        }
+        return targets.entrySet().stream()
+            .collect(java.util.stream.Collectors.toMap(
+                Map.Entry::getKey,
+                e -> normalizeTarget(e.getValue())
+            ));
+    }
+
+    /**
+     * Strip a leading {@code http://}/{@code https://} scheme (case-insensitive)
+     * and any trailing {@code /} from a single target URL. Null/blank is
+     * returned as-is so downstream validation still fires.
+     */
+    static String normalizeTarget(String url) {
+        if (url == null) {
+            return null;
+        }
+        String s = url.trim();
+        if (s.isEmpty()) {
+            return s;
+        }
+        if (s.regionMatches(true, 0, "http://", 0, 7)) {
+            s = s.substring(7);
+        } else if (s.regionMatches(true, 0, "https://", 0, 8)) {
+            s = s.substring(8);
+        }
+        while (s.endsWith("/")) {
+            s = s.substring(0, s.length() - 1);
+        }
+        return s;
     }
 
     static int compareSpecificity(RoutingRule a, RoutingRule b) {
