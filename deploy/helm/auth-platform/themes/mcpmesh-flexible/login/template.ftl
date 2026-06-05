@@ -113,7 +113,6 @@
      * CSS files. Inline rules always apply. UX-only gating: KC's flow
      * still accepts credentials POSTed directly to /login-actions. */
     body.mcp-no-password #kc-form-login,
-    body.mcp-no-password #kc-form-buttons,
     body.mcp-no-password #kc-form-forgot-password,
     body.mcp-no-password .pf-v5-c-form__helper-text,
     body.mcp-no-password .pf-v5-c-login__main-footer-band {
