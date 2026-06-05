@@ -9,6 +9,7 @@ import type {
   UpdateRoleRequest,
   IdentityProviderDto,
   IdentityProviderId,
+  RegistrationStateDto,
   ThemeMeta,
   ThemeRolloutStatus,
   BrandingConfig,
@@ -237,6 +238,12 @@ export const api = {
   setIdentityProviderEnabled: (slug: string, providerId: IdentityProviderId, enabled: boolean) =>
     req<IdentityProviderDto>(`/tenants/${slug}/identity-providers/${providerId}`, {
       method: 'PUT', body: JSON.stringify({ enabled })
+    }),
+  getRegistrationState: (slug: string) =>
+    req<RegistrationStateDto>(`/tenants/${slug}/identity-providers/registration`),
+  setInviteOnly: (slug: string, inviteOnly: boolean) =>
+    req<RegistrationStateDto>(`/tenants/${slug}/identity-providers/registration`, {
+      method: 'PUT', body: JSON.stringify({ inviteOnly })
     }),
 
   // -------------------------------------------------------------------------

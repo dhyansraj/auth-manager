@@ -2,7 +2,11 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api, ApiError } from '../../api/client';
-import type { IdentityProviderDto, IdentityProviderId } from '../../api/types';
+import type {
+  IdentityProviderDto,
+  IdentityProviderId,
+  RegistrationStateDto,
+} from '../../api/types';
 
 interface Props {
   slug: string;
@@ -28,6 +32,12 @@ export default function IdentityProvidersTab({ slug, tenantId }: Props) {
     enabled: !!tenantId,
   });
 
+  const registration = useQuery({
+    queryKey: ['registration-state', slug],
+    queryFn: () => api.getRegistrationState(slug),
+    enabled: !!slug,
+  });
+
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: IdentityProviderId; enabled: boolean }) =>
       api.setIdentityProviderEnabled(slug, id, enabled),
@@ -42,6 +52,13 @@ export default function IdentityProvidersTab({ slug, tenantId }: Props) {
     mutationFn: (enabled: boolean) => api.setPasswordEnabled(tenantId, enabled),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['login-methods', tenantId] });
+    },
+  });
+
+  const toggleInviteOnly = useMutation({
+    mutationFn: (inviteOnly: boolean) => api.setInviteOnly(slug, inviteOnly),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['registration-state', slug] });
     },
   });
 
@@ -82,6 +99,19 @@ export default function IdentityProvidersTab({ slug, tenantId }: Props) {
           {passwordErrorMessage(togglePassword.error)}
         </div>
       )}
+
+      {toggleInviteOnly.isError && (
+        <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-900">
+          {inviteOnlyErrorMessage(toggleInviteOnly.error)}
+        </div>
+      )}
+
+      <InviteOnlyCard
+        state={registration.data ?? null}
+        canManage={canManage}
+        busy={toggleInviteOnly.isPending}
+        onToggle={(inviteOnly) => toggleInviteOnly.mutate(inviteOnly)}
+      />
 
       {providers.data && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -148,6 +178,71 @@ function PasswordCard({
       </div>
     </div>
   );
+}
+
+function InviteOnlyCard({
+  state,
+  canManage,
+  busy,
+  onToggle,
+}: {
+  state: RegistrationStateDto | null;
+  canManage: boolean;
+  busy: boolean;
+  onToggle: (inviteOnly: boolean) => void;
+}) {
+  const enabled = state?.inviteOnly ?? false;
+  const disabled = !canManage || busy || !state;
+  const tooltip = !canManage
+    ? 'You need tenant-admin privileges to change this.'
+    : undefined;
+
+  return (
+    <div className="bg-white border rounded p-4 flex items-start gap-3">
+      <div className="shrink-0 mt-0.5">
+        <InviteOnlyIcon />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex justify-between items-start gap-2">
+          <div>
+            <div className="font-semibold">Invite-only access</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              When on, only users you provision or invite can sign in —
+              social-login sign-ups for unknown emails are rejected, and the
+              self-registration form is disabled.
+            </div>
+          </div>
+          <Toggle
+            checked={enabled}
+            disabled={disabled}
+            title={tooltip}
+            onChange={(next) => onToggle(next)}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InviteOnlyIcon() {
+  // Envelope-with-check glyph: signals "invitation required".
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="#475569"
+        d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v.01L12 11l8-4.99V6H4zm0 2.24V18h16V8.24l-8 5-8-5z"
+      />
+    </svg>
+  );
+}
+
+function inviteOnlyErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 403) {
+      return 'You don’t have permission to change registration settings for this tenant.';
+    }
+  }
+  return String(err);
 }
 
 function KeycloakIcon() {

@@ -213,6 +213,30 @@ public class Tenant {
         settings.put("disabledIdps", new ArrayList<>(current));
     }
 
+    // -- Operator invite-only toggle (persisted in settings JSONB) -----------
+
+    /**
+     * Returns whether the tenant is "invite-only": when {@code true}, only
+     * users an operator has provisioned/invited can sign in — social-login
+     * sign-ins for unknown emails are rejected at Keycloak and self-registration
+     * is disabled. Defaults to {@code false} (self-signup) when the key is
+     * absent.
+     */
+    public boolean isInviteOnly() {
+        if (settings == null) return false;
+        Object node = settings.get("inviteOnly");
+        return node instanceof Boolean b && b;
+    }
+
+    /**
+     * Sets the invite-only flag. Mutates {@link #settings} in place; relies on
+     * JPA dirty-checking to persist on commit.
+     */
+    public void setInviteOnly(boolean inviteOnly) {
+        if (settings == null) settings = new LinkedHashMap<>();
+        settings.put("inviteOnly", inviteOnly);
+    }
+
     // --- getters (no setters; mutations go through the methods above) ---
 
     public UUID getId() { return id; }

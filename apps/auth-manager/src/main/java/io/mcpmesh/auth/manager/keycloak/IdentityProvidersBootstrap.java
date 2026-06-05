@@ -95,6 +95,16 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
                 String realmName = t.getRealmName();
                 if (realmName == null || !realmName.startsWith(TENANT_REALM_PREFIX)) continue;
                 repointIdpsToAutoLink(realmName);
+                // Re-assert the persisted invite-only posture: ensureAutoLinkFlow
+                // leaves create-if-unique at the default ALTERNATIVE, so a
+                // redeploy would silently re-open an invite-only tenant unless we
+                // reconcile here. Best-effort; never throw out of run().
+                try {
+                    keycloakAdmin.setInviteOnly(realmName, t.isInviteOnly());
+                } catch (Exception e) {
+                    log.warn("IdentityProvidersBootstrap: invite-only reconcile failed for realm '{}': {}",
+                        realmName, e.getMessage());
+                }
                 if (configured.isEmpty()) continue;
                 try {
                     ensureProviders(t, configured);

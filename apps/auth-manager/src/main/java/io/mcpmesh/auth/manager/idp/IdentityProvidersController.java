@@ -48,6 +48,22 @@ public class IdentityProvidersController {
         return service.setEnabled(slug, providerId, Boolean.TRUE.equals(req.enabled()), principal(auth));
     }
 
+    @GetMapping("/registration")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
+    public RegistrationStateDto getRegistration(@PathVariable String slug) {
+        return service.getRegistrationState(slug);
+    }
+
+    @PutMapping("/registration")
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'IDP_EDIT')")
+    public RegistrationStateDto updateRegistration(
+        @PathVariable String slug,
+        @Valid @RequestBody UpdateRegistrationRequest req,
+        Authentication auth
+    ) {
+        return service.setInviteOnly(slug, Boolean.TRUE.equals(req.inviteOnly()), principal(auth));
+    }
+
     private static String principal(Authentication auth) {
         if (auth instanceof JwtAuthenticationToken jwtAuth) {
             Jwt jwt = jwtAuth.getToken();

@@ -236,6 +236,194 @@ public class KeycloakAdminService {
         return FIRST_BROKER_LOGIN_AUTOLINK;
     }
 
+    /** Leaf execution that creates a brokered user when no local match exists. */
+    public static final String IDP_CREATE_USER_IF_UNIQUE = "idp-create-user-if-unique";
+
+    /**
+     * Leaf execution that short-circuits the broker flow when the incoming IdP
+     * identity is already linked to a local user. Added to the top of the "User
+     * creation or linking" subflow in invite-only mode so an invited (already
+     * linked) user is recognised before {@code idp-create-user-if-unique} would
+     * otherwise try (and, when DISABLED, fail) to create them.
+     */
+    public static final String IDP_DETECT_EXISTING_BROKER_USER = "idp-detect-existing-broker-user";
+
+    /**
+     * Applies (or clears) the per-tenant "invite-only" posture on a realm.
+     *
+     * <p>This is the empirically-derived recipe verified against a live
+     * Keycloak 26.6.1 realm-to-realm broker harness. It is NOT enough to merely
+     * disable {@code idp-create-user-if-unique}: doing so also breaks brokered
+     * login for already-invited (linked) users (KC returns
+     * {@code invalid_user_credentials}). The working posture rewires three
+     * execution requirements on the "User creation or linking" subflow of
+     * {@link #FIRST_BROKER_LOGIN_AUTOLINK}, plus the realm flag.
+     *
+     * <p>When {@code inviteOnly} is {@code true}:
+     * <ol>
+     *   <li>ensure an {@code idp-detect-existing-broker-user} execution exists
+     *       at the TOP of the "User creation or linking" subflow, REQUIRED — so
+     *       an already-linked (invited) user is short-circuited into the login
+     *       before create-if-unique runs;</li>
+     *   <li>{@code idp-create-user-if-unique} = DISABLED — an unknown email
+     *       can't self-provision;</li>
+     *   <li>the {@code Handle Existing Account} subflow = REQUIRED. Critical:
+     *       if left ALTERNATIVE, KC's "REQUIRED + ALTERNATIVE at the same level
+     *       → ALTERNATIVE ignored" rule silently skips {@code idp-auto-link} and
+     *       login fails with {@code invalid_user_credentials};</li>
+     *   <li>realm {@code registrationAllowed} = false.</li>
+     * </ol>
+     *
+     * <p>When {@code inviteOnly} is {@code false} the open/self-signup defaults
+     * are restored: detect = DISABLED (left in place, not removed),
+     * create-if-unique = ALTERNATIVE, Handle Existing Account = ALTERNATIVE,
+     * realm {@code registrationAllowed} = true.
+     *
+     * <p>Idempotent: re-running with the same value is stable. The detect
+     * execution is added at most once (existence checked first).
+     */
+    public void setInviteOnly(String realmName, boolean inviteOnly) {
+        // Ensure our auto-link flow exists before we poke at its executions.
+        ensureAutoLinkFlow(realmName);
+
+        AuthenticationManagementResource flows = admin.realm(realmName).flows();
+
+        // Derive the (copy-prefixed) alias of the "User creation or linking"
+        // subflow. KC prefixes copied subflow aliases with the new flow name,
+        // so it's e.g. "first broker login auto-link User creation or linking".
+        String userCreationAlias = flows.getExecutions(FIRST_BROKER_LOGIN_AUTOLINK).stream()
+            .filter(e -> Boolean.TRUE.equals(e.getAuthenticationFlow()))
+            .map(AuthenticationExecutionInfoRepresentation::getDisplayName)
+            .filter(name -> name != null && name.endsWith("User creation or linking"))
+            .findFirst()
+            .orElse(null);
+
+        if (inviteOnly) {
+            // 1. Ensure idp-detect-existing-broker-user exists at the TOP of the
+            //    "User creation or linking" subflow.
+            ensureDetectAtTopOfUserCreation(flows, userCreationAlias);
+        }
+
+        // Re-fetch executions after any structural change above.
+        List<AuthenticationExecutionInfoRepresentation> execs =
+            flows.getExecutions(FIRST_BROKER_LOGIN_AUTOLINK);
+
+        // 2. idp-detect-existing-broker-user: REQUIRED on, DISABLED off.
+        //    (LEAF — matched by providerId, not prefixed.)
+        for (AuthenticationExecutionInfoRepresentation e : execs) {
+            if (IDP_DETECT_EXISTING_BROKER_USER.equals(e.getProviderId())) {
+                e.setRequirement(inviteOnly ? "REQUIRED" : "DISABLED");
+                flows.updateExecutions(FIRST_BROKER_LOGIN_AUTOLINK, e);
+                break;
+            }
+        }
+
+        // 3. idp-create-user-if-unique: DISABLED on, ALTERNATIVE off.
+        //    (LEAF — matched by providerId, not prefixed.)
+        for (AuthenticationExecutionInfoRepresentation e : execs) {
+            if (IDP_CREATE_USER_IF_UNIQUE.equals(e.getProviderId())) {
+                e.setRequirement(inviteOnly ? "DISABLED" : "ALTERNATIVE");
+                flows.updateExecutions(FIRST_BROKER_LOGIN_AUTOLINK, e);
+                break;
+            }
+        }
+
+        // 4. "Handle Existing Account" subflow: REQUIRED on, ALTERNATIVE off.
+        //    (SUBFLOW — displayName IS prefixed by the copy; match with endsWith.)
+        for (AuthenticationExecutionInfoRepresentation e : execs) {
+            if (Boolean.TRUE.equals(e.getAuthenticationFlow())
+                && e.getDisplayName() != null
+                && e.getDisplayName().endsWith("Handle Existing Account")) {
+                e.setRequirement(inviteOnly ? "REQUIRED" : "ALTERNATIVE");
+                flows.updateExecutions(FIRST_BROKER_LOGIN_AUTOLINK, e);
+                break;
+            }
+        }
+
+        // 5. Realm-level self-registration toggle.
+        RealmRepresentation rep = admin.realm(realmName).toRepresentation();
+        rep.setRegistrationAllowed(!inviteOnly);
+        admin.realm(realmName).update(rep);
+
+        log.info("setInviteOnly: realm '{}' inviteOnly={} (registrationAllowed={}, "
+            + "'{}'={}, '{}'={}, Handle Existing Account={})",
+            realmName, inviteOnly, !inviteOnly,
+            IDP_DETECT_EXISTING_BROKER_USER, inviteOnly ? "REQUIRED" : "DISABLED",
+            IDP_CREATE_USER_IF_UNIQUE, inviteOnly ? "DISABLED" : "ALTERNATIVE",
+            inviteOnly ? "REQUIRED" : "ALTERNATIVE");
+    }
+
+    /**
+     * Idempotently ensures an {@code idp-detect-existing-broker-user} execution
+     * exists as the FIRST child of the "User creation or linking" subflow.
+     *
+     * <p>Newly-added executions append last, so after adding we raise the
+     * execution's priority repeatedly until it sits at index 0 within its
+     * subflow level. The subflow has at most 3 children, so a bounded number of
+     * raises suffices; we re-fetch after each to confirm position.
+     *
+     * <p>No-op if the execution is already present (detected by providerId).
+     */
+    private void ensureDetectAtTopOfUserCreation(AuthenticationManagementResource flows,
+                                                 String userCreationAlias) {
+        if (userCreationAlias == null) {
+            log.warn("ensureDetectAtTopOfUserCreation: 'User creation or linking' subflow not "
+                + "found on flow '{}' — cannot add '{}'",
+                FIRST_BROKER_LOGIN_AUTOLINK, IDP_DETECT_EXISTING_BROKER_USER);
+            return;
+        }
+
+        boolean present = flows.getExecutions(FIRST_BROKER_LOGIN_AUTOLINK).stream()
+            .anyMatch(e -> IDP_DETECT_EXISTING_BROKER_USER.equals(e.getProviderId()));
+        if (present) {
+            log.debug("ensureDetectAtTopOfUserCreation: '{}' already present on flow '{}'",
+                IDP_DETECT_EXISTING_BROKER_USER, FIRST_BROKER_LOGIN_AUTOLINK);
+            return;
+        }
+
+        flows.addExecution(userCreationAlias,
+            java.util.Map.of("provider", IDP_DETECT_EXISTING_BROKER_USER));
+
+        // Raise the freshly-added (appended-last) detect execution to the top of
+        // its subflow. getExecutions returns a flat depth-first list, so detect
+        // is "at the top of its level" once no execution at the SAME level
+        // precedes it. The subflow has at most 3 children, so a bounded number
+        // of raises suffices; re-fetch after each to read the current ordering.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            List<AuthenticationExecutionInfoRepresentation> snapshot =
+                flows.getExecutions(FIRST_BROKER_LOGIN_AUTOLINK);
+            AuthenticationExecutionInfoRepresentation detect = null;
+            int detectPos = -1;
+            for (int i = 0; i < snapshot.size(); i++) {
+                if (IDP_DETECT_EXISTING_BROKER_USER.equals(snapshot.get(i).getProviderId())) {
+                    detect = snapshot.get(i);
+                    detectPos = i;
+                    break;
+                }
+            }
+            if (detect == null) {
+                log.warn("ensureDetectAtTopOfUserCreation: '{}' disappeared after add on flow '{}'",
+                    IDP_DETECT_EXISTING_BROKER_USER, FIRST_BROKER_LOGIN_AUTOLINK);
+                return;
+            }
+            // Is there a sibling at the same level positioned before detect?
+            boolean siblingBefore = false;
+            for (int i = 0; i < detectPos; i++) {
+                if (snapshot.get(i).getLevel() == detect.getLevel()) {
+                    siblingBefore = true;
+                    break;
+                }
+            }
+            if (!siblingBefore) {
+                break;
+            }
+            flows.raisePriority(detect.getId());
+        }
+
+        log.info("ensureDetectAtTopOfUserCreation: added '{}' at top of subflow '{}' on flow '{}'",
+            IDP_DETECT_EXISTING_BROKER_USER, userCreationAlias, FIRST_BROKER_LOGIN_AUTOLINK);
+    }
+
     /**
      * Idempotently sets the realm's {@code enabled} flag. Returns {@code true}
      * if the flag was changed (and the PUT issued); {@code false} if the realm

@@ -4,6 +4,7 @@ import io.mcpmesh.auth.manager.audit.AuditService;
 import io.mcpmesh.auth.manager.authflow.LoginMethodService;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
+import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +37,7 @@ class IdentityProvidersServiceTest {
     private TenantService tenants;
     private TenantRepository tenantRepo;
     private IdentityProvidersBootstrap idp;
+    private KeycloakAdminService keycloak;
     private AuditService audit;
     private LoginMethodService loginMethods;
 
@@ -47,10 +49,11 @@ class IdentityProvidersServiceTest {
         tenants = mock(TenantService.class);
         tenantRepo = mock(TenantRepository.class);
         idp = mock(IdentityProvidersBootstrap.class);
+        keycloak = mock(KeycloakAdminService.class);
         audit = mock(AuditService.class);
         loginMethods = mock(LoginMethodService.class);
 
-        service = new IdentityProvidersService(tenants, tenantRepo, idp, audit, loginMethods);
+        service = new IdentityProvidersService(tenants, tenantRepo, idp, keycloak, audit, loginMethods);
 
         tenant = newTenant();
         when(tenants.getBySlug(SLUG)).thenReturn(tenant);
@@ -90,6 +93,27 @@ class IdentityProvidersServiceTest {
         verify(idp).addProvider(REALM, "github");
         verify(audit).recordSuccess(anyString(), any(), any(),
             eq("idp.enable"), anyString(), eq("github"), any(), any());
+    }
+
+    @Test
+    void setInviteOnly_persistsFlag_appliesKc_andAudits() {
+        RegistrationStateDto result = service.setInviteOnly(SLUG, true, "alice");
+
+        assertThat(tenant.isInviteOnly()).isTrue();
+        verify(tenantRepo).save(tenant);
+        verify(keycloak).setInviteOnly(REALM, true);
+        verify(audit).recordSuccess(anyString(), any(), any(),
+            eq("tenant.invite_only.set"), eq("tenant"), eq(SLUG), any(), any());
+        assertThat(result.inviteOnly()).isTrue();
+        assertThat(result.registrationAllowed()).isFalse();
+    }
+
+    @Test
+    void getRegistrationState_reflectsTenantFlag() {
+        tenant.setInviteOnly(true);
+        RegistrationStateDto state = service.getRegistrationState(SLUG);
+        assertThat(state.inviteOnly()).isTrue();
+        assertThat(state.registrationAllowed()).isFalse();
     }
 
     private static Tenant newTenant() {

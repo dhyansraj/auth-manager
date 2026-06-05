@@ -187,6 +187,17 @@ export interface IdentityProviderDto {
   available: boolean;
 }
 
+/** Per-tenant self-registration / invite-only posture. */
+export interface RegistrationStateDto {
+  /**
+   * True when only operator-provisioned users may sign in — social sign-ups
+   * for unknown emails are rejected and the self-registration form is disabled.
+   */
+  inviteOnly: boolean;
+  /** Convenience inverse of {@link inviteOnly} (realm registrationAllowed flag). */
+  registrationAllowed: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Branding / Custom Themes (per-tenant ConfigMap-backed theme files)
 // ---------------------------------------------------------------------------
