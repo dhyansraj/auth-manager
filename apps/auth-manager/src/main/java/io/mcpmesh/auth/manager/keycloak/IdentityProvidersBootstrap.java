@@ -18,6 +18,7 @@ import org.springframework.stereotype.Component;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -46,26 +47,25 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     public static final Set<String> SUPPORTED_PROVIDERS =
         new LinkedHashSet<>(java.util.List.of("google", "github"));
 
-    /**
-     * KC's default first-broker-login flow alias. Created automatically with
-     * every realm; we reference it by name so KC links / creates accounts
-     * appropriately on the first social login.
-     */
-    private static final String FIRST_BROKER_LOGIN_FLOW = "first broker login";
-
     /** Realm-name prefix used by tenant realms (see TenantService). */
     private static final String TENANT_REALM_PREFIX = "t-";
 
     private final Keycloak admin;
     private final PlatformOAuthProperties oauth;
     private final TenantRepository tenantRepo;
+    private final KeycloakAdminService keycloakAdmin;
+    private final KeycloakProperties keycloakProps;
 
     public IdentityProvidersBootstrap(Keycloak admin,
                                       PlatformOAuthProperties oauth,
-                                      TenantRepository tenantRepo) {
+                                      TenantRepository tenantRepo,
+                                      KeycloakAdminService keycloakAdmin,
+                                      KeycloakProperties keycloakProps) {
         this.admin = admin;
         this.oauth = oauth;
         this.tenantRepo = tenantRepo;
+        this.keycloakAdmin = keycloakAdmin;
+        this.keycloakProps = keycloakProps;
     }
 
     /**
@@ -76,15 +76,26 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         Set<String> configured = configuredProviders();
-        if (configured.isEmpty()) {
-            log.info("IdentityProvidersBootstrap: no platform OAuth creds configured — skipping backfill");
-            return;
+
+        // Re-point existing IdPs (tenant + platform realms) at the auto-link
+        // first-broker-login flow even when no creds are configured: existing
+        // realms may already carry IdPs from a previous deploy.
+        try {
+            String platformRealm = keycloakProps.platform().realm();
+            if (platformRealm != null && !platformRealm.isBlank()) {
+                repointIdpsToAutoLink(platformRealm);
+            }
+        } catch (Exception e) {
+            log.warn("IdentityProvidersBootstrap: platform-realm auto-link repoint aborted: {}", e.getMessage());
         }
+
         try {
             var tenants = tenantRepo.findAllByDeletedAtIsNullOrderByCreatedAtDesc();
             for (var t : tenants) {
                 String realmName = t.getRealmName();
                 if (realmName == null || !realmName.startsWith(TENANT_REALM_PREFIX)) continue;
+                repointIdpsToAutoLink(realmName);
+                if (configured.isEmpty()) continue;
                 try {
                     ensureProviders(t, configured);
                 } catch (Exception e) {
@@ -94,6 +105,54 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
             }
         } catch (Exception e) {
             log.warn("IdentityProvidersBootstrap: startup backfill aborted: {}", e.getMessage());
+        }
+
+        if (configured.isEmpty()) {
+            log.info("IdentityProvidersBootstrap: no platform OAuth creds configured — skipped IdP create backfill");
+        }
+    }
+
+    /**
+     * Ensures the auto-link first-broker-login flow exists on the realm and
+     * re-points every IdP that still references the built-in "first broker
+     * login" flow (or has no flow set) at it. Idempotent and best-effort:
+     * never throws — logs a warn and continues on any per-IdP failure.
+     */
+    public void repointIdpsToAutoLink(String realmName) {
+        String alias;
+        try {
+            alias = keycloakAdmin.ensureAutoLinkFlow(realmName);
+        } catch (NotFoundException e) {
+            log.warn("IdentityProvidersBootstrap: realm '{}' not found — skipping auto-link repoint", realmName);
+            return;
+        } catch (Exception e) {
+            log.warn("IdentityProvidersBootstrap: ensureAutoLinkFlow failed for realm '{}': {}",
+                realmName, e.getMessage());
+            return;
+        }
+
+        List<IdentityProviderRepresentation> providers;
+        try {
+            providers = admin.realm(realmName).identityProviders().findAll();
+        } catch (Exception e) {
+            log.warn("IdentityProvidersBootstrap: listing IdPs failed for realm '{}': {}",
+                realmName, e.getMessage());
+            return;
+        }
+        for (IdentityProviderRepresentation rep : providers) {
+            try {
+                String current = rep.getFirstBrokerLoginFlowAlias();
+                if (current == null || current.isBlank()
+                    || KeycloakAdminService.FIRST_BROKER_LOGIN_FLOW.equals(current)) {
+                    rep.setFirstBrokerLoginFlowAlias(alias);
+                    admin.realm(realmName).identityProviders().get(rep.getAlias()).update(rep);
+                    log.info("IdentityProvidersBootstrap: re-pointed IdP '{}' in realm '{}' at auto-link flow",
+                        rep.getAlias(), realmName);
+                }
+            } catch (Exception e) {
+                log.warn("IdentityProvidersBootstrap: repoint IdP '{}' in realm '{}' failed: {}",
+                    rep.getAlias(), realmName, e.getMessage());
+            }
         }
     }
 
@@ -336,6 +395,10 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
             // fall through to create
         }
 
+        // Ensure the auto-link first-broker-login flow exists before the IdP
+        // references it (buildRep points the IdP at this flow alias).
+        keycloakAdmin.ensureAutoLinkFlow(realmName);
+
         IdentityProviderRepresentation rep = buildRep(providerId, creds);
         try (Response r = realm.identityProviders().create(rep)) {
             int status = r.getStatus();
@@ -358,7 +421,7 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
         rep.setTrustEmail(true);
         rep.setStoreToken(false);
         rep.setAddReadTokenRoleOnCreate(false);
-        rep.setFirstBrokerLoginFlowAlias(FIRST_BROKER_LOGIN_FLOW);
+        rep.setFirstBrokerLoginFlowAlias(KeycloakAdminService.FIRST_BROKER_LOGIN_AUTOLINK);
 
         Map<String, String> config = new LinkedHashMap<>();
         config.put("clientId", creds.clientId());

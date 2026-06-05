@@ -3,12 +3,15 @@ package io.mcpmesh.auth.manager.keycloak;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.Response;
 import org.keycloak.admin.client.Keycloak;
+import org.keycloak.admin.client.resource.AuthenticationManagementResource;
 import org.keycloak.admin.client.resource.AuthorizationResource;
 import org.keycloak.admin.client.resource.ClientResource;
 import org.keycloak.admin.client.resource.ClientScopeResource;
 import org.keycloak.admin.client.resource.ClientScopesResource;
 import org.keycloak.admin.client.resource.RealmResource;
 import org.keycloak.admin.client.resource.RoleResource;
+import org.keycloak.representations.idm.AuthenticationExecutionInfoRepresentation;
+import org.keycloak.representations.idm.AuthenticationFlowRepresentation;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.ClientScopeRepresentation;
 import org.keycloak.representations.idm.ProtocolMapperRepresentation;
@@ -39,6 +42,16 @@ import java.util.Set;
 public class KeycloakAdminService {
 
     private static final Logger log = LoggerFactory.getLogger(KeycloakAdminService.class);
+
+    /** KC's built-in first-broker-login flow alias (created with every realm). */
+    public static final String FIRST_BROKER_LOGIN_FLOW = "first broker login";
+
+    /**
+     * Alias of our copy of {@link #FIRST_BROKER_LOGIN_FLOW} that auto-links a
+     * brokered IdP identity to an existing local user with the same email
+     * (instead of creating a duplicate / prompting interactively).
+     */
+    public static final String FIRST_BROKER_LOGIN_AUTOLINK = "first broker login auto-link";
 
     private final Keycloak admin;
 
@@ -132,6 +145,95 @@ public class KeycloakAdminService {
 
         admin.realms().create(realm);
         return realmName;
+    }
+
+    /**
+     * Idempotently ensures a "first broker login auto-link" authentication flow
+     * exists on the realm and returns its alias. The flow is a copy of KC's
+     * built-in {@link #FIRST_BROKER_LOGIN_FLOW} with the "Handle Existing
+     * Account" subflow rewired so that when a brokered (social) login arrives
+     * for an email already owned by a local user, KC silently LINKS the IdP
+     * identity to that user instead of creating a duplicate empty account or
+     * prompting interactively.
+     *
+     * <p>Rewiring (inside the "Handle Existing Account" subflow):
+     * <ul>
+     *   <li>adds the {@code idp-auto-link} authenticator, set REQUIRED;</li>
+     *   <li>disables {@code idp-confirm-link} (Confirm link existing account);</li>
+     *   <li>disables the "Account verification options" subflow.</li>
+     * </ul>
+     * With {@code idp-auto-link} the only ENABLED execution in the subflow,
+     * execution order is irrelevant.
+     *
+     * <p>No-op (returns the alias) if the flow already exists.
+     */
+    public String ensureAutoLinkFlow(String realmName) {
+        AuthenticationManagementResource flows = admin.realm(realmName).flows();
+
+        // Idempotency: bail if our flow already exists.
+        for (AuthenticationFlowRepresentation f : flows.getFlows()) {
+            if (FIRST_BROKER_LOGIN_AUTOLINK.equals(f.getAlias())) {
+                log.debug("ensureAutoLinkFlow: flow '{}' already present in realm '{}'",
+                    FIRST_BROKER_LOGIN_AUTOLINK, realmName);
+                return FIRST_BROKER_LOGIN_AUTOLINK;
+            }
+        }
+
+        // 1. Copy the built-in first-broker-login flow under our alias.
+        try (Response resp = flows.copy(FIRST_BROKER_LOGIN_FLOW,
+                java.util.Map.of("newName", FIRST_BROKER_LOGIN_AUTOLINK))) {
+            if (resp.getStatus() < 200 || resp.getStatus() >= 300) {
+                throw new RuntimeException(
+                    "Copy flow '" + FIRST_BROKER_LOGIN_FLOW + "' -> '" + FIRST_BROKER_LOGIN_AUTOLINK
+                    + "' failed: HTTP " + resp.getStatus() + " " + resp.getStatusInfo().getReasonPhrase());
+            }
+        }
+
+        // 2. Add the auto-link authenticator to the "Handle Existing Account"
+        //    subflow. NOTE: KC prefixes copied subflow aliases with the new flow
+        //    name, so the real alias is e.g. "first broker login auto-link Handle
+        //    Existing Account" — NOT the bare built-in alias (which would resolve
+        //    to the read-only built-in subflow and 400). Derive it via endsWith.
+        String handleExistingAlias = flows.getExecutions(FIRST_BROKER_LOGIN_AUTOLINK).stream()
+            .filter(e -> Boolean.TRUE.equals(e.getAuthenticationFlow()))
+            .map(AuthenticationExecutionInfoRepresentation::getDisplayName)
+            .filter(name -> name != null && name.endsWith("Handle Existing Account"))
+            .findFirst()
+            .orElse(null);
+        if (handleExistingAlias == null) {
+            log.warn("ensureAutoLinkFlow: 'Handle Existing Account' subflow not found in "
+                + "copied flow '{}' (realm '{}'); leaving flow un-rewired",
+                FIRST_BROKER_LOGIN_AUTOLINK, realmName);
+            return FIRST_BROKER_LOGIN_AUTOLINK;
+        }
+        flows.addExecution(handleExistingAlias,
+            java.util.Map.of("provider", "idp-auto-link"));
+
+        // 3. Set requirements: idp-auto-link REQUIRED; idp-confirm-link and the
+        //    "Account verification options" subflow DISABLED. Order-independent.
+        //    idp-auto-link / idp-confirm-link are leaf executions (providerId not
+        //    prefixed). "Account verification options" is a SUBFLOW whose
+        //    displayName IS prefixed by the copy, so match it with endsWith.
+        List<AuthenticationExecutionInfoRepresentation> execs =
+            flows.getExecutions(FIRST_BROKER_LOGIN_AUTOLINK);
+        for (AuthenticationExecutionInfoRepresentation exec : execs) {
+            if ("idp-auto-link".equals(exec.getProviderId())) {
+                exec.setRequirement("REQUIRED");
+                flows.updateExecutions(FIRST_BROKER_LOGIN_AUTOLINK, exec);
+            } else if ("idp-confirm-link".equals(exec.getProviderId())) {
+                exec.setRequirement("DISABLED");
+                flows.updateExecutions(FIRST_BROKER_LOGIN_AUTOLINK, exec);
+            } else if (Boolean.TRUE.equals(exec.getAuthenticationFlow())
+                && exec.getDisplayName() != null
+                && exec.getDisplayName().endsWith("Account verification options")) {
+                exec.setRequirement("DISABLED");
+                flows.updateExecutions(FIRST_BROKER_LOGIN_AUTOLINK, exec);
+            }
+        }
+
+        log.info("ensureAutoLinkFlow: created auto-link first-broker-login flow '{}' in realm '{}'",
+            FIRST_BROKER_LOGIN_AUTOLINK, realmName);
+        return FIRST_BROKER_LOGIN_AUTOLINK;
     }
 
     /**

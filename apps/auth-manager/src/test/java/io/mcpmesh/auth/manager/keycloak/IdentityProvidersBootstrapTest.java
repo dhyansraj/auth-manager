@@ -42,6 +42,8 @@ class IdentityProvidersBootstrapTest {
     private IdentityProviderResource googleResource;
     private IdentityProviderResource githubResource;
     private TenantRepository tenantRepo;
+    private KeycloakAdminService keycloakAdmin;
+    private KeycloakProperties keycloakProps;
 
     @BeforeEach
     void setUp() {
@@ -51,12 +53,23 @@ class IdentityProvidersBootstrapTest {
         googleResource = mock(IdentityProviderResource.class);
         githubResource = mock(IdentityProviderResource.class);
         tenantRepo = mock(TenantRepository.class);
+        keycloakAdmin = mock(KeycloakAdminService.class);
+        keycloakProps = new KeycloakProperties(
+            "http://kc", "master",
+            new KeycloakProperties.Admin("admin-cli", "admin", "admin"),
+            null, null, null);
 
         when(admin.realm(REALM)).thenReturn(realm);
         when(realm.identityProviders()).thenReturn(idps);
         when(idps.get("google")).thenReturn(googleResource);
         when(idps.get("github")).thenReturn(githubResource);
         when(realm.toRepresentation()).thenReturn(new RealmRepresentation());
+        when(keycloakAdmin.ensureAutoLinkFlow(any()))
+            .thenReturn(KeycloakAdminService.FIRST_BROKER_LOGIN_AUTOLINK);
+    }
+
+    private IdentityProvidersBootstrap newBootstrap(PlatformOAuthProperties creds) {
+        return new IdentityProvidersBootstrap(admin, creds, tenantRepo, keycloakAdmin, keycloakProps);
     }
 
     private PlatformOAuthProperties fullCreds() {
@@ -84,7 +97,7 @@ class IdentityProvidersBootstrapTest {
         when(githubResource.toRepresentation()).thenThrow(new NotFoundException("missing"));
         when(idps.create(any())).thenAnswer(inv -> createdResponse());
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         bootstrap.ensureProviders(REALM, Set.of("google", "github"));
 
         ArgumentCaptor<IdentityProviderRepresentation> cap =
@@ -110,7 +123,7 @@ class IdentityProvidersBootstrapTest {
         when(googleResource.toRepresentation()).thenReturn(new IdentityProviderRepresentation());
         when(githubResource.toRepresentation()).thenReturn(new IdentityProviderRepresentation());
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         bootstrap.ensureProviders(REALM, Set.of("google", "github"));
 
         verify(idps, never()).create(any());
@@ -126,7 +139,7 @@ class IdentityProvidersBootstrapTest {
         when(githubResource.toRepresentation()).thenThrow(new NotFoundException("missing"));
         when(idps.create(any())).thenAnswer(inv -> createdResponse());
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, creds, tenantRepo);
+        var bootstrap = newBootstrap(creds);
         bootstrap.ensureProviders(REALM, Set.of("google", "github"));
 
         // Only github should be created.
@@ -139,7 +152,7 @@ class IdentityProvidersBootstrapTest {
     @Test
     void ensureProviders_swallowsRealmNotFound() {
         when(realm.toRepresentation()).thenThrow(new NotFoundException("nope"));
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         bootstrap.ensureProviders("t-ghost", Set.of("google", "github"));
         verify(idps, never()).create(any());
     }
@@ -147,7 +160,7 @@ class IdentityProvidersBootstrapTest {
     @Test
     void removeProvider_returnsTrue_andCallsRemove_whenPresent() {
         when(googleResource.toRepresentation()).thenReturn(new IdentityProviderRepresentation());
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         boolean removed = bootstrap.removeProvider(REALM, "google");
         assertThat(removed).isTrue();
         verify(googleResource).remove();
@@ -156,7 +169,7 @@ class IdentityProvidersBootstrapTest {
     @Test
     void removeProvider_returnsFalse_whenAbsent() {
         when(googleResource.toRepresentation()).thenThrow(new NotFoundException("missing"));
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         boolean removed = bootstrap.removeProvider(REALM, "google");
         assertThat(removed).isFalse();
         verify(googleResource, never()).remove();
@@ -164,7 +177,7 @@ class IdentityProvidersBootstrapTest {
 
     @Test
     void addProvider_rejects_whenCredsMissing() {
-        var bootstrap = new IdentityProvidersBootstrap(admin, noCreds(), tenantRepo);
+        var bootstrap = newBootstrap(noCreds());
         try {
             bootstrap.addProvider(REALM, "google");
             org.junit.jupiter.api.Assertions.fail("expected IllegalStateException");
@@ -176,7 +189,7 @@ class IdentityProvidersBootstrapTest {
 
     @Test
     void addProvider_rejects_unsupportedProvider() {
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         try {
             bootstrap.addProvider(REALM, "facebook");
             org.junit.jupiter.api.Assertions.fail("expected IllegalArgumentException");
@@ -191,7 +204,7 @@ class IdentityProvidersBootstrapTest {
             new PlatformOAuthProperties.Provider("g", "s"),
             new PlatformOAuthProperties.Provider(null, null)
         );
-        var bootstrap = new IdentityProvidersBootstrap(admin, partial, tenantRepo);
+        var bootstrap = newBootstrap(partial);
         assertThat(bootstrap.isAvailable("google")).isTrue();
         assertThat(bootstrap.isAvailable("github")).isFalse();
     }
@@ -202,16 +215,21 @@ class IdentityProvidersBootstrapTest {
             new PlatformOAuthProperties.Provider("g", "s"),
             new PlatformOAuthProperties.Provider(null, null)
         );
-        var bootstrap = new IdentityProvidersBootstrap(admin, partial, tenantRepo);
+        var bootstrap = newBootstrap(partial);
         assertThat(bootstrap.defaultProvidersForNewTenant()).containsExactly("google");
     }
 
     @Test
-    void run_skipsBackfill_whenNoCredsConfigured() {
-        var bootstrap = new IdentityProvidersBootstrap(admin, noCreds(), tenantRepo);
+    void run_skipsIdpCreateBackfill_whenNoCredsConfigured_butStillRepointsExistingRealms() {
+        when(tenantRepo.findAllByDeletedAtIsNullOrderByCreatedAtDesc()).thenReturn(List.of());
+        var bootstrap = newBootstrap(noCreds());
+
+        // Must not throw, and must NOT create any IdP (no creds).
         bootstrap.run(null);
-        // Never reaches realm interactions.
-        verify(tenantRepo, never()).findAllByDeletedAtIsNullOrderByCreatedAtDesc();
+
+        verify(idps, never()).create(any());
+        // The platform realm is always auto-link-repointed on boot, even with no creds.
+        verify(keycloakAdmin).ensureAutoLinkFlow(keycloakProps.platform().realm());
     }
 
     @Test
@@ -234,7 +252,7 @@ class IdentityProvidersBootstrapTest {
         // Operator disabled GitHub previously.
         t.setIdpDisabled("github", true);
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         bootstrap.ensureProviders(t, Set.of("google", "github"));
 
         // Only google should be created; github skipped because it's in the
@@ -267,7 +285,7 @@ class IdentityProvidersBootstrapTest {
         when(googleResource.getMappers()).thenReturn(List.of());
         when(googleResource.addMapper(any())).thenAnswer(inv -> createdResponse());
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         boolean created = bootstrap.ensureHardcodedRoleMapper(REALM, "google", "customer");
 
         assertThat(created).isTrue();
@@ -287,7 +305,7 @@ class IdentityProvidersBootstrapTest {
         when(googleResource.getMappers())
             .thenReturn(List.of(hardcodedRoleMapper("m1", "customer")));
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         boolean created = bootstrap.ensureHardcodedRoleMapper(REALM, "google", "customer");
 
         assertThat(created).isFalse();
@@ -298,7 +316,7 @@ class IdentityProvidersBootstrapTest {
     void removeHardcodedRoleMapper_returnsFalse_whenMissing() {
         when(googleResource.getMappers()).thenReturn(List.of());
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         boolean removed = bootstrap.removeHardcodedRoleMapper(REALM, "google", "customer");
 
         assertThat(removed).isFalse();
@@ -310,7 +328,7 @@ class IdentityProvidersBootstrapTest {
         when(googleResource.getMappers())
             .thenReturn(List.of(hardcodedRoleMapper("m1", "customer")));
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         boolean removed = bootstrap.removeHardcodedRoleMapper(REALM, "google", "customer");
 
         assertThat(removed).isTrue();
@@ -324,7 +342,7 @@ class IdentityProvidersBootstrapTest {
             hardcodedRoleMapper("m2", "provider")
         ));
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         Set<String> roles = bootstrap.listHardcodedRoles(REALM, "google");
 
         assertThat(roles).containsExactlyInAnyOrder("customer", "provider");
@@ -338,7 +356,7 @@ class IdentityProvidersBootstrapTest {
         gh.setAlias("github");
         when(idps.findAll()).thenReturn(List.of(g, gh));
 
-        var bootstrap = new IdentityProvidersBootstrap(admin, fullCreds(), tenantRepo);
+        var bootstrap = newBootstrap(fullCreds());
         Set<String> enabled = bootstrap.listEnabledProviders(REALM);
 
         assertThat(enabled).containsExactly("google", "github");
