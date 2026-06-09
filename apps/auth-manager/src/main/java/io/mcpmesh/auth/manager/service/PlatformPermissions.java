@@ -58,6 +58,8 @@ public final class PlatformPermissions {
         "ROUTES_EDIT",
         "IDP_EDIT",
         "BRANDING_EDIT",
+        "EMAIL_EDIT",
+        "EMAIL_SEND",
         "PERMISSIONS_EDIT",
         "ROLES_EDIT",
         "APPS_EDIT",

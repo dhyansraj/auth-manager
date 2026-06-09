@@ -125,6 +125,13 @@
             <version>20240325.1</version>
         </dependency>
 
+        <!-- jsoup: CSS <style>->inline-attribute pass for transactional email render. -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.17.2</version>
+        </dependency>
+
         <!-- Dev-time conveniences -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

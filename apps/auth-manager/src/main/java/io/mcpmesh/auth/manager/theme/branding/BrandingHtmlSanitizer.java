@@ -46,9 +46,10 @@ public class BrandingHtmlSanitizer {
             .allowAttributes("src", "alt", "width", "height", "loading",
                              "decoding", "srcset", "sizes").onElements("img")
             .allowAttributes("srcset", "sizes", "type", "media").onElements("source")
-            // URL protocols — http/https for cross-tenant CDN assets and
-            // data: for inline base64 images. NO javascript:, NO file:, etc.
-            .allowUrlProtocols("https", "http", "data", "mailto")
+            // URL protocols — http/https for cross-tenant CDN assets, data: for
+            // inline base64 images, cid: for inline email-attachment references.
+            // NO javascript:, NO file:, etc.
+            .allowUrlProtocols("https", "http", "data", "mailto", "cid")
             // Standalone elements are allowed without attributes.
             .allowStandardUrlProtocols()
             .toFactory();

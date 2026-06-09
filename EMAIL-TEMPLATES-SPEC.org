@@ -1,0 +1,109 @@
+#+TITLE: Email Templates — per-tenant transactional email (Phase 2)
+#+AUTHOR: Dhyan Raj
+#+OPTIONS: toc:3 num:t
+#+STARTUP: indent overview
+
+* Intro
+
+With this feature the IAM becomes a *transactional-email service*: it sends
+branded mail on a tenant's behalf — using the tenant's authenticated SendGrid
+domain and =From= address — rendered from templates the tenant owns. Phase 1
+(shipped) added the send engine plus a single platform-default =invitation=
+template. Phase 2 makes templates *tenant-defined* and adds an *app-callable
+send API*, so a tenant's own apps can trigger branded mail through the platform.
+
+* Model
+
+- A template *type* is a TENANT-OWNED entity — not a platform-fixed catalog:
+  ={ tenant_id, typeKey, subject, html, assets }=. Operators do create →
+  download-starter → upload/update → delete. Tenants make only the types they
+  actually need.
+- *No platform variable contract* — pure logic-less Mustache. The app passes a
+  =model= Map; the template uses whatever ={{keys}}= it wants. Both the
+  template and (via the app) the model are the tenant's to keep in sync.
+- =invitation= is a *RESERVED* =typeKey=: the invite flow uses the tenant's
+  =invitation= template if present, else the platform default (phase 1). The
+  same resolve pattern applies to any future IAM-triggered key.
+
+* Storage
+
+- Flyway *V6*:
+  - =auth_manager.email_templates(tenant_id, type_key, subject_template,
+    html_template, timestamps, unique(tenant_id, type_key))=
+  - =auth_manager.email_template_assets(tenant_id, type_key, name,
+    content_type, bytes)=
+- Assets are sent as *CID attachments* (=multipart/related=) — reliable, no
+  hosting, and they survive image-blockers.
+- CSS *must be inlined at render* — mail clients strip =<style>= / =@font-face=,
+  and custom fonts are not supported in mail.
+
+* Engine / render pipeline
+
+- *jMustache* (logic-less). Never FreeMarker — no SSTI on tenant content.
+- render =
+  1. =resolve(tenant override → default)=
+  2. Mustache(model) for *subject* and *html*
+  3. CSS-inline (jsoup)
+  4. expand ={{asset:name}}= → =cid:= refs
+  5. MIME =multipart/related=
+  6. =JavaMailSender= → smtp-relay → SendGrid (tenant =From= / domain)
+- Every send is *audited*.
+
+* Upload pipeline
+
+Mirrors the Branding theme uploader.
+
+- Email tab → Templates section, per type:
+  - *Download starter* (zip = =template.html= + =subject.txt= + =assets/=)
+  - *drop-zip* override
+  - *Update* / *Delete*
+  - *Preview*
+- *Prescan* reuses the Branding sanitizer (=BrandingHtmlSanitizer= /
+  =ThemeValidator=):
+  - allowlist file types: =html=, =txt=, =png=, =jpg=, =gif=, =svg=
+  - strip =<script>= and =on*= handlers
+  - sanitize / reject XSS-in-SVG
+  - reject remote resource URLs
+  - size cap ~5MB
+
+* App-send API
+
+- =POST /api/v1/tenants/{id}/emails/{typeKey}=
+  - body: ={ to, model }=
+  - gated by a new =EMAIL_SEND= permission (granted to app service accounts,
+    like =USER_INVITE=)
+  - *404* if =typeKey= is not defined for the tenant
+  - renders the tenant's template and sends
+- =invitation= stays *internal* (coupled to provisioning) — not exposed here.
+
+* Permissions
+
+- =EMAIL_EDIT= — manage templates (CRUD / upload).
+- =EMAIL_SEND= — call the send API.
+
+* Deferred to pre-prod
+
+NOT built now — dev has no abuse risk.
+
+- *Per-tenant rate limits + daily send quotas.* We send on the tenant's
+  authenticated domain via our SendGrid account, so abuse burns *their* domain
+  reputation AND *our* sender score.
+- *Marketing compliance.* Categorize types =transactional= vs =marketing=. For
+  marketing: inject =List-Unsubscribe= and maintain a per-tenant suppression
+  list (CAN-SPAM / GDPR). Transactional (=invitation=, =payment=) is exempt.
+
+* Implementation slices
+
+- *Slice 1* — the engine end-to-end: DB (V6) + template CRUD + zip upload /
+  prescan + render (Mustache + CSS-inline + CID) + wire the reserved
+  =invitation= key to =resolve(tenant) → default=.
+- *Slice 2* — the =EMAIL_SEND= send API (=POST /emails/{typeKey}=).
+- *Slice 3* — admin-UI Email tab → Templates section (list, =+New=, download
+  starter, drop-zip, update / delete, preview).
+- *Pre-prod hardening* — rate limits + unsubscribe / suppression.
+
+* Security notes
+
+- *Logic-less Mustache only* — no code execution / SSTI.
+- Email HTML is *sanitized on upload*. Recipient mail clients sandbox content,
+  but we strip =script= / handlers / SVG-XSS anyway.
