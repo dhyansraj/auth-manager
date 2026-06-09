@@ -145,7 +145,7 @@ function Row({ k, v }: { k: string, v: React.ReactNode }) {
 // SA permissions catalog. Kept in sync (manually) with TenantWizard's preset;
 // the backend validates against the live usermanagement client-roles set, so
 // anything unknown will be rejected server-side regardless of what we list.
-const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT_VIEW'];
+const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT_VIEW', 'EMAIL_SEND', 'EMAIL_EDIT'];
 
 function AppsTab({ tenantId }: { tenantId: string }) {
   const qc = useQueryClient();

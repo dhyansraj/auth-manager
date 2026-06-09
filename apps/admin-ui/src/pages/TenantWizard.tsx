@@ -87,7 +87,7 @@ const APP_PROFILE_LABELS: Record<AppProfile, string> = {
   SERVICE_ACCOUNT_ONLY: 'Service account only',
 };
 
-const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT_VIEW'];
+const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT_VIEW', 'EMAIL_SEND', 'EMAIL_EDIT'];
 
 const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
