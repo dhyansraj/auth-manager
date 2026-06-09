@@ -102,7 +102,7 @@ export default function TenantDetail() {
       {tab === 'routes' && <RoutesTab slug={t.slug} />}
       {tab === 'identity-providers' && <IdentityProvidersTab slug={t.slug} tenantId={t.id} />}
       {tab === 'branding' && <BrandingTab slug={t.slug} />}
-      {tab === 'email' && <EmailTab tenantId={t.id} />}
+      {tab === 'email' && <EmailTab tenantId={t.id} slug={t.slug} />}
       {tab === 'permissions' && <PermissionsTab id={t.id} slug={t.slug} />}
       {tab === 'roles' && <RolesTab slug={t.slug} />}
       {tab === 'data-services' && <DataServicesTab tenantId={t.id} />}

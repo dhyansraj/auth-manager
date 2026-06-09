@@ -19,6 +19,8 @@ import type {
   TenantEmailUpdateRequest,
   DomainAuthResponse,
   LoginMethodStatus,
+  EmailTemplateSummary,
+  EmailTemplateDetail,
 } from './types';
 
 // The admin-ui is served at /admin/* on every host. The edge maps
@@ -313,6 +315,76 @@ export const api = {
     req<DomainAuthResponse>(`/tenants/${tenantId}/email/domain-auth/revalidate`, {
       method: 'POST',
     }),
+
+  // -------------------------------------------------------------------------
+  // Per-tenant email templates (slug-keyed; zip-driven, same UX as branding)
+  // -------------------------------------------------------------------------
+  listEmailTemplates: (slug: string) =>
+    req<EmailTemplateSummary[]>(`/tenants/${slug}/email-templates`),
+  getEmailTemplate: (slug: string, typeKey: string) =>
+    req<EmailTemplateDetail>(`/tenants/${slug}/email-templates/${encodeURIComponent(typeKey)}`),
+  /** URL of the generic starter zip; download via blob + synthetic anchor. */
+  emailTemplateStarterUrl: (slug: string) =>
+    `${base}/tenants/${slug}/email-templates/starter`,
+  downloadEmailTemplateStarter: async (slug: string): Promise<void> => {
+    const r = await bffFetch(api.emailTemplateStarterUrl(slug));
+    await checkAuth(r);
+    if (!r.ok) throw new ApiError(r.status, r.statusText, null, await r.text());
+    const blob = await r.blob();
+    const filename = r.headers.get('Content-Disposition')?.match(/filename="(.+?)"/)?.[1]
+      || `email-template-starter.zip`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  /**
+   * Create (POST) or replace (PUT) a template from a multipart zip.
+   * Pass {@code exists=true} for an existing typeKey so we PUT, else POST.
+   * Do NOT set Content-Type — the browser sets the multipart boundary.
+   */
+  uploadEmailTemplate: async (
+    slug: string, typeKey: string, file: File, exists: boolean,
+  ): Promise<EmailTemplateDetail> => {
+    const form = new FormData();
+    form.append('file', file);
+    const r = await bffFetch(
+      `${base}/tenants/${slug}/email-templates/${encodeURIComponent(typeKey)}`,
+      { method: exists ? 'PUT' : 'POST', body: form },
+    );
+    await checkAuth(r);
+    if (!r.ok) {
+      const raw = await r.text();
+      let parsed: unknown = raw;
+      try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+      throw new ApiError(r.status, r.statusText, parsed, raw);
+    }
+    if (r.status === 204) return undefined as unknown as EmailTemplateDetail;
+    return r.json() as Promise<EmailTemplateDetail>;
+  },
+  deleteEmailTemplate: (slug: string, typeKey: string) =>
+    req<void>(`/tenants/${slug}/email-templates/${encodeURIComponent(typeKey)}`, {
+      method: 'DELETE',
+    }),
+  /** Fetches the rendered preview HTML (text/html) for an iframe srcdoc. */
+  emailTemplatePreview: async (slug: string, typeKey: string): Promise<string> => {
+    const r = await bffFetch(
+      `${base}/tenants/${slug}/email-templates/${encodeURIComponent(typeKey)}/preview`,
+      { headers: { Accept: 'text/html' } },
+    );
+    await checkAuth(r);
+    if (!r.ok) {
+      const raw = await r.text();
+      let parsed: unknown = raw;
+      try { parsed = JSON.parse(raw); } catch { /* not JSON */ }
+      throw new ApiError(r.status, r.statusText, parsed, raw);
+    }
+    return r.text();
+  },
 
   // -------------------------------------------------------------------------
   // Per-tenant login methods

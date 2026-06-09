@@ -1,6 +1,7 @@
 package io.mcpmesh.auth.manager.email.templates;
 
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.email.TransactionalEmailService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -47,13 +48,16 @@ public class EmailTemplateController {
     private final TenantService tenants;
     private final EmailTemplateService service;
     private final EmailTemplateZip zip;
+    private final TransactionalEmailService emailService;
 
     public EmailTemplateController(TenantService tenants,
                                    EmailTemplateService service,
-                                   EmailTemplateZip zip) {
+                                   EmailTemplateZip zip,
+                                   TransactionalEmailService emailService) {
         this.tenants = tenants;
         this.service = service;
         this.zip = zip;
+        this.emailService = emailService;
     }
 
     public record TemplateSummary(String typeKey, boolean hasAssets, Instant updatedAt) {}
@@ -98,6 +102,19 @@ public class EmailTemplateController {
             .map(TemplateAsset::name).toList();
         return new TemplateDetail(t.getTypeKey(), t.getHtmlTemplate(),
             t.getSubjectTemplate(), names, t.getUpdatedAt());
+    }
+
+    @GetMapping(path = "/{typeKey}/preview", produces = MediaType.TEXT_HTML_VALUE)
+    @PreAuthorize("@perms.hasOnTenant(#slug, 'TENANT_VIEW')")
+    public ResponseEntity<String> preview(@PathVariable String slug, @PathVariable String typeKey) {
+        Tenant tenant = tenants.getBySlug(slug);
+        EmailTemplateService.requireValidTypeKey(typeKey);
+        String html = emailService.renderPreview(tenant, typeKey)
+            .orElseThrow(() -> new ResponseStatusException(
+                HttpStatus.NOT_FOUND, "No email template for type: " + typeKey));
+        return ResponseEntity.ok()
+            .contentType(MediaType.TEXT_HTML)
+            .body(html);
     }
 
     @PostMapping(path = "/{typeKey}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

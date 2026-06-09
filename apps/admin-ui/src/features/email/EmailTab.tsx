@@ -8,12 +8,14 @@ import type {
   DomainAuthCname,
   DomainAuthStatus,
 } from '../../api/types';
+import EmailTemplatesCard from './EmailTemplatesCard';
 
 interface Props {
   tenantId: string;
+  slug: string;
 }
 
-export default function EmailTab({ tenantId }: Props) {
+export default function EmailTab({ tenantId, slug }: Props) {
   // TENANT_EDIT gates writes (PUT /email, POST /domain-auth); reads (GET) need
   // only TENANT_VIEW which the tab is already gated on at TenantDetail.
   const canManage = usePermission('TENANT_EDIT');
@@ -95,6 +97,10 @@ export default function EmailTab({ tenantId }: Props) {
           }}
         />
       )}
+
+      <hr className="border-slate-200" />
+
+      <EmailTemplatesCard slug={slug} />
     </div>
   );
 }

@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +45,10 @@ public class TransactionalEmailService {
     /** Matches {@code {{asset:NAME}}} and {@code cid:NAME} (NAME = [a-zA-Z0-9_-]+). */
     private static final Pattern ASSET_REF =
         Pattern.compile("\\{\\{\\s*asset:([a-zA-Z0-9_-]+)\\s*\\}\\}|cid:([a-zA-Z0-9_-]+)");
+
+    /** Matches a leftover Mustache variable tag {@code {{ var }}} for preview substitution. */
+    private static final Pattern LEFTOVER_VAR =
+        Pattern.compile("\\{\\{\\s*([#/^>!&]?\\s*[\\w.-]+)\\s*\\}\\}");
 
     private final JavaMailSender mailSender;
     private final SmtpProperties smtpProps;
@@ -159,6 +164,75 @@ public class TransactionalEmailService {
 
         String subject = "You've been invited to " + displayName;
         send(tenant, EmailTemplateService.INVITATION_KEY, toAddress, subject, model);
+    }
+
+    /**
+     * Renders the tenant's stored template for {@code typeKey} as standalone HTML
+     * for preview in a browser/iframe (admin UI). There is no real model, so:
+     * unresolved {@code {{var}}} tags become a visible {@code [var]} placeholder,
+     * CSS is inlined, and every {@code {{asset:name}}} / {@code cid:name} reference
+     * is rewritten to an inline {@code data:} URI from the stored asset bytes (so
+     * no mail client is needed to resolve CID parts).
+     *
+     * @return rendered HTML, or {@link Optional#empty()} if no template resolves.
+     */
+    public Optional<String> renderPreview(Tenant tenant, String typeKey) {
+        Optional<ResolvedTemplate> resolved = templates.resolve(tenant, typeKey);
+        if (resolved.isEmpty()) {
+            return Optional.empty();
+        }
+        ResolvedTemplate tpl = resolved.get();
+
+        String html;
+        try {
+            // Render with an empty model, then surface unresolved tags as [var].
+            html = mustache.compile(tpl.htmlTemplate()).execute(Map.of());
+        } catch (Exception e) {
+            // jMustache throws on a missing section/var; fall back to the raw body
+            // so the operator still sees something, with leftover tags substituted.
+            html = tpl.htmlTemplate();
+        }
+        html = substituteLeftoverVars(html);
+        html = cssInliner.inline(html);
+        html = inlineAssetsAsDataUris(html, tpl.assets());
+        return Optional.of(html);
+    }
+
+    /** Replaces any leftover {@code {{var}}} tag with a visible {@code [var]} marker. */
+    private String substituteLeftoverVars(String html) {
+        if (html == null) return null;
+        Matcher m = LEFTOVER_VAR.matcher(html);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String name = m.group(1).replaceAll("[#/^>!&]", "").trim();
+            m.appendReplacement(sb, Matcher.quoteReplacement("[" + name + "]"));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /** Rewrites {@code {{asset:name}}} / {@code cid:name} refs to inline data: URIs. */
+    private String inlineAssetsAsDataUris(String html, List<TemplateAsset> assets) {
+        if (html == null || assets == null || assets.isEmpty()) return html;
+        Map<String, TemplateAsset> byName = new LinkedHashMap<>();
+        for (TemplateAsset a : assets) {
+            byName.put(a.name(), a);
+        }
+        Matcher m = ASSET_REF.matcher(html);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String name = m.group(1) != null ? m.group(1) : m.group(2);
+            TemplateAsset asset = byName.get(name);
+            if (asset == null) {
+                m.appendReplacement(sb, Matcher.quoteReplacement(m.group()));
+                continue;
+            }
+            String dataUri = "data:" + asset.contentType() + ";base64,"
+                + Base64.getEncoder().encodeToString(asset.bytes());
+            m.appendReplacement(sb, Matcher.quoteReplacement(dataUri));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     // -- helpers --------------------------------------------------------------

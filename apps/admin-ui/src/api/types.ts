@@ -318,6 +318,25 @@ export interface DomainAuthResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Per-tenant email templates (slug-keyed; zip-driven, same UX as branding)
+// ---------------------------------------------------------------------------
+
+/** One row in GET /tenants/{slug}/email-templates. */
+export interface EmailTemplateSummary {
+  typeKey: string;
+  hasAssets: boolean;
+  updatedAt: string | null;
+}
+
+/** Detail returned by GET /tenants/{slug}/email-templates/{typeKey}. */
+export interface EmailTemplateDetail {
+  typeKey: string;
+  subjectTemplate: string | null;
+  htmlTemplate: string | null;
+  assetNames: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Per-tenant login methods (username/password toggle + IdP listing)
 // ---------------------------------------------------------------------------
 
