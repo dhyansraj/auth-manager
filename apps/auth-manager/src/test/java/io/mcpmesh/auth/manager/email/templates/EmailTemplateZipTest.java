@@ -1,7 +1,6 @@
 package io.mcpmesh.auth.manager.email.templates;
 
 import io.mcpmesh.auth.manager.theme.ThemeValidationException;
-import io.mcpmesh.auth.manager.theme.branding.BrandingHtmlSanitizer;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -17,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Prescan tests for the email-template zip parser. */
 class EmailTemplateZipTest {
 
-    private final EmailTemplateZip zip = new EmailTemplateZip(new BrandingHtmlSanitizer());
+    private final EmailTemplateZip zip = new EmailTemplateZip(new EmailHtmlSanitizer());
 
     private static byte[] makeZip(Map<String, byte[]> entries) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -100,6 +99,55 @@ class EmailTemplateZipTest {
         entries.put("../../etc/passwd", bytes("x"));
         assertThatThrownBy(() -> zip.parse(makeZip(entries)))
             .isInstanceOf(ThemeValidationException.class);
+    }
+
+    @Test
+    void realEmailTemplate_keepsTablesButtonInlineCss_andMustache() throws Exception {
+        String html = """
+            <table cellpadding="0" cellspacing="0" align="center" bgcolor="#f4f5f7" width="600">
+              <tr>
+                <td valign="top" style="padding:24px; color:#111827;">
+                  {{#inviterName}}<p>Invited by {{inviterName}}</p>{{/inviterName}}
+                  <p>Sent to {{recipientEmail}}</p>
+                  <table cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td bgcolor="#4f46e5" align="center" style="border-radius:8px;">
+                        <a href="{{ctaUrl}}" style="display:inline-block; padding:14px 28px; color:#ffffff; text-decoration:none;">Accept</a>
+                      </td>
+                    </tr>
+                  </table>
+                  <img src="{{asset:logo}}" alt="logo" width="48">
+                </td>
+              </tr>
+            </table>
+            """;
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("template.html", bytes(html));
+        byte[] png = {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+        entries.put("assets/logo.png", png);
+
+        EmailTemplateZip.Parsed parsed = zip.parse(makeZip(entries));
+        String out = parsed.html();
+
+        // Table layout survives.
+        assertThat(out).contains("<table");
+        assertThat(out).contains("<td");
+        // Presentational attributes survive.
+        assertThat(out).contains("cellpadding=\"0\"");
+        assertThat(out).contains("bgcolor=\"#4f46e5\"");
+        assertThat(out).contains("align=\"center\"");
+        assertThat(out).contains("valign=\"top\"");
+        // Inline CSS survives verbatim.
+        assertThat(out).contains("padding:14px 28px");
+        assertThat(out).contains("border-radius:8px");
+        // Table-button anchor with its Mustache href restored.
+        assertThat(out).contains("href=\"{{ctaUrl}}\"");
+        // Asset img rewritten to cid:.
+        assertThat(out).contains("cid:logo");
+        // Mustache section + var tags intact.
+        assertThat(out).contains("{{#inviterName}}");
+        assertThat(out).contains("{{/inviterName}}");
+        assertThat(out).contains("{{recipientEmail}}");
     }
 
     @Test

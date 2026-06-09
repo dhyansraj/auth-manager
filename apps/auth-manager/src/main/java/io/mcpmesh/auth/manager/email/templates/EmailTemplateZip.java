@@ -2,7 +2,6 @@ package io.mcpmesh.auth.manager.email.templates;
 
 import io.mcpmesh.auth.manager.theme.ThemeValidationException;
 import io.mcpmesh.auth.manager.theme.ValidationResult;
-import io.mcpmesh.auth.manager.theme.branding.BrandingHtmlSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -32,9 +31,10 @@ import java.util.zip.ZipOutputStream;
  *   assets/&lt;files&gt; (optional inline images)
  * </pre>
  *
- * <p>Prescan reuses the branding sanitizer for the HTML body and the same
- * structural guards as the theme validator (size caps, path traversal,
- * extension allowlist). Validation failures are surfaced via
+ * <p>Prescan runs the email-grade {@link EmailHtmlSanitizer} on the HTML body
+ * (permissive on tables/CSS, strict on scripts/links) plus the same structural
+ * guards as the theme validator (size caps, path traversal, extension
+ * allowlist). Validation failures are surfaced via
  * {@link ThemeValidationException} so they ride the existing 400 response
  * shape.
  */
@@ -73,20 +73,29 @@ public class EmailTemplateZip {
     private static final java.util.regex.Pattern MUSTACHE_TAG =
         java.util.regex.Pattern.compile("\\{\\{[^}]*\\}\\}");
 
-    private final BrandingHtmlSanitizer sanitizer;
+    private final EmailHtmlSanitizer sanitizer;
 
-    public EmailTemplateZip(BrandingHtmlSanitizer sanitizer) {
+    public EmailTemplateZip(EmailHtmlSanitizer sanitizer) {
         this.sanitizer = sanitizer;
     }
 
     /**
      * Replaces Mustache tags with opaque placeholder tokens before HTML
-     * sanitization (which otherwise neutralises {@code "{{"}), then restores the
-     * original tags verbatim afterward.
+     * sanitization, then restores the original tags verbatim afterward.
+     *
+     * <p>jsoup's {@link EmailHtmlSanitizer} restricts {@code href}/{@code src}
+     * to a protocol allowlist, so a raw {@code href="{{ctaUrl}}"} would be
+     * dropped (it is neither http/https nor cid/data). To survive that check,
+     * Mustache tags that sit inside an attribute value are shielded with a
+     * <em>URL-shaped</em> sentinel ({@code https://__mustacheN__/}) that passes
+     * the protocol filter; tags in text content use a plain word token. Both
+     * are restored to the original {@code {{...}}} after sanitization.
      */
     static final class MustacheShield {
         private static final String TOKEN_PREFIX = "MUSTACHEx";
         private static final String TOKEN_SUFFIX = "xENDMUSTACHE";
+        private static final String URL_PREFIX = "https://__mustache";
+        private static final String URL_SUFFIX = "__/";
         private final String shielded;
         private final List<String> tags;
 
@@ -102,11 +111,26 @@ public class EmailTemplateZip {
             while (m.find()) {
                 int idx = tags.size();
                 tags.add(m.group());
-                m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(
-                    TOKEN_PREFIX + idx + TOKEN_SUFFIX));
+                String token = inAttributeValue(html, m.start())
+                    ? URL_PREFIX + idx + URL_SUFFIX
+                    : TOKEN_PREFIX + idx + TOKEN_SUFFIX;
+                m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(token));
             }
             m.appendTail(sb);
             return new MustacheShield(sb.toString(), tags);
+        }
+
+        /**
+         * Heuristic: a Mustache tag is "in an attribute value" when, scanning
+         * backwards to the nearest unescaped {@code <} or {@code >}, we are
+         * still inside an open tag (last seen {@code <} before any {@code >}).
+         * That is good enough for our well-formed starter/tenant templates and
+         * keeps text-context tags (the common case) on the plain word token.
+         */
+        private static boolean inAttributeValue(String html, int pos) {
+            int lt = html.lastIndexOf('<', pos);
+            int gt = html.lastIndexOf('>', pos);
+            return lt > gt;
         }
 
         String shielded() { return shielded; }
@@ -114,6 +138,7 @@ public class EmailTemplateZip {
         String restore(String sanitized) {
             String out = sanitized;
             for (int i = 0; i < tags.size(); i++) {
+                out = out.replace(URL_PREFIX + i + URL_SUFFIX, tags.get(i));
                 out = out.replace(TOKEN_PREFIX + i + TOKEN_SUFFIX, tags.get(i));
             }
             return out;
@@ -151,12 +176,13 @@ public class EmailTemplateZip {
             throw new ThemeValidationException(errors);
         }
 
-        // Sanitize the HTML body: strips <script>, on* handlers, JS-protocol
-        // URLs. The OWASP sanitizer neutralises "{{" (template-injection
-        // defense) and won't keep a Mustache tag inside an href/src, so we
-        // first rewrite {{asset:NAME}} -> cid:NAME (a real, allowlisted URL
-        // form) and protect the remaining {{ }} tags behind placeholder tokens
-        // across the sanitize pass, restoring them afterwards.
+        // Sanitize the HTML body with the email-grade jsoup sanitizer: keeps
+        // tables, presentational attrs, and inline CSS verbatim while stripping
+        // <script>, on* handlers, frames/forms/svg, and JS-protocol URLs. The
+        // protocol filter would drop a raw {{...}} inside an href/src, so we
+        // first rewrite {{asset:NAME}} -> cid:NAME (an allowlisted img URL form)
+        // and protect the remaining {{ }} tags behind placeholders (URL-shaped
+        // for attribute context) across the sanitize pass, restoring them after.
         String rawHtml = new String(htmlBytes, StandardCharsets.UTF_8);
         String lower = rawHtml.toLowerCase(Locale.ROOT);
         if (lower.contains("<script") || lower.matches("(?s).*\\son[a-z]+\\s*=.*")) {
