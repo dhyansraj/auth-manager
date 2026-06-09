@@ -3,8 +3,10 @@ package io.mcpmesh.auth.manager.service;
 import io.mcpmesh.auth.manager.api.dto.CreateUserRequest;
 import io.mcpmesh.auth.manager.api.dto.UserResponse;
 import io.mcpmesh.auth.manager.audit.AuditService;
+import io.mcpmesh.auth.manager.authflow.LoginMethodService;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.email.TransactionalEmailService;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import org.keycloak.representations.idm.UserRepresentation;
 import org.slf4j.Logger;
@@ -35,11 +37,16 @@ public class UserManagementService {
     private final TenantService tenants;
     private final KeycloakAdminService keycloak;
     private final AuditService audit;
+    private final LoginMethodService loginMethods;
+    private final TransactionalEmailService transactionalEmail;
 
-    public UserManagementService(TenantService tenants, KeycloakAdminService keycloak, AuditService audit) {
+    public UserManagementService(TenantService tenants, KeycloakAdminService keycloak, AuditService audit,
+                                 LoginMethodService loginMethods, TransactionalEmailService transactionalEmail) {
         this.tenants = tenants;
         this.keycloak = keycloak;
         this.audit = audit;
+        this.loginMethods = loginMethods;
+        this.transactionalEmail = transactionalEmail;
     }
 
     @Transactional(readOnly = true)
@@ -158,12 +165,7 @@ public class UserManagementService {
             }
             boolean sendInvite = req.sendInvite() == null ? true : req.sendInvite();
             if (sendInvite) {
-                try {
-                    keycloak.sendExecuteActionsEmail(t.getRealmName(), userId,
-                        List.of("UPDATE_PASSWORD"), 86400);
-                } catch (Exception e) {
-                    log.warn("Failed to send invite email to {}: {}", req.email(), e.getMessage());
-                }
+                sendInvite(t, userId, req.email());
             }
         } catch (Exception e) {
             audit.recordFailure(actor, ACTOR_KIND, tenantId,
@@ -208,9 +210,60 @@ public class UserManagementService {
 
     public void resendInvite(UUID tenantId, String userId, String actor) {
         Tenant t = tenants.get(tenantId);
-        keycloak.sendExecuteActionsEmail(t.getRealmName(), userId, List.of("UPDATE_PASSWORD"), 86400);
+        UserRepresentation u = keycloak.getUser(t.getRealmName(), userId);
+        sendInvite(t, userId, u == null ? null : u.getEmail());
         audit.recordSuccess(actor, ACTOR_KIND, tenantId,
             "user.invite.resend", "user", userId, null, Map.of());
+    }
+
+    /**
+     * Sends the appropriate invite for the tenant's login posture:
+     * <ul>
+     *   <li>Password tenant ({@code isPasswordEnabled=true}): KC's
+     *       UPDATE_PASSWORD action email (unchanged legacy behavior).</li>
+     *   <li>Brokered / Google-only tenant ({@code isPasswordEnabled=false}):
+     *       mark the user's email verified (Google re-verifies at login, so
+     *       they're not stuck on KC's verify-email gate) and send the branded
+     *       "you've been invited — sign in" email via
+     *       {@link TransactionalEmailService}.</li>
+     * </ul>
+     *
+     * <p>A mail-send failure is logged at WARN and swallowed — it must never
+     * fail the caller's primary operation (user creation / role update).
+     */
+    private void sendInvite(Tenant t, String userId, String email) {
+        boolean passwordEnabled;
+        try {
+            passwordEnabled = loginMethods.isPasswordEnabled(t.getRealmName());
+        } catch (Exception e) {
+            // If we can't read the posture, fall back to the legacy KC path.
+            log.warn("sendInvite: failed to read login posture for realm {} ({}); "
+                + "defaulting to UPDATE_PASSWORD", t.getRealmName(), e.getMessage());
+            passwordEnabled = true;
+        }
+
+        if (passwordEnabled) {
+            try {
+                keycloak.sendExecuteActionsEmail(t.getRealmName(), userId,
+                    List.of("UPDATE_PASSWORD"), 86400);
+            } catch (Exception e) {
+                log.warn("Failed to send invite email to {}: {}", email, e.getMessage());
+            }
+            return;
+        }
+
+        // Brokered / Google-only: no password to set. Mark verified + send branded invite.
+        try {
+            keycloak.setEmailVerified(t.getRealmName(), userId, true);
+        } catch (Exception e) {
+            log.warn("sendInvite: failed to set emailVerified for user {} in realm {}: {}",
+                userId, t.getRealmName(), e.getMessage());
+        }
+        try {
+            transactionalEmail.sendInvitation(t, email, null);
+        } catch (Exception e) {
+            log.warn("Failed to send branded invitation to {}: {}", email, e.getMessage());
+        }
     }
 
     private void validateRoles(java.util.Collection<String> roles) {

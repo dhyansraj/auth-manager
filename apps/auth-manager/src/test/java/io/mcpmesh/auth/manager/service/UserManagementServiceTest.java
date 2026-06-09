@@ -2,7 +2,9 @@ package io.mcpmesh.auth.manager.service;
 
 import io.mcpmesh.auth.manager.api.dto.CreateUserRequest;
 import io.mcpmesh.auth.manager.audit.AuditService;
+import io.mcpmesh.auth.manager.authflow.LoginMethodService;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.email.TransactionalEmailService;
 import io.mcpmesh.auth.manager.keycloak.KeycloakAdminService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,6 +40,8 @@ class UserManagementServiceTest {
     private TenantService tenants;
     private KeycloakAdminService keycloak;
     private AuditService audit;
+    private LoginMethodService loginMethods;
+    private TransactionalEmailService transactionalEmail;
     private UserManagementService svc;
 
     @BeforeEach
@@ -45,6 +49,8 @@ class UserManagementServiceTest {
         tenants = mock(TenantService.class);
         keycloak = mock(KeycloakAdminService.class);
         audit = mock(AuditService.class);
+        loginMethods = mock(LoginMethodService.class);
+        transactionalEmail = mock(TransactionalEmailService.class);
 
         Tenant t = mock(Tenant.class);
         when(t.getRealmName()).thenReturn(REALM);
@@ -65,7 +71,7 @@ class UserManagementServiceTest {
         when(keycloak.getUserClientRoles(REALM, USER_ID, CLIENT))
             .thenReturn(new ArrayList<>(List.of("user-viewer")));
 
-        svc = new UserManagementService(tenants, keycloak, audit);
+        svc = new UserManagementService(tenants, keycloak, audit, loginMethods, transactionalEmail);
     }
 
     @Test

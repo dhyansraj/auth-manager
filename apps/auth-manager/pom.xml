@@ -73,6 +73,23 @@
             <artifactId>keycloak-admin-client</artifactId>
         </dependency>
 
+        <!-- Transactional email: JavaMailSender for auth-manager-sent mail
+             (branded invitations etc.) routed through the in-cluster
+             smtp-relay (unauthenticated internal SMTP). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
+        <!-- Logic-less Mustache templating for tenant-facing transactional
+             email templates. Deliberately NOT FreeMarker: no code execution /
+             SSTI surface in tenant-rendered content. -->
+        <dependency>
+            <groupId>com.samskivert</groupId>
+            <artifactId>jmustache</artifactId>
+            <version>1.16</version>
+        </dependency>
+
         <!-- YAML serialization for tenant manifest export. Version managed by
              Spring Boot's Jackson BOM. -->
         <dependency>

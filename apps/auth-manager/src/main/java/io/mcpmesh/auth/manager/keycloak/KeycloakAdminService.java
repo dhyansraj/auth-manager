@@ -1346,6 +1346,19 @@ public class KeycloakAdminService {
     }
 
     /**
+     * Sets the {@code emailVerified} flag on an existing user. Used by the
+     * brokered-invite path: a Google-only tenant user has no password to set,
+     * so we mark their email verified (Google re-verifies at login) to keep
+     * them off KC's verify-email gate.
+     */
+    public void setEmailVerified(String realmName, String userId, boolean verified) {
+        var userResource = admin.realm(realmName).users().get(userId);
+        UserRepresentation rep = userResource.toRepresentation();
+        rep.setEmailVerified(verified);
+        userResource.update(rep);
+    }
+
+    /**
      * Assigns a client role to a user. Idempotent: KC silently no-ops if the
      * user already has the role.
      */
