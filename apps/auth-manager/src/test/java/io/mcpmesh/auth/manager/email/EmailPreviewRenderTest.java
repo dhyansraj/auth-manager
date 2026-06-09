@@ -76,6 +76,43 @@ class EmailPreviewRenderTest {
     }
 
     @Test
+    void preview_evaluatesSectionsAndLoops_withoutTagSoupOrThrow() {
+        // Conditional ({{#}}/{{^}}) + a loop + a flat var, none of which have data.
+        String html = """
+            <body>
+              {{#inviterName}}{{inviterName}} thinks you'd get a lot out of Wisefolio.{{/inviterName}}\
+            {{^inviterName}}You've been invited to join Wisefolio.{{/inviterName}} \
+            — sent to {{recipientEmail}}
+              <table>{{#holdings}}<tr><td>{{symbol}}</td></tr>{{/holdings}}</table>
+            </body>
+            """;
+        ResolvedTemplate tpl = new ResolvedTemplate(
+            "invitation", html, null, List.of(), true);
+        when(templates.resolve(tenant, "invitation")).thenReturn(Optional.of(tpl));
+
+        Optional<String> out = service.renderPreview(tenant, "invitation");
+        assertThat(out).isPresent();
+        String rendered = out.get();
+
+        // No raw Mustache markers and no doubled placeholder tag-soup.
+        assertThat(rendered).doesNotContain("{{");
+        assertThat(rendered).doesNotContain("[inviterName][inviterName]");
+        assertThat(rendered).doesNotContain("[inviterName]");
+
+        // Exactly one coherent rendering of the conditional: the "no-data"
+        // (inverted) branch renders; the populated branch is absent.
+        assertThat(rendered).contains("You've been invited to join Wisefolio.");
+        assertThat(rendered).doesNotContain("thinks you'd get a lot out of Wisefolio.");
+
+        // The loop body is skipped (no data), not surfaced as raw markers.
+        assertThat(rendered).doesNotContain("[symbol]");
+        assertThat(rendered).doesNotContain("<tr>");
+
+        // Flat var surfaced as a readable placeholder.
+        assertThat(rendered).contains("[recipientEmail]");
+    }
+
+    @Test
     void preview_returnsEmpty_whenNoTemplateResolves() {
         when(templates.resolve(tenant, "missing")).thenReturn(Optional.empty());
         assertThat(service.renderPreview(tenant, "missing")).isEmpty();
