@@ -47,7 +47,11 @@ interface WizardBasics {
 /**
  * Per-tenant email config captured in the wizard. Sent as a PUT /email after
  * tenant create. All fields optional — blank means "use platform defaults".
- * No domain-auth here; operator handles that post-creation via the Email tab.
+ * When the From address uses a branded (non-platform-default) domain, the
+ * wizard auto-runs SendGrid+Cloudflare domain authentication during provisioning
+ * (start → push DKIM CNAMEs → poll revalidate) before applying the branded From.
+ * Domains already in our CF account validate inline; others surface manual
+ * CNAMEs and the branded From applies later from the tenant's Email tab.
  */
 interface WizardEmail {
   fromAddress: string;
@@ -55,13 +59,17 @@ interface WizardEmail {
   replyToAddress: string;
 }
 
-type ProgressStatus = 'pending' | 'in_progress' | 'success' | 'error';
+// 'warning' is a non-failing info state (e.g. domain registered but validation
+// still pending / manual CNAMEs to add) — rendered amber, NOT the red ✗ failure.
+type ProgressStatus = 'pending' | 'in_progress' | 'success' | 'warning' | 'error';
 
 interface ProgressRow {
   key: string;
   label: string;
   status: ProgressStatus;
   detail?: string;
+  /** Optional CNAME records to render under the row (manual DNS-add case). */
+  cnames?: { host: string; target: string }[];
 }
 
 interface CreatedAppInfo {
@@ -83,6 +91,25 @@ const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT
 
 const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Platform default mail domain — a From on this domain is already
+// SendGrid-authenticated, so the wizard skips domain-auth for it.
+const PLATFORM_DEFAULT_DOMAIN = 'mcp-mesh.io';
+
+/** Lowercased domain part of an email address, or '' if not parseable. */
+function emailDomain(address: string): string {
+  const at = address.trim().toLowerCase().lastIndexOf('@');
+  return at >= 0 ? address.trim().toLowerCase().slice(at + 1) : '';
+}
+
+/**
+ * True when the From address carries a branded (custom) domain that needs
+ * SendGrid+CF domain authentication before it can be applied as the From.
+ */
+function needsDomainAuth(fromAddress: string): boolean {
+  const d = emailDomain(fromAddress);
+  return d.length > 0 && d !== PLATFORM_DEFAULT_DOMAIN;
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -117,6 +144,9 @@ export default function TenantWizard() {
   const [createdApps, setCreatedApps] = useState<CreatedAppInfo[]>([]);
   const [finished, setFinished] = useState(false);
   const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
+  // Carries any non-failing domain-auth warning rows onto the success page so
+  // the operator still sees the CNAMEs / pending-validation note after finishing.
+  const [emailPending, setEmailPending] = useState<ProgressRow[]>([]);
 
   // ---- resume mode (prefill from existing non-ACTIVE tenant) --------------
   // Operator clicks "Resume" on a non-ACTIVE tenant from the Tenants list.
@@ -311,6 +341,10 @@ export default function TenantWizard() {
     const anyEmailOverride = !!(
       email.fromAddress.trim() || email.fromDisplayName.trim() || email.replyToAddress.trim()
     );
+    const brandedDomain = needsDomainAuth(email.fromAddress) ? emailDomain(email.fromAddress) : '';
+    if (brandedDomain) {
+      rows.push({ key: 'domain-auth', label: `Authenticate email domain '${brandedDomain}'`, status: 'pending' });
+    }
     if (anyEmailOverride) {
       rows.push({ key: 'email', label: 'Apply email config', status: 'pending' });
     }
@@ -467,17 +501,120 @@ export default function TenantWizard() {
       if (!ok) { setGenerating(false); return; }
     }
 
-    // ---- 4. Email config (only when operator set any override) -------------
-    if (anyEmailOverride) {
-      const ok = await runStep(rows, setProgress, 'email', async () => {
+    // ---- 4a. Domain auth (only when From uses a branded, non-default domain) -
+    // SendGrid registers the domain, auto-pushes the DKIM CNAMEs to Cloudflare
+    // (when the zone is in our CF account), and we poll revalidate until the
+    // domain is validated. Validation is REQUIRED before PUT /email accepts the
+    // branded From, so we track the outcome and gate the email apply on it.
+    let domainValidated = false;          // domain is SendGrid-validated → branded From can apply
+    let domainAuthHardFailed = false;     // start 5xx / SendGrid not configured → real error
+    if (brandedDomain) {
+      const key = 'domain-auth';
+      let updated = rows.map(r => r.key === key ? { ...r, status: 'in_progress' as ProgressStatus } : r);
+      setProgress(updated);
+      rows.length = 0; rows.push(...updated);
+      try {
+        let resp = await api.startDomainAuth(tenant!.id, brandedDomain);
+
+        // Poll revalidate while propagation is pending (CF-zone pushes settle
+        // fast). Skip polling entirely if start already came back valid.
+        for (let attempt = 0; resp.valid !== true && attempt < 4; attempt++) {
+          await sleep(2500);
+          try {
+            resp = await api.revalidateDomainAuth(tenant!.id);
+          } catch {
+            break; // transient revalidate error — stop polling, fall through to pending UX
+          }
+        }
+
+        domainValidated = resp.valid === true;
+        const autoPushed = resp.cnames.length > 0 && resp.cnames.every(c => c.pushed);
+        const manualCnames = resp.cnames
+          .filter(c => !c.pushed)
+          .map(c => ({ host: c.host, target: c.target }));
+
+        if (domainValidated) {
+          const detail = autoPushed
+            ? 'DKIM CNAMEs pushed to Cloudflare; domain validated'
+            : 'Domain validated';
+          updated = rows.map(r => r.key === key ? { ...r, status: 'success' as ProgressStatus, detail } : r);
+        } else if (autoPushed) {
+          // Pushed to CF but not yet validated — propagation still settling.
+          updated = rows.map(r => r.key === key ? {
+            ...r,
+            status: 'warning' as ProgressStatus,
+            detail: 'DKIM CNAMEs pushed to Cloudflare; validation pending (usually completes within a minute)',
+          } : r);
+        } else {
+          // Zone not in our CF account — operator must add these CNAMEs manually.
+          updated = rows.map(r => r.key === key ? {
+            ...r,
+            status: 'warning' as ProgressStatus,
+            detail: 'Add these CNAME records at your DNS host, then Re-verify from the Email tab:',
+            cnames: manualCnames.length > 0
+              ? manualCnames
+              : resp.cnames.map(c => ({ host: c.host, target: c.target })),
+          } : r);
+        }
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+      } catch (e) {
+        // Hard failure (SendGrid not configured / 5xx). Surface a real error but
+        // leave the tenant created — operator retries from the Email tab.
+        domainAuthHardFailed = true;
+        const detail = e instanceof ApiError ? e.message : String(e);
+        updated = rows.map(r => r.key === key ? { ...r, status: 'error' as ProgressStatus, detail } : r);
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+      }
+    }
+
+    // ---- 4b. Email config (only when operator set any override) -------------
+    // If the From needs a branded domain that isn't validated yet, apply only
+    // the parts that don't require the authenticated domain (displayName /
+    // replyTo) and mark the step as a non-failing info note — the branded From
+    // applies automatically once validation completes.
+    if (anyEmailOverride && !domainAuthHardFailed) {
+      const brandedFromPending = brandedDomain.length > 0 && !domainValidated;
+      const key = 'email';
+      let updated = rows.map(r => r.key === key ? { ...r, status: 'in_progress' as ProgressStatus } : r);
+      setProgress(updated);
+      rows.length = 0; rows.push(...updated);
+      try {
         await api.updateTenantEmail(tenant!.id, {
-          fromAddress: email.fromAddress.trim() === '' ? null : email.fromAddress.trim(),
+          // Hold back the branded From until the domain is validated; everything
+          // else (displayName / replyTo) is safe to apply now.
+          fromAddress: brandedFromPending
+            ? null
+            : (email.fromAddress.trim() === '' ? null : email.fromAddress.trim()),
           fromDisplayName: email.fromDisplayName.trim() === '' ? null : email.fromDisplayName.trim(),
           replyToAddress: email.replyToAddress.trim() === '' ? null : email.replyToAddress.trim(),
         });
-      });
-      if (!ok) { setGenerating(false); return; }
+        if (brandedFromPending) {
+          const autoPushedNote = (rows.find(r => r.key === 'domain-auth')?.cnames?.length ?? 0) > 0
+            ? 'CNAMEs listed above to add manually'
+            : 'CNAMEs pushed to Cloudflare';
+          updated = rows.map(r => r.key === key ? {
+            ...r,
+            status: 'warning' as ProgressStatus,
+            detail: `Domain registered (${autoPushedNote}); your branded From '${email.fromAddress.trim()}' applies automatically once validation completes — finish from the tenant's Email tab (Re-verify) once it's green (usually within a minute).`,
+          } : r);
+        } else {
+          updated = rows.map(r => r.key === key ? { ...r, status: 'success' as ProgressStatus } : r);
+        }
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+      } catch (e) {
+        const detail = e instanceof ApiError ? e.message : String(e);
+        updated = rows.map(r => r.key === key ? { ...r, status: 'error' as ProgressStatus, detail } : r);
+        setProgress(updated);
+        rows.length = 0; rows.push(...updated);
+        setGenerating(false);
+        return;
+      }
     }
+    // Domain-auth hard failure shouldn't block manifest/theme — but the email
+    // step can't run without a working domain-auth, so we skip it and continue.
 
     // ---- 5. Manifest --------------------------------------------------------
     if (manifestFile) {
@@ -496,6 +633,9 @@ export default function TenantWizard() {
       if (!ok) { setGenerating(false); return; }
     }
 
+    setEmailPending(rows.filter(r =>
+      (r.key === 'domain-auth' || r.key === 'email') && r.status === 'warning'
+    ));
     setGenerating(false);
     setFinished(true);
     clearDraft();
@@ -515,6 +655,7 @@ export default function TenantWizard() {
     setFinished(false);
     setGenerating(false);
     setRevealedSecrets(new Set());
+    setEmailPending([]);
   }
 
   // ---------------------------------------------------------------------------
@@ -526,6 +667,7 @@ export default function TenantWizard() {
       <SuccessPage
         tenant={createdTenant}
         apps={createdApps}
+        emailPending={emailPending}
         revealedSecrets={revealedSecrets}
         onReveal={(clientId, secret) => {
           setRevealedSecrets(prev => {
@@ -996,8 +1138,12 @@ function Step3Email({
       <div className="text-xs text-slate-500">
         Override the platform default mail-From for this tenant. All fields
         optional — leave blank to use <code className="font-mono">noreply@mcp-mesh.io</code>{' '}
-        and the tenant display name. Domain authentication (so users see your
-        brand in the From line) is done after creation in the Email tab.
+        and the tenant display name. If you set a branded From on your own domain,
+        the wizard auto-runs SendGrid + Cloudflare domain authentication during
+        provisioning (registers the domain, pushes the DKIM CNAMEs to Cloudflare
+        when the zone is in our account, and validates). If your DNS isn't in our
+        Cloudflare account, the wizard lists the CNAMEs to add and the branded
+        From applies automatically once you finish validation from the Email tab.
       </div>
 
       <label className="block">
@@ -1269,6 +1415,15 @@ function Step6Review({
           {apps.some(a => a.saPermissions.length > 0) && (
             <li>Grant SA permissions to {apps.filter(a => a.saPermissions.length > 0).map(a => a.slug).join(', ')}</li>
           )}
+          {needsDomainAuth(email.fromAddress) && (
+            <li>
+              Authenticate email domain <code className="font-mono">{emailDomain(email.fromAddress)}</code>{' '}
+              (register in SendGrid, push DKIM CNAMEs to Cloudflare, validate)
+            </li>
+          )}
+          {(email.fromAddress.trim() || email.fromDisplayName.trim() || email.replyToAddress.trim()) && (
+            <li>Apply email config (branded From applies once the domain is validated)</li>
+          )}
           {manifestFile && <li>Apply manifest (perms + roles + IdP + defaults)</li>}
           {themeFile && <li>Upload theme</li>}
         </ol>
@@ -1291,15 +1446,41 @@ function GenerateProgressPanel({ rows }: { rows: ProgressRow[] }) {
     <div className="bg-slate-900 text-slate-100 rounded p-4 font-mono text-sm">
       <div className="mb-2 text-slate-300">Generating tenant…</div>
       <ul className="space-y-1">
-        {rows.map(r => (
-          <li key={r.key} className="flex items-start gap-2">
-            <span className="w-5">{statusGlyph(r.status)}</span>
-            <span className={r.status === 'error' ? 'text-red-300' : ''}>{r.label}</span>
-            {r.detail && (
-              <span className="text-red-300 text-xs ml-2 break-all">— {r.detail}</span>
-            )}
-          </li>
-        ))}
+        {rows.map(r => {
+          const detailColor =
+            r.status === 'error' ? 'text-red-300' :
+            r.status === 'warning' ? 'text-amber-300' :
+            'text-slate-400';
+          const glyphColor =
+            r.status === 'error' ? 'text-red-300' :
+            r.status === 'warning' ? 'text-amber-300' : '';
+          const labelColor =
+            r.status === 'error' ? 'text-red-300' :
+            r.status === 'warning' ? 'text-amber-200' : '';
+          return (
+            <li key={r.key} className="flex flex-col gap-1">
+              <div className="flex items-start gap-2">
+                <span className={'w-5 ' + glyphColor}>{statusGlyph(r.status)}</span>
+                <span className={labelColor}>{r.label}</span>
+                {r.detail && (
+                  <span className={detailColor + ' text-xs ml-2 break-words'}>— {r.detail}</span>
+                )}
+              </div>
+              {r.cnames && r.cnames.length > 0 && (
+                <ul className="ml-7 mt-0.5 space-y-0.5 text-xs text-amber-200">
+                  {r.cnames.map((c, i) => (
+                    <li key={i} className="break-all">
+                      <span className="text-slate-400">CNAME</span>{' '}
+                      <span>{c.host}</span>
+                      <span className="text-slate-400"> → </span>
+                      <span>{c.target}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -1310,6 +1491,7 @@ function statusGlyph(s: ProgressStatus): string {
     case 'pending': return '·';
     case 'in_progress': return '…';
     case 'success': return '✓';
+    case 'warning': return '⚠';
     case 'error': return '✗';
   }
 }
@@ -1319,10 +1501,11 @@ function statusGlyph(s: ProgressStatus): string {
 // ---------------------------------------------------------------------------
 
 function SuccessPage({
-  tenant, apps, revealedSecrets, onReveal, onViewTenant, onOnboardAnother,
+  tenant, apps, emailPending, revealedSecrets, onReveal, onViewTenant, onOnboardAnother,
 }: {
   tenant: Tenant;
   apps: CreatedAppInfo[];
+  emailPending: ProgressRow[];
   revealedSecrets: Set<string>;
   onReveal: (clientId: string, secret: string | null) => void;
   onViewTenant: () => void;
@@ -1383,6 +1566,33 @@ function SuccessPage({
           <div className="text-xs text-emerald-800">Realm: <code className="font-mono">{realmName}</code></div>
         </div>
       </div>
+
+      {emailPending.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded p-4 space-y-2">
+          <div className="font-semibold text-amber-900 text-sm flex items-center gap-2">
+            <span>⚠</span> Email domain authentication pending
+          </div>
+          {emailPending.map(r => (
+            <div key={r.key} className="text-xs text-amber-900 space-y-1">
+              {r.detail && <div>{r.detail}</div>}
+              {r.cnames && r.cnames.length > 0 && (
+                <ul className="font-mono text-xs space-y-0.5 mt-1">
+                  {r.cnames.map((c, i) => (
+                    <li key={i} className="break-all">
+                      <span className="text-amber-700">CNAME</span> {c.host}
+                      <span className="text-amber-700"> → </span>{c.target}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+          <div className="text-xs text-amber-800">
+            Your branded From applies automatically once validation completes. Re-verify
+            from the tenant's <span className="font-medium">Email</span> tab if it isn't green yet.
+          </div>
+        </div>
+      )}
 
       {confidentialApps.length > 0 && (
         <section className="bg-white border rounded p-4 space-y-3">
@@ -1547,6 +1757,10 @@ function BrokerUriRow({ label, uri, openHref }: { label: string; uri: string; op
 // ---------------------------------------------------------------------------
 // utils
 // ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

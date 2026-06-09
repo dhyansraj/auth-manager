@@ -95,7 +95,7 @@ adminUi:
   replicas: 1
   image:
     repository: admin-ui
-    tag: "0.1.43"
+    tag: "0.1.44"
 
 # Dev shares prod's smtp-relay — no separate relay deployment in this
 # namespace. (auth-manager + KC realms reach it via cross-namespace DNS
