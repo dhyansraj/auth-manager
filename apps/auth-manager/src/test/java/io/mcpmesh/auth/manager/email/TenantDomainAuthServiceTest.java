@@ -164,6 +164,49 @@ class TenantDomainAuthServiceTest {
     }
 
     @Test
+    void revalidate_validTrue_persistsFlagTrue() {
+        tenant.setSendgridDomain(505, false);
+        Map_setSendgridSettings(tenant, "example.com");
+        when(sendgrid.validateDomain(505)).thenReturn(
+            new SendGridClient.DomainAuthResult(505, "example.com", true, List.of(
+                new SendGridClient.DnsCname("em.example.com", "u.wl.sendgrid.net")
+            ))
+        );
+        when(cf.findZoneId("example.com")).thenReturn(Optional.of("zone-ex"));
+
+        DomainAuthResponse resp = service.revalidate(TENANT_ID, "alice");
+
+        assertThat(resp.valid()).isTrue();
+        assertThat(resp.sendgridDomainId()).isEqualTo(505);
+        // Root-cause check: the valid flag is persisted as true on the tenant row.
+        assertThat(tenant.getSendgridDomainValid()).isTrue();
+        verify(sendgrid).validateDomain(505);
+        verify(repo, atLeastOnce()).save(tenant);
+    }
+
+    @Test
+    void revalidate_validFalse_persistsFlagFalse() {
+        tenant.setSendgridDomain(505, true);
+        when(sendgrid.validateDomain(505)).thenReturn(
+            new SendGridClient.DomainAuthResult(505, "example.com", false, List.of())
+        );
+
+        DomainAuthResponse resp = service.revalidate(TENANT_ID, "alice");
+
+        assertThat(resp.valid()).isFalse();
+        assertThat(tenant.getSendgridDomainValid()).isFalse();
+        verify(repo, atLeastOnce()).save(tenant);
+    }
+
+    @Test
+    void setSendgridDomain_writesValidFlagToEntity() {
+        Tenant t = newTenant("ent", "Ent");
+        t.setSendgridDomain(606, true);
+        assertThat(t.getSendgridDomainId()).isEqualTo(606);
+        assertThat(t.getSendgridDomainValid()).isTrue();
+    }
+
+    @Test
     void registrableDomain_simpleHelper() {
         assertThat(TenantDomainAuthService.registrableDomain("mail.example.com")).isEqualTo("example.com");
         assertThat(TenantDomainAuthService.registrableDomain("example.com")).isEqualTo("example.com");

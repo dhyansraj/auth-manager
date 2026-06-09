@@ -104,12 +104,29 @@ public class SendGridClient {
             .POST(HttpRequest.BodyPublishers.ofString("{}"))
             .build();
         JsonNode resp = send(req);
-        // The /validate endpoint returns {id, valid, validation_results} —
-        // re-fetch the full record so callers get a consistent shape.
-        if (resp.path("id").isInt()) {
-            return getDomain(resp.path("id").asInt());
-        }
-        return getDomain(domainId);
+        // The /validate endpoint returns {id, valid, validation_results}. Its
+        // top-level `valid` is the AUTHORITATIVE just-computed result — the
+        // domain record returned by GET /whitelabel/domains/{id} lags behind
+        // and frequently still reports valid:false immediately after a
+        // successful validate (its cached `valid` only flips on SendGrid's
+        // side later). So we must read `valid` from THIS response, not from a
+        // re-fetch. The GET is only used to recover the stable domain/dns
+        // fields (name + CNAMEs) which the /validate body omits.
+        int id = resp.path("id").isInt() ? resp.path("id").asInt() : domainId;
+        DomainAuthResult record = getDomain(id);
+        // Trust the validate response's `valid`; keep the GET's domain + cnames.
+        return mergeValidateResult(resp, record);
+    }
+
+    /**
+     * Merges the authoritative {@code valid} flag from a {@code /validate}
+     * response with the stable {@code domain} + {@code cnames} from a domain
+     * GET record. Package-private + static so the "validate's valid wins over
+     * the stale GET valid" rule is unit-testable without live HTTP.
+     */
+    static DomainAuthResult mergeValidateResult(JsonNode validateResp, DomainAuthResult getRecord) {
+        boolean valid = validateResp.path("valid").asBoolean(false);
+        return new DomainAuthResult(getRecord.id(), getRecord.domain(), valid, getRecord.cnames());
     }
 
     // -- internals ------------------------------------------------------------
@@ -119,7 +136,7 @@ public class SendGridClient {
      * The 3 CNAMEs live under {@code dns.{mail_cname,dkim1,dkim2}} as objects
      * with {@code host} + {@code data} (target) fields.
      */
-    private DomainAuthResult parseDomain(JsonNode node) {
+    static DomainAuthResult parseDomain(JsonNode node) {
         int id = node.path("id").asInt(0);
         String domain = node.path("domain").asText(null);
         boolean valid = node.path("valid").asBoolean(false);
@@ -131,7 +148,7 @@ public class SendGridClient {
         return new DomainAuthResult(id, domain, valid, cnames);
     }
 
-    private void addCname(List<DnsCname> out, JsonNode dns, String key) {
+    private static void addCname(List<DnsCname> out, JsonNode dns, String key) {
         JsonNode n = dns.path(key);
         if (n.isMissingNode() || !n.isObject()) return;
         String host = n.path("host").asText(null);
