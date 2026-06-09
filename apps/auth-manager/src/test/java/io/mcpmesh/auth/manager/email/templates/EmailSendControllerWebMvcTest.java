@@ -71,6 +71,7 @@ class EmailSendControllerWebMvcTest {
     @MockitoBean EmailTemplateService templates;
     @MockitoBean TransactionalEmailService emailService;
     @MockitoBean io.mcpmesh.auth.manager.audit.AuditService audit;
+    @MockitoBean EmailRateLimiter rateLimiter;
     @MockitoBean(name = "tenantSecurity") TenantSecurity tenantSecurity;
     @MockitoBean(name = "perms") Permissions perms;
 
@@ -130,6 +131,27 @@ class EmailSendControllerWebMvcTest {
             eq("buyer@example.com"), eq("Promo subject"), any());
         verify(audit).recordSuccess(anyString(), any(), eq(TENANT_ID),
             eq("email.send"), eq("email_template"), eq("promo"), any(), any());
+    }
+
+    @Test
+    void send_returns_429_withRetryAfter_whenRateLimited() throws Exception {
+        allowSend();
+        org.mockito.Mockito.doThrow(new EmailRateLimitException(42,
+                "Per-minute email limit exceeded"))
+            .when(rateLimiter).checkAndIncrement(eq(TENANT_ID));
+
+        mvc.perform(post(BASE + "/promo").with(jwt())
+                .contentType("application/json")
+                .content("{\"to\":\"buyer@example.com\"}"))
+            .andExpect(status().isTooManyRequests())
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                .header().string("Retry-After", "42"))
+            .andExpect(jsonPath("$.error").value("email_rate_limited"))
+            .andExpect(jsonPath("$.retryAfterSeconds").value(42));
+
+        // Rejected before any resolve/render/send work.
+        verify(templates, never()).get(any(), anyString());
+        verify(emailService, never()).send(any(), anyString(), anyString(), any(), any());
     }
 
     @Test

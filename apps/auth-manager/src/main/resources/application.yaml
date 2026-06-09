@@ -68,6 +68,15 @@ auth-manager:
     # Secret the smtp-relay uses (key=api-key). Optional: empty when SendGrid
     # is not configured (domain-auth endpoints surface a clean error).
     sendgrid-api-key: ${SENDGRID_API_KEY:}
+  # Per-tenant rate limit / daily quota for the app-facing email send API
+  # (POST /api/v1/tenants/{id}/emails/{typeKey}). Fixed-window Redis counters;
+  # best-effort reputation protection that fails open if Redis is down.
+  # Platform-wide defaults today; per-tenant overrides are a future enhancement.
+  email:
+    rate-limit:
+      per-minute: ${AUTH_MANAGER_EMAIL_RL_PER_MINUTE:100}
+      per-day: ${AUTH_MANAGER_EMAIL_RL_PER_DAY:5000}
+      enabled: ${AUTH_MANAGER_EMAIL_RL_ENABLED:true}
   # Theme-apply uses ThemeApplier to patch the Keycloak StatefulSet's
   # rolling-restart annotation. STS name varies per env (Bitnami names it
   # <release>-keycloak); dev overrides to "platform-kc-dev-keycloak".
