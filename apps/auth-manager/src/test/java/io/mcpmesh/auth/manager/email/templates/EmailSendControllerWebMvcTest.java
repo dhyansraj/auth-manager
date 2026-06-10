@@ -136,9 +136,10 @@ class EmailSendControllerWebMvcTest {
     @Test
     void send_returns_429_withRetryAfter_whenRateLimited() throws Exception {
         allowSend();
+        stubTenant();
         org.mockito.Mockito.doThrow(new EmailRateLimitException(42,
                 "Per-minute email limit exceeded"))
-            .when(rateLimiter).checkAndIncrement(eq(TENANT_ID));
+            .when(rateLimiter).checkAndIncrement(any(Tenant.class));
 
         mvc.perform(post(BASE + "/promo").with(jwt())
                 .contentType("application/json")

@@ -25,6 +25,8 @@ import java.util.UUID;
  * <pre>
  *   GET  /api/v1/tenants/{tenantId}/email                       → TenantEmailResponse
  *   PUT  /api/v1/tenants/{tenantId}/email                       → TenantEmailResponse
+ *   GET  /api/v1/tenants/{tenantId}/email/rate-limit            → TenantEmailRateLimitResponse
+ *   PUT  /api/v1/tenants/{tenantId}/email/rate-limit            → TenantEmailRateLimitResponse
  *   GET  /api/v1/tenants/{tenantId}/email/domain-auth           → DomainAuthResponse
  *   POST /api/v1/tenants/{tenantId}/email/domain-auth           → DomainAuthResponse
  *   POST /api/v1/tenants/{tenantId}/email/domain-auth/revalidate → DomainAuthResponse
@@ -60,6 +62,22 @@ public class TenantEmailController {
         Authentication auth
     ) {
         return emailService.update(tenantId, req, principal(auth));
+    }
+
+    @GetMapping("/rate-limit")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'TENANT_VIEW')")
+    public TenantEmailRateLimitResponse getRateLimit(@PathVariable UUID tenantId) {
+        return emailService.getRateLimit(tenantId);
+    }
+
+    @PutMapping("/rate-limit")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'TENANT_EDIT')")
+    public TenantEmailRateLimitResponse updateRateLimit(
+        @PathVariable UUID tenantId,
+        @RequestBody TenantEmailRateLimitUpdateRequest req,
+        Authentication auth
+    ) {
+        return emailService.updateRateLimit(tenantId, req, principal(auth));
     }
 
     @GetMapping("/domain-auth")

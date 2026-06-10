@@ -85,13 +85,14 @@ public class EmailSendController {
                 "'invitation' is sent via the user-invite endpoint, not the generic send API");
         }
 
-        // Per-tenant rate limit / daily quota — counted before any resolve /
-        // render / send so a throttled request does no work. Throws
-        // EmailRateLimitException (-> 429) when a window is exceeded; fails
-        // open if Redis is down. Internal invite flow is NOT rate-limited.
-        rateLimiter.checkAndIncrement(tenantId);
-
         Tenant tenant = tenants.get(tenantId);
+
+        // Per-tenant rate limit / daily quota — counted before any resolve /
+        // render / send so a throttled request does no work beyond the tenant
+        // load (needed to resolve the tenant's persisted limit overrides).
+        // Throws EmailRateLimitException (-> 429) when a window is exceeded;
+        // fails open if Redis is down. Internal invite flow is NOT rate-limited.
+        rateLimiter.checkAndIncrement(tenant);
 
         // Stored override only — no classpath fallback on the generic send path.
         EmailTemplate stored = templates.get(tenantId, typeKey)

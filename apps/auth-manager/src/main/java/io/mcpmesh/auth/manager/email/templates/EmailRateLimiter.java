@@ -1,5 +1,6 @@
 package io.mcpmesh.auth.manager.email.templates;
 
+import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -59,14 +60,40 @@ public class EmailRateLimiter {
     }
 
     /**
-     * Count this send against the tenant's per-minute and per-day windows.
+     * Count this send against the tenant's per-minute and per-day windows,
+     * honoring the tenant's persisted rate-limit overrides
+     * ({@code email_rl_per_minute} / {@code email_rl_per_day}) when set.
+     *
+     * @throws EmailRateLimitException if either window is now over its limit
+     */
+    public void checkAndIncrement(Tenant tenant) {
+        checkAndIncrement(tenant.getId(), tenant.getEmailRlPerMinute(), tenant.getEmailRlPerDay());
+    }
+
+    /**
+     * Count this send against the tenant's per-minute and per-day windows
+     * using the platform-default limits (no per-tenant overrides).
      *
      * @throws EmailRateLimitException if either window is now over its limit
      */
     public void checkAndIncrement(UUID tenantId) {
+        checkAndIncrement(tenantId, null, null);
+    }
+
+    /**
+     * Count this send against the tenant's per-minute and per-day windows.
+     * Effective limit per window = tenant override (when non-null and positive)
+     * else the platform default from {@link EmailRateLimitProperties}.
+     *
+     * @throws EmailRateLimitException if either window is now over its limit
+     */
+    public void checkAndIncrement(UUID tenantId, Integer perMinuteOverride, Integer perDayOverride) {
         if (!props.isEnabled()) {
             return;
         }
+
+        int perMinute = effectiveLimit(perMinuteOverride, props.perMinute());
+        int perDay = effectiveLimit(perDayOverride, props.perDay());
 
         Instant now = Instant.now();
         long epochMinute = now.getEpochSecond() / 60;
@@ -75,20 +102,25 @@ public class EmailRateLimiter {
         // Per-minute burst window first; on reject we skip the day counter so a
         // throttled burst doesn't also consume the daily quota.
         long minuteCount = incrementWindow(MIN_PREFIX + tenantId + ":" + epochMinute, MIN_TTL);
-        if (minuteCount > props.perMinute()) {
+        if (minuteCount > perMinute) {
             long retryAfter = 60 - (now.getEpochSecond() % 60);
             throw new EmailRateLimitException(retryAfter,
                 "Per-minute email limit exceeded for tenant " + tenantId
-                    + " (" + props.perMinute() + "/min)");
+                    + " (" + perMinute + "/min)");
         }
 
         long dayCount = incrementWindow(DAY_PREFIX + tenantId + ":" + epochDay, DAY_TTL);
-        if (dayCount > props.perDay()) {
+        if (dayCount > perDay) {
             long retryAfter = 86_400 - (now.getEpochSecond() % 86_400);
             throw new EmailRateLimitException(retryAfter,
                 "Daily email quota exceeded for tenant " + tenantId
-                    + " (" + props.perDay() + "/day)");
+                    + " (" + perDay + "/day)");
         }
+    }
+
+    /** Tenant override (non-null, positive) wins; else the platform default. */
+    private static int effectiveLimit(Integer override, int platformDefault) {
+        return (override != null && override > 0) ? override : platformDefault;
     }
 
     /**

@@ -3,6 +3,7 @@ package io.mcpmesh.auth.manager.email;
 import io.mcpmesh.auth.manager.audit.AuditService;
 import io.mcpmesh.auth.manager.domain.audit.ActorKind;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
+import io.mcpmesh.auth.manager.email.templates.EmailRateLimitProperties;
 import io.mcpmesh.auth.manager.persistence.TenantRepository;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.slf4j.Logger;
@@ -44,22 +45,28 @@ public class TenantEmailService {
 
     private static final ActorKind ACTOR_KIND = ActorKind.USER;
 
+    /** Upper bound for a per-tenant rate-limit override (per-minute or per-day). */
+    public static final int RATE_LIMIT_MAX = 100_000;
+
     private final TenantService tenants;
     private final TenantRepository tenantRepo;
     private final SmtpProperties smtpProps;
     private final SmtpConfigBootstrap smtpBootstrap;
     private final AuditService audit;
+    private final EmailRateLimitProperties rateLimitProps;
 
     public TenantEmailService(TenantService tenants,
                               TenantRepository tenantRepo,
                               SmtpProperties smtpProps,
                               SmtpConfigBootstrap smtpBootstrap,
-                              AuditService audit) {
+                              AuditService audit,
+                              EmailRateLimitProperties rateLimitProps) {
         this.tenants = tenants;
         this.tenantRepo = tenantRepo;
         this.smtpProps = smtpProps;
         this.smtpBootstrap = smtpBootstrap;
         this.audit = audit;
+        this.rateLimitProps = rateLimitProps;
     }
 
     @Transactional(readOnly = true)
@@ -140,6 +147,77 @@ public class TenantEmailService {
             req, details);
 
         return toResponse(t);
+    }
+
+    // -- rate-limit overrides --------------------------------------------------
+
+    @Transactional(readOnly = true)
+    public TenantEmailRateLimitResponse getRateLimit(UUID tenantId) {
+        Tenant t = tenants.get(tenantId);
+        return toRateLimitResponse(t);
+    }
+
+    /**
+     * Replaces the per-tenant send-API rate-limit overrides. A null field
+     * clears that override (→ platform default); a non-null field must be a
+     * positive int ≤ {@link #RATE_LIMIT_MAX}. The Redis limiter picks the new
+     * limits up on the next send (limits are resolved per-request).
+     */
+    @Transactional
+    public TenantEmailRateLimitResponse updateRateLimit(UUID tenantId,
+                                                        TenantEmailRateLimitUpdateRequest req,
+                                                        String actor) {
+        Tenant t = tenants.get(tenantId);
+
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("tenant_slug", t.getSlug());
+        details.put("perMinute", req.perMinute());
+        details.put("perDay", req.perDay());
+        details.put("previousPerMinute", t.getEmailRlPerMinute());
+        details.put("previousPerDay", t.getEmailRlPerDay());
+
+        validateRateLimitField("perMinute", req.perMinute(), t, req, actor, details);
+        validateRateLimitField("perDay", req.perDay(), t, req, actor, details);
+
+        t.setEmailRateLimitOverrides(req.perMinute(), req.perDay());
+        tenantRepo.save(t);
+
+        audit.recordSuccess(actor, ACTOR_KIND, t.getId(),
+            "tenant.email.rate_limit.update", "tenant", t.getId().toString(),
+            req, details);
+
+        return toRateLimitResponse(t);
+    }
+
+    private void validateRateLimitField(String field, Integer value, Tenant t,
+                                        TenantEmailRateLimitUpdateRequest req,
+                                        String actor, Map<String, Object> details) {
+        if (value == null || (value > 0 && value <= RATE_LIMIT_MAX)) {
+            return;
+        }
+        var ex = new ResponseStatusException(HttpStatus.BAD_REQUEST,
+            "email.invalid_rate_limit: '" + field + "' must be a positive integer <= "
+                + RATE_LIMIT_MAX + " or null to use the platform default (got " + value + ")");
+        audit.recordFailure(actor, ACTOR_KIND, t.getId(),
+            "tenant.email.rate_limit.update", "tenant", t.getId().toString(),
+            req, ex, details);
+        throw ex;
+    }
+
+    private TenantEmailRateLimitResponse toRateLimitResponse(Tenant t) {
+        Integer perMinuteOverride = t.getEmailRlPerMinute();
+        Integer perDayOverride = t.getEmailRlPerDay();
+        int platformPerMinute = rateLimitProps.perMinute();
+        int platformPerDay = rateLimitProps.perDay();
+        return new TenantEmailRateLimitResponse(
+            perMinuteOverride != null ? perMinuteOverride : platformPerMinute,
+            perDayOverride != null ? perDayOverride : platformPerDay,
+            perMinuteOverride,
+            perDayOverride,
+            platformPerMinute,
+            platformPerDay,
+            rateLimitProps.isEnabled()
+        );
     }
 
     // -- helpers --------------------------------------------------------------

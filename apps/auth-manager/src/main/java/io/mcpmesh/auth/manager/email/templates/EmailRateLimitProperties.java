@@ -12,9 +12,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * per-day quota) are best-effort reputation protection, not a hard security
  * gate (the limiter fails open if Redis is unreachable).
  *
- * <p>Defaults are platform-wide starting points.
- * TODO: per-tenant overrides (persisted on the tenant row) are a future
- * enhancement; until then every tenant shares these limits.
+ * <p>Defaults are platform-wide starting points. Per-tenant overrides are
+ * persisted on the tenant row ({@code email_rl_per_minute} /
+ * {@code email_rl_per_day}, V7) and resolved in
+ * {@link EmailRateLimiter#checkAndIncrement(io.mcpmesh.auth.manager.domain.tenant.Tenant)}:
+ * a non-null positive override wins, NULL falls back to these defaults.
  */
 @ConfigurationProperties("auth-manager.email.rate-limit")
 public record EmailRateLimitProperties(

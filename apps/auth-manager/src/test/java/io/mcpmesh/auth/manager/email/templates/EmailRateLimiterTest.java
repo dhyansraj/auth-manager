@@ -130,6 +130,79 @@ class EmailRateLimiterTest {
         verify(redis, never()).opsForValue();
     }
 
+    // -- per-tenant overrides --------------------------------------------------
+
+    @Test
+    void tenantPerMinuteOverride_winsOverPlatformDefault() {
+        // Platform default 100/min; tenant override 3/min; counter at 4 → reject.
+        when(ops.increment(anyString())).thenReturn(4L);
+        EmailRateLimiter rl = limiter(100, 5000, true);
+
+        assertThatThrownBy(() -> rl.checkAndIncrement(TENANT, 3, null))
+            .isInstanceOf(EmailRateLimitException.class)
+            .hasMessageContaining("(3/min)");
+    }
+
+    @Test
+    void tenantOverride_canRaiseLimitAbovePlatformDefault() {
+        // Platform default 3/min would reject at count 4; override 1000 allows.
+        when(ops.increment(anyString())).thenReturn(4L);
+        EmailRateLimiter rl = limiter(3, 3, true);
+
+        assertThatCode(() -> rl.checkAndIncrement(TENANT, 1000, 1000))
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    void tenantPerDayOverride_winsOverPlatformDefault() {
+        // minute -> 1 (under), day -> 2 (> tenant override 1, platform 5000).
+        when(ops.increment(anyString()))
+            .thenReturn(1L)   // per-minute
+            .thenReturn(2L);  // per-day
+        EmailRateLimiter rl = limiter(100, 5000, true);
+
+        assertThatThrownBy(() -> rl.checkAndIncrement(TENANT, null, 1))
+            .isInstanceOf(EmailRateLimitException.class)
+            .hasMessageContaining("(1/day)");
+    }
+
+    @Test
+    void nullOverrides_fallBackToPlatformDefaults() {
+        // Same as crossingPerMinuteLimit_throws but via the override signature.
+        when(ops.increment(anyString())).thenReturn(4L);
+        EmailRateLimiter rl = limiter(3, 5000, true);
+
+        assertThatThrownBy(() -> rl.checkAndIncrement(TENANT, null, null))
+            .isInstanceOf(EmailRateLimitException.class)
+            .hasMessageContaining("(3/min)");
+    }
+
+    @Test
+    void nonPositiveOverride_ignored_fallsBackToPlatformDefault() {
+        when(ops.increment(anyString())).thenReturn(4L);
+        EmailRateLimiter rl = limiter(3, 5000, true);
+
+        assertThatThrownBy(() -> rl.checkAndIncrement(TENANT, 0, null))
+            .isInstanceOf(EmailRateLimitException.class)
+            .hasMessageContaining("(3/min)");
+    }
+
+    @Test
+    void tenantEntityOverload_resolvesOverridesFromColumns() {
+        when(ops.increment(anyString())).thenReturn(4L);
+        EmailRateLimiter rl = limiter(100, 5000, true);
+
+        io.mcpmesh.auth.manager.domain.tenant.Tenant tenant =
+            mock(io.mcpmesh.auth.manager.domain.tenant.Tenant.class);
+        when(tenant.getId()).thenReturn(TENANT);
+        when(tenant.getEmailRlPerMinute()).thenReturn(3);
+        when(tenant.getEmailRlPerDay()).thenReturn(null);
+
+        assertThatThrownBy(() -> rl.checkAndIncrement(tenant))
+            .isInstanceOf(EmailRateLimitException.class)
+            .hasMessageContaining("(3/min)");
+    }
+
     @Test
     void repeatedSends_throwOnceLimitCrossed() {
         stubMonotonicIncrement();

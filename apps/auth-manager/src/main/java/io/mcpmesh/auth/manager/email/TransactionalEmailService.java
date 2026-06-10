@@ -173,12 +173,13 @@ public class TransactionalEmailService {
      * Renders the tenant's stored template for {@code typeKey} as standalone HTML
      * for preview in a browser/iframe (admin UI). There is no real model, so the
      * template is rendered through jMustache against {@link #PREVIEW_CONTEXT}: the
-     * logic-less sections/loops/conditionals are evaluated (populated {@code {{#x}}}
-     * blocks and loops collapse to nothing, "no-data" {@code {{^x}}} blocks render),
-     * flat {@code {{var}}} tags become a visible {@code [var]} placeholder, and the
-     * render never throws on a missing key. Asset references are inlined to
-     * {@code data:} URIs first (so {@code {{asset:name}}} survives the Mustache pass),
-     * then CSS is inlined.
+     * logic-less sections/loops/conditionals are evaluated ({@code {{#x}}} blocks
+     * and loops render exactly one representative placeholder row, inverted
+     * {@code {{^x}}} "no-data" blocks are skipped so the two branches never
+     * contradict each other), flat {@code {{var}}} tags become a visible
+     * {@code [var]} placeholder, and the render never throws on a missing key.
+     * Asset references are inlined to {@code data:} URIs first (so
+     * {@code {{asset:name}}} survives the Mustache pass), then CSS is inlined.
      *
      * @return rendered HTML, or {@link Optional#empty()} if no template resolves.
      */
@@ -199,17 +200,38 @@ public class TransactionalEmailService {
     }
 
     /**
-     * Preview model: every lookup returns an empty {@link List} whose
-     * {@code toString()} is {@code [name]}. Because it is an empty collection,
-     * {@code {{#x}}} sections and loops are skipped and {@code {{^x}}} inverted
-     * sections render (a clean "no-data" variant); when used as a flat
-     * {@code {{var}}} it renders the {@code [name]} placeholder. Lookups never
-     * throw, so there is no strict-throw / raw-template fallback.
+     * Preview model: every lookup returns a one-element {@link List} whose
+     * {@code toString()} is {@code [name]}. Because it is a non-empty collection,
+     * {@code {{#x}}} sections render once and loops render exactly one
+     * representative row ({@link #PREVIEW_ROW}: nested lookups inside the row
+     * resolve back to {@code [var]} placeholders), while {@code {{^x}}} inverted
+     * "no-data" sections are skipped — so a conditional never renders both
+     * contradictory branches. When used as a flat {@code {{var}}} it renders the
+     * {@code [name]} placeholder. Lookups never throw, so there is no
+     * strict-throw / raw-template fallback.
      */
     private static final Mustache.CustomContext PREVIEW_CONTEXT =
         name -> new PlaceholderValue(name);
 
-    /** Empty list (falsey for sections) that renders as {@code [name]} as a flat var. */
+    /**
+     * The single representative row a preview loop iterates over: variable
+     * lookups inside the loop body resolve to {@code [var]} placeholders (and
+     * nested loops likewise render one row), {@code {{.}}} renders {@code [value]}.
+     */
+    private static final Mustache.CustomContext PREVIEW_ROW = new Mustache.CustomContext() {
+        @Override public Object get(String name) {
+            return new PlaceholderValue(name);
+        }
+
+        @Override public String toString() {
+            return "[value]";
+        }
+    };
+
+    /**
+     * One-element list (truthy for sections; loops render a single
+     * {@link #PREVIEW_ROW}) that renders as {@code [name]} as a flat var.
+     */
     private static final class PlaceholderValue extends AbstractList<Object> {
         private final String name;
 
@@ -218,11 +240,14 @@ public class TransactionalEmailService {
         }
 
         @Override public Object get(int index) {
-            throw new IndexOutOfBoundsException();
+            if (index != 0) {
+                throw new IndexOutOfBoundsException("index " + index);
+            }
+            return PREVIEW_ROW;
         }
 
         @Override public int size() {
-            return 0;
+            return 1;
         }
 
         @Override public String toString() {

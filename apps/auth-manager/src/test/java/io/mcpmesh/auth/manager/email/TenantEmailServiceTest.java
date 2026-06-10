@@ -39,6 +39,7 @@ class TenantEmailServiceTest {
     SmtpProperties smtpProps;
     SmtpConfigBootstrap bootstrap;
     AuditService audit;
+    io.mcpmesh.auth.manager.email.templates.EmailRateLimitProperties rateLimitProps;
 
     TenantEmailService service;
     Tenant tenant;
@@ -57,7 +58,10 @@ class TenantEmailServiceTest {
         );
         bootstrap = mock(SmtpConfigBootstrap.class);
         audit = mock(AuditService.class);
-        service = new TenantEmailService(tenants, repo, smtpProps, bootstrap, audit);
+        rateLimitProps = new io.mcpmesh.auth.manager.email.templates.EmailRateLimitProperties(
+            100, 5000, true);
+        service = new TenantEmailService(tenants, repo, smtpProps, bootstrap, audit,
+            rateLimitProps);
 
         tenant = newTenant(SLUG, "App 1");
         when(tenants.get(TENANT_ID)).thenReturn(tenant);
@@ -156,6 +160,88 @@ class TenantEmailServiceTest {
         verify(bootstrap, times(1)).reconcileRealmSmtp(tenant);
         verify(audit).recordSuccess(anyString(), any(), any(), anyString(),
             anyString(), anyString(), any(), any());
+    }
+
+    // -- rate-limit overrides --------------------------------------------------
+
+    @Test
+    void getRateLimit_returnsPlatformDefaults_whenNoOverride() {
+        TenantEmailRateLimitResponse resp = service.getRateLimit(TENANT_ID);
+
+        assertThat(resp.perMinute()).isEqualTo(100);
+        assertThat(resp.perDay()).isEqualTo(5000);
+        assertThat(resp.perMinuteOverride()).isNull();
+        assertThat(resp.perDayOverride()).isNull();
+        assertThat(resp.platformPerMinute()).isEqualTo(100);
+        assertThat(resp.platformPerDay()).isEqualTo(5000);
+        assertThat(resp.enabled()).isTrue();
+    }
+
+    @Test
+    void getRateLimit_returnsOverrides_whenTenantHasThem() {
+        tenant.setEmailRateLimitOverrides(10, 200);
+
+        TenantEmailRateLimitResponse resp = service.getRateLimit(TENANT_ID);
+
+        assertThat(resp.perMinute()).isEqualTo(10);
+        assertThat(resp.perDay()).isEqualTo(200);
+        assertThat(resp.perMinuteOverride()).isEqualTo(10);
+        assertThat(resp.perDayOverride()).isEqualTo(200);
+        assertThat(resp.platformPerMinute()).isEqualTo(100);
+        assertThat(resp.platformPerDay()).isEqualTo(5000);
+    }
+
+    @Test
+    void updateRateLimit_persistsOverrides_andAudits() {
+        var req = new TenantEmailRateLimitUpdateRequest(50, 10_000);
+
+        TenantEmailRateLimitResponse resp = service.updateRateLimit(TENANT_ID, req, "alice");
+
+        assertThat(resp.perMinute()).isEqualTo(50);
+        assertThat(resp.perDay()).isEqualTo(10_000);
+        assertThat(tenant.getEmailRlPerMinute()).isEqualTo(50);
+        assertThat(tenant.getEmailRlPerDay()).isEqualTo(10_000);
+        verify(repo).save(tenant);
+        verify(audit).recordSuccess(anyString(), any(), any(), anyString(),
+            anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void updateRateLimit_nullFields_clearOverrides() {
+        tenant.setEmailRateLimitOverrides(50, 10_000);
+
+        TenantEmailRateLimitResponse resp = service.updateRateLimit(
+            TENANT_ID, new TenantEmailRateLimitUpdateRequest(null, null), "alice");
+
+        assertThat(tenant.getEmailRlPerMinute()).isNull();
+        assertThat(tenant.getEmailRlPerDay()).isNull();
+        assertThat(resp.perMinute()).isEqualTo(100);   // back to platform default
+        assertThat(resp.perDay()).isEqualTo(5000);
+        verify(repo).save(tenant);
+    }
+
+    @Test
+    void updateRateLimit_rejectsNonPositiveValues() {
+        var req = new TenantEmailRateLimitUpdateRequest(0, null);
+
+        assertThatThrownBy(() -> service.updateRateLimit(TENANT_ID, req, "alice"))
+            .isInstanceOf(ResponseStatusException.class)
+            .hasMessageContaining("invalid_rate_limit");
+
+        verify(repo, never()).save(any());
+        verify(audit).recordFailure(anyString(), any(), any(), anyString(),
+            anyString(), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void updateRateLimit_rejectsValuesOverUpperBound() {
+        var req = new TenantEmailRateLimitUpdateRequest(null, 100_001);
+
+        assertThatThrownBy(() -> service.updateRateLimit(TENANT_ID, req, "alice"))
+            .isInstanceOf(ResponseStatusException.class)
+            .hasMessageContaining("invalid_rate_limit");
+
+        verify(repo, never()).save(any());
     }
 
     // -- helpers --------------------------------------------------------------

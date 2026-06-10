@@ -92,6 +92,14 @@ public class Tenant {
     @Column(name = "sendgrid_domain_valid")
     private Boolean sendgridDomainValid;
 
+    // -- Per-tenant email rate-limit overrides (V7). NULL falls back to the
+    // platform defaults (auth-manager.email.rate-limit.per-minute / .per-day).
+    @Column(name = "email_rl_per_minute")
+    private Integer emailRlPerMinute;
+
+    @Column(name = "email_rl_per_day")
+    private Integer emailRlPerDay;
+
     protected Tenant() {
         // JPA
     }
@@ -178,6 +186,16 @@ public class Tenant {
         this.sendgridDomainValid = valid;
     }
 
+    /**
+     * Replaces the per-tenant email rate-limit overrides atomically. Either
+     * argument may be null to clear that override and fall back to the
+     * platform default (auth-manager.email.rate-limit.*).
+     */
+    public void setEmailRateLimitOverrides(Integer perMinute, Integer perDay) {
+        this.emailRlPerMinute = perMinute;
+        this.emailRlPerDay = perDay;
+    }
+
     private static String blankToNull(String s) {
         return (s == null || s.isBlank()) ? null : s.trim();
     }
@@ -256,4 +274,6 @@ public class Tenant {
     public String getEmailReplyToAddress() { return emailReplyToAddress; }
     public Integer getSendgridDomainId() { return sendgridDomainId; }
     public Boolean getSendgridDomainValid() { return sendgridDomainValid; }
+    public Integer getEmailRlPerMinute() { return emailRlPerMinute; }
+    public Integer getEmailRlPerDay() { return emailRlPerDay; }
 }

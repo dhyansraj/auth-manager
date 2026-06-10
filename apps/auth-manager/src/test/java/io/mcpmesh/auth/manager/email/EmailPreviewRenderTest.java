@@ -97,19 +97,49 @@ class EmailPreviewRenderTest {
         // No raw Mustache markers and no doubled placeholder tag-soup.
         assertThat(rendered).doesNotContain("{{");
         assertThat(rendered).doesNotContain("[inviterName][inviterName]");
-        assertThat(rendered).doesNotContain("[inviterName]");
 
-        // Exactly one coherent rendering of the conditional: the "no-data"
-        // (inverted) branch renders; the populated branch is absent.
-        assertThat(rendered).contains("You've been invited to join Wisefolio.");
-        assertThat(rendered).doesNotContain("thinks you'd get a lot out of Wisefolio.");
+        // Exactly one coherent rendering of the conditional: the populated
+        // ({{#}}) branch renders once with a placeholder; the inverted
+        // "no-data" branch is absent (never both contradictory branches).
+        assertThat(rendered).contains("[inviterName] thinks you'd get a lot out of Wisefolio.");
+        assertThat(rendered).doesNotContain("You've been invited to join Wisefolio.");
 
-        // The loop body is skipped (no data), not surfaced as raw markers.
-        assertThat(rendered).doesNotContain("[symbol]");
-        assertThat(rendered).doesNotContain("<tr>");
+        // The loop renders exactly one representative placeholder row.
+        assertThat(rendered).containsOnlyOnce("<tr><td>[symbol]</td></tr>");
 
         // Flat var surfaced as a readable placeholder.
         assertThat(rendered).contains("[recipientEmail]");
+    }
+
+    @Test
+    void preview_rendersExactlyOnePlaceholderRow_forLoops() {
+        // A digest-style holdings table: header + a {{#holdings}} loop with
+        // several column lookups per row.
+        String html = """
+            <body>
+              <table>
+                <tr><th>Symbol</th><th>Qty</th><th>Value</th></tr>
+                {{#holdings}}<tr><td>{{symbol}}</td><td>{{quantity}}</td><td>{{marketValue}}</td></tr>{{/holdings}}
+              </table>
+              {{^holdings}}<p>No holdings yet.</p>{{/holdings}}
+            </body>
+            """;
+        ResolvedTemplate tpl = new ResolvedTemplate(
+            "digest", html, null, List.of(), true);
+        when(templates.resolve(tenant, "digest")).thenReturn(Optional.of(tpl));
+
+        Optional<String> out = service.renderPreview(tenant, "digest");
+        assertThat(out).isPresent();
+        String rendered = out.get();
+
+        assertThat(rendered).doesNotContain("{{");
+
+        // Exactly ONE populated row, with [placeholder]-style cell values.
+        assertThat(rendered).containsOnlyOnce(
+            "<tr><td>[symbol]</td><td>[quantity]</td><td>[marketValue]</td></tr>");
+
+        // The inverted "no-data" branch must not also render.
+        assertThat(rendered).doesNotContain("No holdings yet.");
     }
 
     @Test
