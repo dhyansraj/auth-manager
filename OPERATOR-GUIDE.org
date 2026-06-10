@@ -149,12 +149,16 @@ Pulled by cluster nodes over the LAN.
 
 ** Latest deployed image tags (as of writing)
 
-| Image            | Tag      |
-|------------------+----------|
-| auth-manager     | =0.1.67= |
-| admin-ui         | =0.1.40= |
-| platform-edge    | =0.1.21= |
-| smtp-relay       | =0.1.0=  |
+| Image            | Prod     | Dev      |
+|------------------+----------+----------|
+| auth-manager     | =0.1.78= | =0.1.78= |
+| admin-ui         | =0.1.43= | =0.1.43= |
+| platform-edge    | =0.1.22= | =0.1.22= |
+| smtp-relay       | =0.1.0=  | (shared) |
+
+*Prod is back in sync with dev.* The invite-only access, first-broker-login
+auto-link, and per-tenant email-templates features are now rolled out to prod
+(=auth-manager 0.1.78= / =admin-ui 0.1.43=, helm rev 120, 2026-06-09).
 
 Bump the tag in =deploy/helm/auth-platform/values-beelink.yaml= (prod) and/or
 =values-beelink-dev.yaml= (dev) when deploying new versions.
@@ -163,9 +167,12 @@ Bump the tag in =deploy/helm/auth-platform/values-beelink.yaml= (prod) and/or
 
 | Library                    | Registry              | Current version |
 |----------------------------+-----------------------+-----------------|
-| =mcp-mesh-auth-lib= (Java) | Maven Central         | =0.3.1=         |
-| =mcp-mesh-auth-lib= (Py)   | PyPI                  | =0.1.0=         |
+| =mcp-mesh-auth-lib= (Java) | Maven Central         | =0.3.3=         |
+| =mcp-mesh-auth-lib= (Py)   | PyPI                  | =0.1.1=         |
 | =@mcpmesh/auth-lib-react=  | npm                   | =0.3.0=         |
+
+Java =0.3.3= is Java 17 bytecode (runs on the mesh =java-runtime:17= image) and
+supports =auth-lib.dev-mode=.
 
 Released via =gh workflow run release-libs.yml=.
 
@@ -376,9 +383,66 @@ account):
 6. Click "Re-verify" after DNS propagates (~30s)
 7. From address can now use the authenticated domain
 
-**Known UX bug**: =sendgrid_domain_valid= flag doesn't reliably persist after
-revalidate. Manual workaround: =UPDATE auth_manager.tenants SET
-sendgrid_domain_valid = true WHERE slug='<slug>';= (task #104).
+*Fixed (#104)*: the domain-auth =valid= flag now persists on validate/re-verify
+— the service reads the authoritative SendGrid =/validate= POST result rather
+than the lagging GET, so no manual =UPDATE= on =sendgrid_domain_valid= is
+needed anymore.
+
+** Email templates (per-tenant transactional email)
+
+The platform sends branded transactional email on a tenant's behalf — from
+templates the *tenant owns*, delivered via the tenant's own authenticated
+SendGrid domain. Used today for the invitation email, but tenants can add their
+own types (digest, payment reminders, promotions, …).
+
+*** Managing templates  [operator, =EMAIL_EDIT=]
+
+Tenant detail → Email tab → *Email templates*. Per type:
+- *Download starter* — zip skeleton: =template.html= (logic-less *Mustache*),
+  =subject.txt= (Mustache), =assets/= (inline images), plus a README listing
+  the available variables.
+- *+ New template* — pick a free-form =typeKey= (lowercase slug).
+- *Upload / Replace* — drop the edited =.zip= (pre-scanned on upload).
+- *Preview* — renders in an iframe (=[var]= placeholders, assets inlined).
+- *Delete*.
+
+Templating is logic-less *Mustache*: variables from the send model as
+={{var}}=; sections/loops via ={{#list}}…{{/list}}= and ={{^x}}…{{/x}}=; inline
+images via ={{asset:<name>}}= (a file in =assets/=, embedded as a CID part).
+*Full email HTML is allowed* — tables, presentational attributes, inline CSS,
+bulletproof table buttons — while =<script>=, =on*= handlers,
+=<iframe>/<object>/<form>=, inline =<svg>=, and =javascript:= links are
+stripped; =href= is restricted to =http=/=https=/=mailto=/=tel=. (Email uses a
+dedicated *permissive* sanitizer, NOT the tighter login-theme one.)
+
+*** Reserved =invitation= type
+
+Upload a template with =typeKey=invitation= to override the default invite
+email (the branded "sign in to get started" mail). The invite flow uses the
+tenant's =invitation= template if present, else the platform default.
+Variables: ={{tenantDisplayName}}=, ={{inviteUrl}}= (or ={{ctaUrl}}=, same
+value), ={{recipientEmail}}=, ={{inviterName}}= (optional — currently always
+blank; see backlog =email-invite=).
+
+*** App-send API  [tenant backend, =EMAIL_SEND=]
+
+=POST {AUTH_MGR_BASE}/api/v1/tenants/{tenantUuid}/emails/{typeKey}= with body
+={ "to": "...", "model": { … } }=, gated =EMAIL_SEND= (grant on the backend
+service account via Apps → Service Account Permissions). The IAM renders the
+tenant's =typeKey= template with =model= and sends via SendGrid using the
+tenant's From/DKIM. Returns =202 {"sent":true}=. The reserved =invitation= key
+returns =409= — use the user-invite endpoint instead (which also provisions the
+account).
+
+=AUTH_MGR_BASE=: dev =https://auth-dev.mcp-mesh.io=, prod
+=https://auth.mcp-mesh.io= (endpoints under =/api/v1/...=).
+
+*** Rate limits
+
+Per-tenant Redis counters protect domain reputation: defaults =100/min= +
+=5000/day= (=auth-manager.email.rate-limit.{per-minute,per-day,enabled}=,
+env-overridable). Over the limit → =429= + =Retry-After=. *Fail-open* if Redis
+is unreachable. Per-tenant overrides are backlog (=email-rl-override=).
 
 ** Theming
 
@@ -400,6 +464,13 @@ Tenant detail → Apps tab → click the backend client row → modal opens with
 checkboxes. Tick =USER_LIST= (or other perms from preset
 =[USER_LIST, USER_INVITE, USER_DISABLE, AUDIT_VIEW]=). Save. Audited.
 
+Two email perms also live here:
+- =EMAIL_SEND= — call the transactional email *send* API. This is the perm a
+  tenant *backend* grants to its service account so it can send mail via the
+  platform (see *Email templates → App-send API* above).
+- =EMAIL_EDIT= — manage the tenant's email *templates* (download starter,
+  upload/replace, delete). Operator-side.
+
 Tenant backend then mints a =client_credentials= token using its
 =AUTH_LIB_CLIENT_ID= + =AUTH_LIB_CLIENT_SECRET= and calls
 =GET ${AUTH_MGR_BASE}/api/v1/tenants/<slug>/users?role=<role>= with the
@@ -414,12 +485,74 @@ When toggled off:
 - =mcpmesh-flexible= template reads attribute, adds =mcp-no-password=
   body class
 - CSS hides username/password form, sign-in button, forgot-password link
+  (scoped to the login page — no longer hides the Submit button on the
+  Review Profile / update-profile page; fixed)
 - Only IdP buttons render
 
 Server-side login flow unchanged (this is UX gating, not enforcement). A
 determined attacker could POST credentials directly to KC's
 =/login-actions/authenticate= — server-side enforcement requires a custom
 KC SPI, out of scope today.
+
+** Invite-only access (per-tenant)
+
+Opt-in per tenant. When ON, only users an operator has provisioned/invited
+may sign in via a brokered IdP (Google etc.) — unknown emails are *rejected
+at Keycloak*, and self-registration is disabled. OFF by default, so
+self-signup tenants are unaffected. Unlike the UX-only "Username / Password"
+toggle above, this is real server-side enforcement.
+
+Enable: Tenant detail → Identity Providers tab → *Invite-only* toggle.
+API: =PUT ${AUTH_MGR_BASE}/api/v1/tenants/<slug>/identity-providers/registration=
+body ={"inviteOnly": true}= (gated =IDP_EDIT=); =GET= the same path returns
+={inviteOnly, registrationAllowed}=. Persisted in =tenant.settings.inviteOnly=
+(JSONB); the startup reconcile re-applies it per realm on every deploy.
+
+How it works — the per-realm =first broker login auto-link= flow:
+- ON: =idp-detect-existing-broker-user= REQUIRED (detects the pre-provisioned
+  account by email), =idp-create-user-if-unique= DISABLED (no auto-create),
+  =Handle Existing Account= subflow REQUIRED (so =idp-auto-link= runs and links
+  Google to the invited account), realm =registrationAllowed=false=.
+- OFF: detect DISABLED, create-if-unique ALTERNATIVE, Handle Existing Account
+  ALTERNATIVE, =registrationAllowed=true=.
+Invited user → linked + signed in; uninvited → denied, no account created.
+Pairs with #94 auto-link.
+
+*Gotcha for future flow edits*: KC ignores ALTERNATIVE executions sitting at
+the same level as a REQUIRED one — that is why Handle Existing Account must be
+flipped to REQUIRED in invite-only mode, else =idp-auto-link= is silently
+skipped and every login fails with =invalid_user_credentials=.
+
+*** Inviting users
+
+Create the invited (provisioned) account two ways:
+- Admin UI: Tenant detail → Users tab → *+ Invite user* (email + roles).
+- API (for tenant apps): =POST ${AUTH_MGR_BASE}/api/v1/tenants/<tenantUuid>/users=
+  body ={"email","firstName","lastName","roles":["user-viewer"],"sendInvite":true}=
+  (gated =USER_INVITE=). The tenant backend calls this with its service-account
+  =client_credentials= token (grant =USER_INVITE= via Apps → service-account
+  permissions). It pre-creates the KC user (so invite-only auto-link lets them
+  in) and emails the invite.
+
+Invites to brokered / Google-only tenants now send a *branded "sign in to get
+started" email* — sent by auth-manager via SendGrid, not the old KC
+=UPDATE_PASSWORD= mail. It's overridable per tenant via the reserved
+=invitation= email template (see *Email templates* above).
+
+*App-vs-IAM division*: the IAM owns the user store + invite email + invite-only
+enforcement; the app owns invitation *policy* (who may invite, per-user quota,
+referral tracking). On "invite a friend" the app checks its quota, then calls
+the IAM invite API — the IAM provisions the user and emails them. Apps should
+NOT keep their own allow-list: the IAM user list *is* the allow-list.
+
+Caveats:
+- Invite endpoint is UUID-keyed (=/tenants/{tenantUuid}/users=) — hand the app
+  its tenant UUID (slug alias TBD).
+- The invite email currently uses KC =UPDATE_PASSWORD= action, which is wrong
+  for a Google-only tenant (prompts for a pointless password). Switch to a
+  "sign in with Google" invite before apps rely on it (follow-up).
+- The service-account client must NOT use lightweight access tokens, or the
+  =USER_INVITE= role claim is stripped and the call 403s.
 
 ** Deleting a tenant
 
@@ -459,7 +592,7 @@ prod tenants get =auth.mcp-mesh.io= URLs.
 
 ** Tenant team integration checklist
 
-1. Bump deps: =mcp-mesh-auth-lib= 0.3.1 (Java) / 0.1.0 (Python),
+1. Bump deps: =mcp-mesh-auth-lib= 0.3.3 (Java) / 0.1.1 (Python),
    =@mcpmesh/auth-lib-react= 0.3.0
 2. Backend: =@RequirePermission= annotations + =auth-lib= autoconfig
 3. Backend: implement =GET /api/me= using =MeResponseBuilder.fromJwt= (Java)
@@ -470,6 +603,233 @@ prod tenants get =auth.mcp-mesh.io= URLs.
 6. Sending email: configure app's SMTP client with
    =SMTP_HOST=smtp-relay.auth-platform.svc.cluster.local=, port 25, no auth
 7. (Optional) Authenticate own From domain via admin UI → Email tab
+
+* Tenant onboarding runbook (BFF model)
+
+The canonical, reusable runbook for onboarding a tenant app onto the IAM using
+the BFF integration pattern. =happy-feet= (realm =t-happyfeet=) is the
+reference implementation. The role tags on each step say who does it — hand the
+App-Claude steps to the tenant's own Claude.
+
+** Three roles
+
+| Role         | Who                                     | Does                                                              |
+|--------------+-----------------------------------------+------------------------------------------------------------------|
+| *User*       | Operator (Dhyan)                        | All admin-UI actions, Google console, secret hand-off, deploys   |
+| *IAM Claude* | auth-platform side                      | Produces the spec (client/manifest/routes/env), verifies platform |
+| *App Claude* | The tenant's Claude (e.g. wisefolio-cc) | Implements the app: deletes own auth, wires auth-lib + BFF, env   |
+
+** The integration contract
+
+The tenant owns ZERO auth code. Its footprint:
+- A UI server (nginx serving a static SPA, or node).
+- A backend/api-gateway that ONLY validates the BFF-injected =Authorization:
+  Bearer <jwt>= via the published auth-lib (=mcp-mesh-auth-lib= Java/Python) and
+  may inject =X-User-Email=/=X-Kc-Sub= to internal services (see happy-feet
+  =AuthFilter=).
+- Internal services/agents — no auth; they trust the gateway-injected identity.
+
+The platform owns everything else:
+- Login / session / refresh / logout — platform-edge *BFF* (=/_bff/login=,
+  =/_bff/me=, =/_bff/logout=). Frontend uses =@mcpmesh/auth-lib-react=
+  (=PlatformAuthProvider= + =bffFetch=); on 401 it redirects to =/_bff/login=.
+- Identity providers (Google, GitHub, …) — per-realm KC brokering. The tenant
+  configures NOTHING for Google; one shared platform Google app serves all
+  realms.
+- Invitations + user management — auth-manager API / admin-UI (=USER_INVITE=
+  etc.). Access is gated by token permissions, NOT an app-side allowlist.
+
+** Dev vs prod model
+
+A tenant's *dev* runs in the *isolated dev environment* (=auth-platform-dev=) —
+its own Keycloak, DB, edge, Cloudflare tunnel, and Google client, separated from
+prod. The app runs *locally* on a dev machine; the dev edge proxies to it over
+the LAN. (See =Dev environment architecture= below.) Prod is a separate tenant
+in the prod control plane.
+
+| Aspect          | Dev tenant                                                   | Prod tenant                                     |
+|-----------------+--------------------------------------------------------------+-------------------------------------------------|
+| Control plane   | =auth-dev.mcp-mesh.io/admin= (=auth-platform-dev=)           | =auth.mcp-mesh.io/admin= (=auth-platform=)      |
+| Realm / KC      | =t-<slug>-dev= on dev KC =auth-dev.mcp-mesh.io=              | =t-<slug>= on prod KC =auth.mcp-mesh.io=        |
+| Public hostname | =<slug>-dev.mcp-mesh.io= (dev tunnel)                        | =<slug>.<domain>= (prod tunnel)                 |
+| Issuer          | =https://auth-dev.mcp-mesh.io/auth/realms/t-<slug>-dev=      | =https://auth.mcp-mesh.io/auth/realms/t-<slug>= |
+| Route targets   | dev machine over LAN (=http://192.168.10.50:3000= / =:8080=) | in-cluster svc DNS                              |
+| App runs        | LOCALLY on the dev machine                                   | deployed to k3s                                 |
+| Google client   | dev Google client (isolated)                                | prod Google client                              |
+| Deploy needed   | NO                                                           | YES                                             |
+
+A lighter alternative — a =-dev= tenant in the *prod* control plane (e.g.
+=safesound-dev=) — shares the prod KC + Google client + tunnel: simpler, but not
+isolated. Prefer the isolated dev env for new tenants.
+
+** Step-by-step
+
+*** Phase 1 — Discovery & spec  [IAM Claude + App Claude]
+- *App Claude*: describe the stack (backend language, frontend, what the
+  services/"agents" are) and the role/permission model needed.
+- *IAM Claude*: turn that into the concrete spec — the client, the
+  =tenant-manifest.yaml= (permissions + roles), the route rules, the dev env
+  block — and verify anything non-obvious against the platform code.
+- ⚠️ *Roles-as-permissions*: a composite role NAME never appears in the JWT —
+  =resource_access.<client>.roles= carries the atomic PERMISSION (client-role)
+  strings only. Model the things the app checks (e.g. =ADMIN=) as
+  *permissions*, bundled into roles:
+  #+BEGIN_SRC yaml
+  permissions:
+    - id: USER
+      description: Authenticated user
+      client: backend
+    - id: ADMIN
+      description: Administrator
+      client: backend
+  roles:
+    - name: user
+      permissions: [USER]
+    - name: admin
+      permissions: [USER, ADMIN]
+  defaultRoles: [user]
+  #+END_SRC
+  Token then carries =["USER"]= for a user and =["USER","ADMIN"]= for an admin;
+  the app checks for =ADMIN=.
+
+*** Phase 2 — Provision the tenant in the IAM  [User, admin UI]
+All in =https://auth.mcp-mesh.io/admin/=:
+1. *Tenants → New tenant*: slug =<slug>-dev= (dev) or =<slug>= (prod), display
+   name, admin email.
+2. *Apps*: add one app, profile =CONFIDENTIAL_BACKEND=, client id =backend=
+   (the resource-server client the gateway validates against; it needs NO
+   redirect URI — the BFF login uses the per-realm =usermanagement= client).
+3. *Routes*: targets + rules.
+   - Dev targets: =frontend → http://192.168.10.50:<ui-port>=,
+     =backend → http://192.168.10.50:<gw-port>= (dev machine LAN IP).
+   - Prod targets: in-cluster svc DNS.
+   - Rules (default): =/api → REQUIRED → backend=, =/* → OPTIONAL → frontend=.
+     Gate a path with =requiredPermission=; use =bypassCsrf= / =maxBodyMb= /
+     =stripPrefix= as needed.
+4. *Hostnames*: =<slug>-dev.mcp-mesh.io= (dev) / =<slug>.<domain>= (prod). The
+   platform auto-creates the CF CNAME; an =*.mcp-mesh.io= host routes via the
+   wildcard ingress to the edge with no tunnel edit (a custom apex auto-adds an
+   ingress entry).
+5. *Permissions / Roles*: upload the =tenant-manifest.yaml= from Phase 1.
+6. *Client secret*: grab =backend='s secret from the create result / onboarding
+   bundle (or KC console → realm → Clients → backend → Credentials). Hand
+   =client_id= + =client_secret= to the tenant *out of band* (not over the
+   relay).
+7. *Users*: create test users; assign one the =admin= role; mark their emails
+   *verified* by hand (the wizard leaves new users unverified — gap #90).
+
+*** Phase 3 — App integration  [App Claude]
+- Delete any tenant-side OAuth/OIDC/session code (e.g. an nginx Lua Google flow).
+- Frontend: wrap in =@mcpmesh/auth-lib-react= =PlatformAuthProvider=; use
+  =bffFetch= for API calls; on 401 redirect to =/_bff/login= (see happy-feet
+  =AuthContext.tsx= / =bffAuth.ts=).
+- Backend: add =mcp-mesh-auth-lib=; validate the BFF Bearer against the realm
+  issuer; implement =/api/me= via =MeResponseBuilder.fromJwt= (Java) /
+  =build_me_response= (Python); inject =X-User-Email= to internal services if
+  needed (happy-feet =AuthFilter=). Replace any =is_admin= subrequest with a
+  token-permission check (=ADMIN=).
+- Env (dev):
+  #+BEGIN_SRC sh
+  AUTH_LIB_ISSUER_URI=https://auth.mcp-mesh.io/auth/realms/t-<slug>-dev
+  AUTH_LIB_CLIENT_ID=backend
+  AUTH_LIB_AUDIENCES=backend
+  AUTH_LIB_CLIENT_SECRET=<from User, out of band>
+  AUTH_LIB_PERMISSIONS_SOURCE=claims
+  # server-to-server, only if the app calls the auth-manager API:
+  KC_BASE=https://auth.mcp-mesh.io/auth
+  AUTH_MGR_BASE=https://auth.mcp-mesh.io
+  #+END_SRC
+  Prod flip: =iss= host stays =auth.mcp-mesh.io=; realm → =t-<slug>=; swap the
+  secret; set =AUTH_MGR_BASE= to the in-cluster svc URL.
+
+*** Phase 4 — Validate end-to-end  [App Claude + User]
+- Run the app locally; bind the UI and gateway to =0.0.0.0= so the cluster edge
+  can reach them over the LAN, and allow the dev hostname in any host-check (cf.
+  safe-sound =vite.config= =allowedHosts=).
+- Browse to =https://<slug>-dev.mcp-mesh.io= → BFF redirects to login → sign in
+  as a test user → land in the app. Confirm =/api/me= returns the user, the
+  =ADMIN= gate works for the admin user, and an unprivileged user is denied.
+
+*** Phase 5 — Enable Google (after the password flow is green)  [User]
+- Add the broker redirect URI
+  =https://auth-dev.mcp-mesh.io/auth/realms/t-<slug>-dev/broker/google/endpoint=
+  to the *dev* Google client (dev client) in the Google console (exact match; no
+  wildcards). Prod tenants use the prod host + prod client
+  (=https://auth.mcp-mesh.io/auth/realms/t-<slug>/broker/google/endpoint=).
+- Toggle Google on in *Identity Providers*.
+
+*** Phase 6 — Prod cutover  [User + App Claude]
+- *User*: create the prod tenant =<slug>= / realm =t-<slug>=, hostname
+  =<slug>.<domain>=, route targets → in-cluster services; upload the same
+  manifest; issue a prod client secret.
+- *App Claude*: deploy the app to k3s; flip env to the prod realm + in-cluster
+  =AUTH_MGR_BASE=.
+
+* Dev environment architecture
+
+Tenant *dev* runs in the *isolated dev environment* — the =auth-platform-dev=
+namespace, fully separated from prod: its own Keycloak, Postgres, Redis, edge,
+Cloudflare tunnel, and Google OAuth client. The tenant's app runs *locally* on a
+developer machine; the dev edge proxies to it over the LAN.
+
+** Components
+
+| Piece            | Value                                                                                        |
+|------------------+----------------------------------------------------------------------------------------------|
+| Namespace        | =auth-platform-dev=                                                                           |
+| Admin UI         | =https://auth-dev.mcp-mesh.io/admin/= (operator =dev-admin=, platform realm =dev=)            |
+| KC (issuer host) | =auth-dev.mcp-mesh.io= (=platform-kc-dev=, =KC_HOSTNAME_STRICT=true=)                         |
+| Edge             | =auth-platform-dev-platform-edge= (ClusterIP)                                                 |
+| CF tunnel        | =68b84bb5-5adc-499a-82d5-ad432bf785d0=, ingress = catch-all → dev edge                        |
+| cloudflared      | =auth-platform-dev-cloudflared= (token in secret =cloudflared-dev-token=)                     |
+| Google client    | "MCP Mesh Auth Service - Dev" =943290783081-bgih…= (creds in dev =platform-oauth-providers=) |
+
+The dev =cloudflare-api= secret's =tunnel-id= points at the dev tunnel, so the
+dev auth-manager (reads =CF_TUNNEL_ID=) auto-creates each dev tenant's DNS CNAME
+→ dev tunnel.
+
+** Hostname + TLS scheme (important)
+
+- Dev tenant hostname = single-level =<slug>-dev.mcp-mesh.io=.
+- ⚠️ Do NOT use a two-level wildcard like =*.dev.mcp-mesh.io=. Cloudflare free
+  Universal SSL covers only the apex + a *single-level* =*.mcp-mesh.io=, so a
+  two-level name fails the TLS handshake (=sslv3 alert handshake failure=); it
+  would require paid Advanced Certificate Manager.
+- Routing: the tenant's specific CNAME =<slug>-dev.mcp-mesh.io → dev tunnel=
+  overrides the prod =*.mcp-mesh.io= wildcard (a specific DNS record wins), so it
+  reaches the dev tunnel → dev edge. TLS is covered (single-level). Auto-created
+  by the dev auth-manager.
+
+** Request path
+
+#+BEGIN_SRC text
+  browser → https://<slug>-dev.mcp-mesh.io
+          → (specific CNAME) dev CF tunnel
+          → dev edge (catch-all ingress)
+          → host→tenant routing (dev Redis)
+          → BFF login at dev KC (auth-dev.mcp-mesh.io) + proxy /api,/ to the
+            Route targets (dev machine LAN IP, e.g. 192.168.10.50:3000 / :8080)
+#+END_SRC
+
+** Onboarding a dev tenant (zero per-tenant infra)
+
+1. Dev admin UI (=auth-dev.mcp-mesh.io/admin=): New tenant =<slug>-dev= (realm =t-<slug>-dev=).
+2. App =backend= (CONFIDENTIAL_BACKEND).
+3. Routes → targets = dev machine LAN IP (=http://192.168.10.50:3000= UI, =:8080= gateway); rules =/api→REQUIRED→backend=, =/*→OPTIONAL→frontend=.
+4. Hostname =<slug>-dev.mcp-mesh.io= — dev auth-manager auto-creates the CNAME → dev tunnel; catch-all ingress routes it; TLS covered. *No tunnel/DNS edits.*
+5. Upload the perms/roles manifest. Create test users (mark emails verified — gap #90).
+6. Apps → =backend= → *Reveal* the client secret; hand =client_id=backend= + secret to the tenant *out of band*.
+7. (Optional) Enable Google: add =https://auth-dev.mcp-mesh.io/auth/realms/t-<slug>-dev/broker/google/endpoint= to the *dev* Google client. (Don't enable GitHub unless a dev GitHub client is set up — the dev secret otherwise holds copied prod GitHub creds whose redirect URIs are on the prod host.)
+
+App side = happy-feet clone (Next.js + =@mcpmesh/auth-lib-react=; Java api-gateway
+validating the BFF Bearer). Env: =AUTH_LIB_ISSUER_URI=https://auth-dev.mcp-mesh.io/auth/realms/t-<slug>-dev=,
+=AUTH_LIB_CLIENT_ID=backend=. Prod flip = a separate tenant in the prod control
+plane (host =auth.mcp-mesh.io=, in-cluster route targets, prod Google client).
+
+** Chrome password-manager note
+
+Save dev operator credentials under a *distinct* username (=dev-admin=) so Chrome
+doesn't conflate them with prod's =admin= (both under =mcp-mesh.io=).
 
 * Common ops
 
@@ -667,7 +1027,7 @@ Notable env vars wired through helm values:
 
 ** Library exports
 
-=mcp-mesh-auth-lib= (Java 0.3.1):
+=mcp-mesh-auth-lib= (Java 0.3.3):
 - =io.mcpmesh.auth.lib.dto.MeResponse= — record DTO
 - =io.mcpmesh.auth.lib.dto.MeResponseBuilder.fromJwt(jwt, clientId, tenant)=
 
@@ -696,11 +1056,10 @@ Re-running the script destroys CloudflareTunnelService-added tenant rules
 manually restore using the curl block in the Deployment section. Real fix:
 read current ingress, MERGE static + tenant rules, preserve unknowns.
 
-** #104 sendgrid_domain_valid doesn't persist after revalidate
-Operators clicking "Re-verify" in the Email tab see "Authenticated ✓" but
-the DB flag stays false. Subsequent save of From address rejected with
-=email.unauthorized_from_domain=. Manual UPDATE on
-=auth_manager.tenants.sendgrid_domain_valid= unblocks.
+** #104 sendgrid_domain_valid doesn't persist after revalidate — RESOLVED
+Fixed: the =valid= flag now persists on validate/re-verify (service reads the
+authoritative SendGrid =/validate= POST result, not the lagging GET). No manual
+=UPDATE= needed.
 
 ** #103 PermissionsTab error display
 Operators get raw =ApiError: HTTP 400 {timestamp...}= JSON dumped on upload

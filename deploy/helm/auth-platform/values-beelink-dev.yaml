@@ -39,7 +39,7 @@ authManager:
   replicas: 1
   image:
     repository: auth-manager
-    tag: "0.1.78"
+    tag: "0.1.79"
   # KC StatefulSet lives in this dev namespace, named after the dev Bitnami
   # KC release (platform-kc-dev). Used by the RBAC Role for theme-reload
   # rolling-restart patches AND by ThemeApplier at runtime (env var
@@ -69,6 +69,7 @@ authManager:
     bundleKcBase: "https://auth-dev.mcp-mesh.io/auth"
     bundleAdminBase: "https://auth-dev.mcp-mesh.io/admin"
     bundleAuthMgrInClusterBase: "http://auth-platform-dev-auth-manager.auth-platform-dev.svc.cluster.local:8080"
+    bundleAuthMgrPublicBase: "https://auth-dev.mcp-mesh.io"
     # cnpg-superuser-pool JDBC URL. Override the application.yaml default which
     # hardcodes the prod namespace (platform-pg-rw.auth-platform). Without this,
     # dev's auth-manager tries to connect to PROD's PG with dev's superuser
@@ -95,7 +96,7 @@ adminUi:
   replicas: 1
   image:
     repository: admin-ui
-    tag: "0.1.47"
+    tag: "0.1.48"
 
 # Dev shares prod's smtp-relay — no separate relay deployment in this
 # namespace. (auth-manager + KC realms reach it via cross-namespace DNS

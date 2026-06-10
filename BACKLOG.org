@@ -5,13 +5,15 @@
 
 Snapshot at handoff to Opus 4.8. Pulled from internal task list; descriptions
 expanded with the context that's not in the one-line task subjects. IDs match
-the in-conversation tracker so we can grep history if needed.
+the in-conversation tracker so we can grep history if needed. Statuses
+re-verified against the codebase on 2026-06-10.
 
 * CRITICAL
 ** [#A] #115 — =cf-setup-tunnel.sh= wipes dynamically-added tenant ingress rules
    :PROPERTIES:
    :TASK: 115
-   :STATUS: code-complete; deploy-pending
+   :STATUS: DONE — read-merge-write of tunnel ingress (host:port); script now
+            self-healing, no live migration needed.
    :END:
 
    Re-running =scripts/cf-setup-tunnel.sh= replaces the tunnel's full ingress
@@ -45,7 +47,8 @@ the in-conversation tracker so we can grep history if needed.
 ** [#A] #92 — CNPG superuser password drift on every redeploy
    :PROPERTIES:
    :TASK: 92
-   :STATUS: code-complete; migration-pending
+   :STATUS: DONE — enableSuperuserAccess + pinned basic-auth superuser secret;
+            applied to prod live.
    :END:
 
    CNPG regenerates the =postgres= superuser secret on every helm upgrade
@@ -84,7 +87,8 @@ the in-conversation tracker so we can grep history if needed.
 ** [#B] #90 — Onboarding wizard: auto-verify admin email + Users tab "Mark verified" action
    :PROPERTIES:
    :TASK: 90
-   :STATUS: pending
+   :STATUS: DONE — in DEV (0.1.79/0.1.48); onboarding sets emailVerified=true,
+            POST .../verify-email + Users-tab action shipped. Not yet in prod.
    :END:
 
    New tenants land with =emailVerified=false= on the operator-provisioned
@@ -100,32 +104,11 @@ the in-conversation tracker so we can grep history if needed.
      PUTs =emailVerified=true= via KC admin API
    - Audit log entry for the action
 
-** [#B] #94 — Wizard / IdP setup: auto-link IdP login to operator-provisioned local user
-   :PROPERTIES:
-   :TASK: 94
-   :STATUS: pending
-   :END:
-
-   When an operator provisions =dhyan@example.com= as the admin user and
-   enables Google IdP, then logs in via Google with the same email — KC
-   creates a *brokered* user with a different UUID instead of linking to
-   the local account. Operator ends up with two accounts: the local one
-   has the roles, the brokered one is empty → 403 on everything.
-
-   *Fix:* enable KC's =Automatic Link= first-broker-login authenticator
-   (variant of the existing First Broker Login flow) for the platform +
-   tenant realms during creation. Match on email. If a local user with
-   that email exists, link the IdP identity to it instead of creating a
-   new user.
-
-   Realm-creation flow lives in =KeycloakAdminService.createRealm= and
-   =IdentityProvidersBootstrap= for platform realm. Both need the new
-   first-broker-login flow wired.
-
 ** [#B] #93 — PermissionsTab: persistent error display on manifest upload failure
    :PROPERTIES:
    :TASK: 93
-   :STATUS: pending
+   :STATUS: DONE — persistent inline UploadErrorPanel in PermissionsTab.tsx;
+            error stays until a new upload replaces it.
    :END:
 
    Manifest upload errors currently flash a toast that disappears in ~5s.
@@ -139,10 +122,16 @@ the in-conversation tracker so we can grep history if needed.
    review step — same pattern, slot into PermissionsTab between the
    upload button and the role list.
 
+   *Verified shipped:* =PermissionsTab.tsx= renders
+   ={uploadMut.isError && <UploadErrorPanel/>}= — a persistent red inline
+   panel (status code + response body) between the upload button and the
+   role list, exactly per scope. No toast involved.
+
 ** [#B] #103 — Email tab UX polish: error messages + auto-validate + status polling
    :PROPERTIES:
    :TASK: 103
-   :STATUS: pending
+   :STATUS: DONE — in DEV (0.1.48); Email tab now auto-validates ~30s after
+            CNAME push with polling spinner. Not yet in prod.
    :END:
 
    The Email tab in tenant detail currently:
@@ -159,27 +148,207 @@ the in-conversation tracker so we can grep history if needed.
 
    Related: #104 (same area).
 
-** [#B] #104 — =TenantDomainAuthService.revalidate= doesn't persist =sendgrid_domain_valid=
+   *Verified 2026-06-10:* friendly error mapping (=updateErrorMessage()= in
+   EmailTab.tsx) and live status (Re-verify button spinner + per-CNAME
+   pushed/pending indicators in =CnamesPushedBlock=) are DONE. The wizard
+   now auto-runs domain auth + polls validation during onboarding (commit
+   =a701eb3=), covering new tenants. *Remaining:* the Email tab itself
+   still requires a manual "Re-verify" click after DKIM CNAME changes —
+   the auto-=/validate= ~30s after a CNAME update was never added to the
+   tab.
+
+** [#B] tenant-tab-reset — TenantDetail tab snaps back to Overview on window re-focus
    :PROPERTIES:
-   :TASK: 104
+   :TASK: tenant-tab-reset
+   :STATUS: DONE — in DEV (0.1.48); tab persisted in ?tab= param + snap-back
+            guarded on /me isFetching. Not yet in prod.
+   :END:
+
+   On the tenant-detail page, being on any tab other than Overview, switching
+   to another Chrome tab, and coming back resets the page to Overview. Root
+   cause (diagnosed 2026-06-10): it is NOT a remount — it's a chain through
+   the auth lib's focus refetch:
+
+   1. =useMe= (auth-lib-react =useMe.ts:72=) sets =refetchOnWindowFocus: true=
+      per-query, overriding the app's global =refetchOnWindowFocus: false=
+      (=main.tsx:13=), so every window focus refetches =/me=.
+   2. While that refetch is in flight, =usePermission= returns =false= for
+      everything (intentional anti-flicker default-DENY,
+      =permissions.tsx:15-19=).
+   3. =visibleTabs= in =TenantDetail.tsx:44-64= collapses to =[]=, and the
+      snap-back effect at =TenantDetail.tsx:68-70=
+      (=if (!visibleTabs.includes(tab)) setTab(visibleTabs[0] ?? 'overview')=)
+      overwrites the plain-=useState= tab. When =/me= lands ~100ms later the
+      tabs reappear, but the selection is gone.
+
+   *Fix (both, in TenantDetail only — the lib behavior is intentional):*
+   - Guard the snap-back effect while =/me= is merely refetching: read
+     =isFetching= from =useMeContext()= and early-return (or skip snap-back
+     when =visibleTabs.length === 0= — empty means "perms unknown", not
+     "demoted").
+   - Persist the active tab in a =?tab== URL search param via
+     =useSearchParams= (pattern already in =TenantWizard.tsx:122-123=) —
+     survives this bug class entirely and gives deep-linkable, refresh-safe
+     tabs.
+
+** [#B] email-invite — thread =inviterName= into "X invited you" invitation email
+   :PROPERTIES:
+   :TASK: invite-name
+   :STATUS: DONE — in DEV (0.1.79/0.1.48); inviterName threaded API→email,
+            UI sends operator display name. Not yet in prod.
+   :END:
+
+   The invitation email template already supports ={{inviterName}}= ("X invited
+   you to ..."), but the invite request (=POST /tenants/{id}/users=) and
+   =UserManagementService.sendInvitation= pass =null= for it — so the rendered
+   email omits the inviter. Thread an =inviterName= through the invite API into
+   the invitation email model.
+
+** [#B] email-preview — render one populated loop row in template preview
+   :PROPERTIES:
+   :TASK: preview-loop
+   :STATUS: DONE — in DEV (0.1.79); loops render one [placeholder] row,
+            inverted sections suppressed. Not yet in prod.
+   :END:
+
+   The email-template preview renders section/loop bodies as empty (the
+   placeholder context is falsy), so list templates (e.g. a digest holdings
+   table) preview blank. Render one representative populated row with
+   =[placeholder]= values so operators can preview list-driven templates.
+
+** [#B] email-ratelimit — per-tenant rate-limit overrides on the send API
+   :PROPERTIES:
+   :TASK: email-rl-override
+   :STATUS: DONE — in DEV (0.1.79/0.1.48); V7 migration, GET/PUT
+            /email/rate-limit + EmailTab overrides UI. Not yet in prod.
+   :END:
+
+   The send-API limiter (=EmailRateLimiter=, Redis =email:rl:*=) currently uses
+   platform defaults (=auth-manager.email.rate-limit.per-minute=100=,
+   =per-day=5000=). Add per-tenant overrides so high-volume tenants (e.g. large
+   digest blasts) can be raised. TODO already noted in
+   =EmailRateLimitProperties=.
+
+   *Update 2026-06-10:* the limiter itself shipped (commit =51fb44d=,
+   Redis fixed-window per-minute burst + per-day quota), but only with
+   platform-wide defaults — per-tenant overrides are still the explicit
+   TODO at =EmailRateLimitProperties.java:15-17=. No DB field, API, or
+   admin-UI for overrides yet.
+
+** [#C] email-byo-sendgrid — bring-your-own SendGrid API key per tenant
+   :PROPERTIES:
+   :TASK: byo-sendgrid
    :STATUS: pending
    :END:
 
-   =TenantDomainAuthService.revalidate(tenantId)= calls SendGrid's
-   =/whitelabel/domains/{id}/validate=, gets back =valid: true=, but the
-   Tenant entity's =sendgridDomainValid= column isn't updated. UI keeps
-   showing the red "Failed ✗" badge even after backend confirms validity.
+   Today ALL tenant mail funnels through one platform SendGrid account via a
+   single global key (=sendgrid-api= Secret / =SENDGRID_API_KEY=), used in two
+   places: the =smtp-relay= (Go, auths to =smtp.sendgrid.net:587= as
+   =apikey=/<platform key>) for KC + auth-manager SMTP sends, and
+   =SendGridClient= (Web API v3) for per-tenant domain-auth under *our* account.
+   Per-tenant today = authenticated domain + From + DKIM, but all under the
+   platform account. There is NO per-tenant API key field anywhere (DB, entity,
+   settings) — confirmed.
 
-   Probably a missing =tenantRepository.save(tenant)= after the field
-   assignment, or the assignment is on a detached copy. ~10-line fix
-   once located. Check =TenantDomainAuthService.java= around the
-   =revalidate= method.
+   BYO lets a tenant send as their OWN SendGrid account. The win over the
+   current model (which already isolates domain/DKIM/From): the tenant's own
+   quota/billing, sender-reputation isolation (their spam complaints don't touch
+   other tenants), and their own analytics/suppression lists. Strongest pull is
+   a tenant who ALREADY runs SendGrid in prod (e.g. WiseFolio) and wants to keep
+   their existing account, templates, and suppression history.
+
+   *Design — BYO tenants route AROUND the relay entirely; platform key stays the
+   default for everyone else (zero regression).* The key touches three
+   independent send paths, each must switch to the tenant key:
+   1. *KC-originated mail* (reset/verify/invite — the bulk). KC realm SMTP
+      supports per-realm auth: =SmtpConfigBootstrap= points the BYO realm's SMTP
+      straight at =smtp.sendgrid.net:587=, =auth=true=, =starttls=true=,
+      user==apikey=, pass=<tenant key> — bypassing the relay. No relay change.
+   2. *auth-manager transactional mail* (=EMAIL_SEND= API + invitations). Send
+      via =SendGridClient= Web API v3 =mail/send= with the tenant key (reuses
+      the existing HTTP client) instead of JavaMailSender→relay.
+   3. *Domain auth* — run create/validate against the tenant's account with
+      their key (or skip; they manage their own domain). =isTenantAuthenticated
+      Domain= flips to "verified in tenant's account."
+
+   *The hard part is the secret, not the plumbing.* The key is a live,
+   full-access SendGrid credential. We have NO app-level secret encryption today
+   (config sits in plaintext JSONB), so BYO needs net-new:
+   - encryption at rest — =settings.sendgrid.apiKeyEnc= via AES-GCM with a master
+     key from a platform Secret, OR seal each tenant key into its own k8s Secret
+     (do NOT add a plaintext column)
+   - validation on entry (test call before save), rotation, revocation, never
+     log it, admin-UI to enter/replace
+   Send-path edits are ~a day; the encryption + key-management UX is the real
+   cost. Not gating anything. Related: [[email-compliance]] (suppression lists
+   become tenant-owned under BYO).
+
+** [#B] bundle-complete — full integration config in the starter pack + config-driven base URLs
+   :PROPERTIES:
+   :TASK: bundle-complete
+   :STATUS: DONE — in DEV (0.1.79/0.1.48); BundleBaseResolver +
+            /api/v1/bundle/bases, env.ts hardcode deleted. Not yet in prod.
+   :END:
+
+   The onboarding bundle (=OnboardingBundleService=) already emits README,
+   =.env.example=, =03-backend-{java,python}.md=, =04-service-account.md=,
+   =07-in-cluster-vs-public.md=, =08-email.md= — but (a) several files HARDCODE
+   the prod public URL =https://auth.mcp-mesh.io= (lines ~1090-1092, 1586, 1629),
+   so a DEV bundle hands out prod URLs; and (b) the =.env= is MISSING the fields a
+   backend actually needs. We hand-assembled the complete list for safesound-dev
+   over several turns; this makes the bundle emit it automatically for every tenant.
+
+   *Decision: CONFIG-ONLY (no request auto-detect).* Simpler + error-free; prod
+   stays pinned via the existing =AUTH_MANAGER_BUNDLE_*= env vars. (Auto-detect
+   from the inbound Host was considered + rejected — not worth the forwarded-header
+   trust surface.)
+
+   *Scope:*
+   - *One source of truth for bases.* Add a =BundleBaseResolver= returning
+     ={kcBase, adminBase, authMgrInClusterBase, authMgrPublicBase}= read purely
+     from config props. Add the MISSING public auth-mgr base:
+     =auth-manager.bundle.auth-mgr-public-base= (application.yaml + a helm env var
+     =AUTH_MANAGER_BUNDLE_AUTH_MGR_PUBLIC_BASE= + chart default + dev override
+     =bundleAuthMgrPublicBase: https://auth-dev.mcp-mesh.io= in values-beelink-dev).
+     In-cluster base stays config-only (internal DNS, not derivable).
+   - *Complete the =.env.example=* (renderEnv): add =AUTH_LIB_CLIENT_SECRET=<out-of-band>=,
+     =AUTH_MGR_BASE={{authMgrPublicBase}}=, ={{SLUG}}_TENANT_ID={{uuid}}= (UUID — for
+     the UUID-keyed invite/email paths), ={{SLUG}}_TENANT_SLUG={{slug}}= (for the
+     slug-keyed routes/IdP/roles paths). Tenant UUID/slug/realm/apps are already in
+     scope at generation time.
+   - *De-hardcode* the prod public URL in renderBackend{Java,Python} + renderInCluster
+     VsPublic → ={{authMgrPublicBase}}=. Emit BOTH auth-mgr bases, clearly labeled
+     (in-cluster = backend in cluster; public = local/external backend).
+   - *README checklist:* a one-glance integration checklist + per-tenant value table
+     (issuer, client ids, UUID, slug, both bases, SA token endpoint, the UUID-vs-slug
+     keying rule, SA-perm grant steps USER_INVITE/EMAIL_SEND, invite payload, Google
+     redirect URI). Deep prose stays in the existing numbered docs, just linked.
+   - *Kill the admin-ui hardcode:* add =GET /api/v1/bundle/bases= (same resolver →
+     JSON), have the wizard SuccessPage FETCH it, and DELETE the hardcoded
+     =bundleBases()= helper in =apps/admin-ui/src/lib/env.ts= (added in 0.1.47 as a
+     stopgap). Keep =isDevEnv()=/=EnvBadge= host-based (cosmetic, no network call).
+
+   Files: OnboardingBundleService.java, TenantController.java (or a new BundleController),
+   application.yaml, auth-manager-deployment.yaml, values.yaml + values-beelink-dev.yaml,
+   admin-ui TenantWizard.tsx + api/client.ts + lib/env.ts. One auth-manager bump + one
+   admin-ui bump. See [[reference_api_tenant_key_split]] for the UUID/slug rule the README
+   must teach. The 0.1.47 env.ts hardcode is the interim fix this supersedes.
+
+   *Partial progress (verified 2026-06-10):* the rendered bundle already
+   emits =AUTH_LIB_CLIENT_SECRET= and ={{upperSlug}}_TENANT_SLUG= in the
+   backend client blocks, and the .env templates are parametric
+   (={{authMgrInClusterBase}}=). Still missing: =BundleBaseResolver=, the
+   public auth-mgr base config prop, the tenant-UUID env var,
+   =GET /api/v1/bundle/bases=, and the hardcoded =bundleBases()= in
+   =apps/admin-ui/src/lib/env.ts= (the prod URL also still appears in the
+   rendered doc prose at OnboardingBundleService lines ~1091/1303/1586/1629).
 
 * DEV-ENV POLISH
 ** [#B] #113 — =deploy-beelink-dev.sh=: auto-handle CNPG enableSuperuserAccess + seed chart secret
    :PROPERTIES:
    :TASK: 113
-   :STATUS: pending
+   :STATUS: DONE — script now pre-creates secrets + sets
+            enableSuperuserAccess; idempotent.
    :END:
 
    First-time dev deploy required two manual fixups that the script
@@ -197,10 +366,18 @@ the in-conversation tracker so we can grep history if needed.
    Both got fixed manually but the script silently does the wrong
    thing on a fresh namespace. Make it idempotent + first-run-aware.
 
+   *Verified shipped:* =deploy-beelink-dev.sh= sets
+   =enableSuperuserAccess: true= on the inline CNPG CR (line ~198),
+   pre-creates =platform-pg-dev-superuser-secret= and
+   =platform-pg-dev-app-secret=, and passes KC admin creds via =--set=
+   on =helm upgrade --install= — first-run-aware and idempotent.
+
 ** [#B] #114 — =scripts/theme-dev-sync.sh= — fswatch + kubectl cp to dev KC pod
    :PROPERTIES:
    :TASK: 114
-   :STATUS: pending
+   :STATUS: DONE — scripts/theme-dev-sync.sh added (Bitnami path
+            /opt/bitnami/keycloak/themes, not the /opt/keycloak path the
+            original entry assumed).
    :END:
 
    Theme iteration loop on dev is still slow: edit .ftl/.css → docker
@@ -217,7 +394,8 @@ the in-conversation tracker so we can grep history if needed.
 ** [#C] #117 — KC session defaults: bump idle to 4h on tenant realm creation
    :PROPERTIES:
    :TASK: 117
-   :STATUS: pending
+   :STATUS: DONE — in DEV (0.1.79); createRealm now sets 900/14400/86400.
+            Existing realms unaffected.
    :END:
 
    We bumped =ssoSessionIdleTimeout= from 30m → 4h and =accessTokenLifespan=
@@ -231,6 +409,12 @@ the in-conversation tracker so we can grep history if needed.
    - =ssoSessionMaxLifespan= = 86400 (24h)
    - =accessTokenLifespan= = 900 (15m)
    - =offlineSessionIdleTimeout= leave at default
+
+   *Update 2026-06-10:* =KeycloakAdminService.createRealm= (lines
+   ~131-133) now sets these three fields explicitly — but to the OLD
+   values (accessTokenLifespan=300, ssoSessionIdleTimeout=1800,
+   ssoSessionMaxLifespan=36000). The fix is now literally a 3-value edit
+   to match the targets above (900 / 14400 / 86400).
 
 * CROSS-TEAM (not in our repo, but worth tracking)
 ** [#B] Maya frontend — chat draft persistence to sessionStorage
@@ -317,12 +501,55 @@ the in-conversation tracker so we can grep history if needed.
    ~5-line fix in bff.lua but worth verifying we're not breaking any
    intentional silent-401 callers first.
 
+** [#D] email-compliance — marketing-email gate (List-Unsubscribe + suppression list)
+   :PROPERTIES:
+   :TASK: marketing-compliance
+   :STATUS: pending
+   :END:
+
+   Before any tenant sends a *marketing*-category email through the send API
+   (=POST /tenants/{id}/emails/{typeKey}=), the platform must inject a
+   =List-Unsubscribe= header + maintain a per-tenant suppression list
+   (CAN-SPAM / GDPR). Transactional types (invitation, digest, payment) are
+   exempt. Needed before WiseFolio ships promotions; *not* a gate for the
+   initial cutover.
+
 * RECENTLY SHIPPED (for handoff context)
 
 These are completed but useful context for picking up next session:
 
 | ID  | Subject                                                                 |
 |-----+-------------------------------------------------------------------------|
+| -   | Theme: hide "Create one" registration link on password-disabled tenants |
+| -   |   (KC 26.2+ dropped footer-band class; added #kc-registration-container |
+| -   |   selector — live DEV; prod needs theme ConfigMap upgrade + KC restart) |
+| -   | Email send API: Redis rate limiter (per-minute burst + daily quota,     |
+| -   |   platform defaults)                                                     |
+| -   | Email templates: allow full email HTML (tables, inline CSS, bulletproof |
+| -   |   buttons)                                                               |
+| -   | Wizard auto-runs domain authentication during tenant onboarding         |
+| -   |   (admin-ui)                                                             |
+| 93  | PermissionsTab: persistent inline manifest-upload error panel           |
+| -   | admin-ui: ConfirmDialog + toast replace native confirm/alert (0.1.46)   |
+| -   | admin-ui: env-aware onboarding-bundle snippet in dev wizard (0.1.47)    |
+| -   | admin-ui: SA Permissions modal shows EMAIL_SEND + EMAIL_EDIT            |
+| -   | auth-libs (Java+Python): dev-mode bypass; Java lib targets Java 17      |
+| -   | IdP login buttons read "Continue with Google/GitHub" platform-wide      |
+| -   | Email templates: per-tenant catalog — zip upload (Mustache + CID), CSS- |
+| -   |   inline, preview, EMAIL_EDIT; send API POST /emails/{typeKey} gated     |
+| -   |   EMAIL_SEND + rate-limited                                              |
+| -   | Branded invitation email for brokered/Google-only tenants (replaces KC  |
+| -   |   UPDATE_PASSWORD; auth-manager-sent via SendGrid)                       |
+| -   | Per-tenant invite-only toggle (link-only brokered login) — IdP tab +    |
+| -   |   registration API + bootstrap reconcile                                |
+| -   | Theme fixes: scope mcp-no-password to login page (update-profile Submit |
+| -   |   button); email-preview Mustache-section render                        |
+| 94  | Auto-link brokered IdP login to operator-provisioned local user (KC     |
+| -   |   first-broker-login auto-link; deployed dev, validated)                |
+| 104 | TenantDomainAuthService.revalidate now persists sendgrid_domain_valid   |
+| -   |   (read authoritative /validate POST result, not lagging GET)           |
+| 119 | Route target with scheme (http://) → edge 500: normalizeTarget strips   |
+| -   |   scheme/trailing slash on save                                         |
 | 118 | BFF cookie re-issue on silent refresh (platform-edge 0.1.22)            |
 | 117 | (note: was already partially done — Maya realm bumped manually)         |
 | 116 | platform-edge: parameterize KC_BROWSER_HOST + platform realm            |
@@ -345,14 +572,18 @@ These are completed but useful context for picking up next session:
 * OPERATIONAL NOTES (relevant to several backlog items)
 
 - Prod release versions (current as of handoff):
-  - auth-manager: 0.1.67
-  - admin-ui: 0.1.40
-  - platform-edge: *0.1.22* (just shipped — cookie re-issue fix)
+  - auth-manager: 0.1.78
+  - admin-ui: 0.1.47
+  - platform-edge: 0.1.22
   - smtp-relay: 0.1.0
+  (values-beelink.yaml and values-beelink-dev.yaml both pin these tags;
+  prod rolled via commit =0c78ae2=.)
 
-- Dev release: same image tags, separate namespace =auth-platform-dev=,
-  separate CNPG (=platform-pg-dev=), separate KC (=platform-kc-dev=),
-  shared SMTP relay (cross-namespace).
+- Dev release: dev namespace now runs AHEAD of prod — auth-manager 0.1.79 /
+  admin-ui 0.1.48 (all 2026-06-10 backlog work); prod still 0.1.78 / 0.1.47.
+  Promote by retagging the =values-beelink.yaml= pins after dev validation.
+  Separate namespace =auth-platform-dev=, separate CNPG (=platform-pg-dev=),
+  separate KC (=platform-kc-dev=), shared SMTP relay (cross-namespace).
 
 - Memory entries that matter for these items:
   - =project_bff_cookie_refresh_gotcha.md= — why #118 was tricky to debug
