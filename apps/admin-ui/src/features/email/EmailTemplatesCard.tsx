@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api, ApiError } from '../../api/client';
 import type { EmailTemplateSummary } from '../../api/types';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { useToast } from '../../components/Toast';
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const TYPE_KEY_RE = /^[a-z0-9-]{1,64}$/;
@@ -29,6 +31,8 @@ export default function EmailTemplatesCard({ slug }: Props) {
   >(null);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [deleteKey, setDeleteKey] = useState<string | null>(null);
+  const toast = useToast();
 
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['email-templates', slug] });
@@ -36,7 +40,15 @@ export default function EmailTemplatesCard({ slug }: Props) {
 
   const del = useMutation({
     mutationFn: (typeKey: string) => api.deleteEmailTemplate(slug, typeKey),
-    onSuccess: () => invalidate(),
+    onSuccess: (_data, typeKey) => {
+      invalidate();
+      setDeleteKey(null);
+      toast.success(`Email template "${typeKey}" deleted`);
+    },
+    onError: (err) => {
+      setDeleteKey(null);
+      toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+    },
   });
 
   function downloadStarter() {
@@ -88,11 +100,7 @@ export default function EmailTemplatesCard({ slug }: Props) {
           deleting={del.isPending ? del.variables ?? null : null}
           onPreview={(k) => setPreviewKey(k)}
           onReplace={(k) => setUploadTarget({ typeKey: k, exists: true })}
-          onDelete={(k) => {
-            if (confirm(`Delete the "${k}" email template? KC falls back to its default.`)) {
-              del.mutate(k);
-            }
-          }}
+          onDelete={(k) => setDeleteKey(k)}
         />
       )}
 
@@ -133,6 +141,17 @@ export default function EmailTemplatesCard({ slug }: Props) {
           onClose={() => setPreviewKey(null)}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={!!deleteKey}
+        title={`Delete the "${deleteKey ?? ''}" email template?`}
+        description="Keycloak falls back to its default template for this email type."
+        confirmLabel="Delete"
+        danger
+        isLoading={del.isPending}
+        onCancel={() => setDeleteKey(null)}
+        onConfirm={() => { if (deleteKey) del.mutate(deleteKey); }}
+      />
     </div>
   );
 }

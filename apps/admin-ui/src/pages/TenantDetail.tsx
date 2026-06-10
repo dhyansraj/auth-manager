@@ -13,6 +13,8 @@ import DataServicesTab from '../features/data-services/DataServicesTab';
 import UserRolesPopover from '../features/roles/UserRolesPopover';
 import { useRolesQuery } from '../features/roles/useRolesQuery';
 import { useUserRealmRolesQueries } from '../features/roles/useUserRealmRolesQueries';
+import ConfirmDialog from '../components/ConfirmDialog';
+import { useToast } from '../components/Toast';
 
 type TabKey = 'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'email' | 'permissions' | 'roles' | 'data-services' | 'users' | 'audit';
 
@@ -32,6 +34,7 @@ export default function TenantDetail() {
   const canViewAudit        = usePermission('AUDIT_VIEW');
 
   const [tab, setTab] = useState<TabKey>('overview');
+  const toast = useToast();
   const tenant = useQuery({ queryKey: ['tenant', id], queryFn: () => api.getTenant(id!), enabled: !!id });
 
   // Build the visible-tab list per-perm. Overview is the landing page and
@@ -81,7 +84,7 @@ export default function TenantDetail() {
           <button
             onClick={async () => {
               try { await api.downloadOnboardingBundle(t.id); }
-              catch (e) { alert('Download failed: ' + (e instanceof Error ? e.message : String(e))); }
+              catch (e) { toast.error('Download failed: ' + (e instanceof Error ? e.message : String(e))); }
             }}
             className="bg-white border px-3 py-1.5 rounded text-sm hover:bg-slate-50"
           >
@@ -105,7 +108,7 @@ export default function TenantDetail() {
       {tab === 'email' && <EmailTab tenantId={t.id} slug={t.slug} />}
       {tab === 'permissions' && <PermissionsTab id={t.id} slug={t.slug} />}
       {tab === 'roles' && <RolesTab slug={t.slug} />}
-      {tab === 'data-services' && <DataServicesTab tenantId={t.id} />}
+      {tab === 'data-services' && <DataServicesTab tenantId={t.id} slug={t.slug} />}
       {tab === 'users' && <UsersTab tenantId={t.id} slug={t.slug} />}
       {tab === 'audit' && <AuditTab tenantId={t.id} />}
     </div>
@@ -149,6 +152,7 @@ const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT
 
 function AppsTab({ tenantId }: { tenantId: string }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const canEditApps = usePermission('APPS_EDIT');
   const apps = useQuery({ queryKey: ['apps', tenantId], queryFn: () => api.listApps(tenantId) });
   const [showCreate, setShowCreate] = useState(false);
@@ -156,6 +160,7 @@ function AppsTab({ tenantId }: { tenantId: string }) {
   const [displayName, setDisplayName] = useState('');
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
   const [saModalApp, setSaModalApp] = useState<import('../api/types').App | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<import('../api/types').App | null>(null);
 
   const create = useMutation({
     mutationFn: () => api.createApp(tenantId, { slug, displayName }),
@@ -217,7 +222,7 @@ function AppsTab({ tenantId }: { tenantId: string }) {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (confirm(`Delete app ${a.slug}?`)) del.mutate(a.id);
+                    setDeleteTarget(a);
                   }}
                   className="text-red-700 hover:underline text-xs"
                 >Delete</button>
@@ -235,6 +240,30 @@ function AppsTab({ tenantId }: { tenantId: string }) {
           onClose={() => setSaModalApp(null)}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={!!deleteTarget}
+        title={`Delete app ${deleteTarget?.slug ?? ''}?`}
+        description="This removes the app's Keycloak client. Anything authenticating as this app will stop working."
+        confirmLabel="Delete"
+        danger
+        isLoading={del.isPending}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          const appSlug = deleteTarget.slug;
+          del.mutate(deleteTarget.id, {
+            onSuccess: () => {
+              toast.success(`App ${appSlug} deleted`);
+              setDeleteTarget(null);
+            },
+            onError: (err) => {
+              toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+              setDeleteTarget(null);
+            },
+          });
+        }}
+      />
     </div>
   );
 }
@@ -390,9 +419,11 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
   // render (invite button, role-popover open, disable). Any of the
   // user-mgmt perms is sufficient.
   const canManage = canInvite || canDisable || canAssignRealmRoles;
+  const toast = useToast();
   const [search, setSearch] = useState('');
   const [showInvite, setShowInvite] = useState(false);
   const [popoverUser, setPopoverUser] = useState<{ id: string; username: string } | null>(null);
+  const [disableTarget, setDisableTarget] = useState<{ id: string; username: string } | null>(null);
 
   const users = useQuery({
     queryKey: ['users', tenantId, search],
@@ -414,6 +445,8 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
 
   const resend = useMutation({
     mutationFn: (userId: string) => api.resendInvite(tenantId, userId),
+    onSuccess: () => toast.success('Invite re-sent'),
+    onError: (err) => toast.error(`Resend failed: ${err instanceof Error ? err.message : String(err)}`),
   });
 
   // Build a roleName -> description map for tooltips on the row badges.
@@ -497,7 +530,7 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
                     {' '}
                     {canDisable && u.enabled && (
                       <button
-                        onClick={() => { if (confirm(`Disable ${u.username}?`)) disable.mutate(u.id); }}
+                        onClick={() => setDisableTarget({ id: u.id, username: u.username })}
                         className="text-red-700 hover:underline ml-2"
                       >disable</button>
                     )}
@@ -522,6 +555,29 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
           onClose={() => setPopoverUser(null)}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={!!disableTarget}
+        title={`Disable ${disableTarget?.username ?? ''}?`}
+        description="The user can no longer sign in. They can be re-enabled later from Keycloak."
+        confirmLabel="Disable"
+        isLoading={disable.isPending}
+        onCancel={() => setDisableTarget(null)}
+        onConfirm={() => {
+          if (!disableTarget) return;
+          const username = disableTarget.username;
+          disable.mutate(disableTarget.id, {
+            onSuccess: () => {
+              toast.success(`User ${username} disabled`);
+              setDisableTarget(null);
+            },
+            onError: (err) => {
+              toast.error(`Disable failed: ${err instanceof Error ? err.message : String(err)}`);
+              setDisableTarget(null);
+            },
+          });
+        }}
+      />
     </div>
   );
 }

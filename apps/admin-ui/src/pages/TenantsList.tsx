@@ -1,11 +1,17 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api } from '../api/client';
+import type { Tenant } from '../api/types';
+import ConfirmDialog from '../components/ConfirmDialog';
+import { useToast } from '../components/Toast';
 
 export default function TenantsList() {
   const qc = useQueryClient();
+  const toast = useToast();
   const { data, isLoading, isError, error } = useQuery({ queryKey: ['tenants'], queryFn: api.listTenants });
+  const [confirmTarget, setConfirmTarget] = useState<Tenant | null>(null);
   // Tenant CRUD is platform-admin only. Gate the buttons on the explicit
   // atomic perms (mirrors the @PreAuthorize annotations on
   // TenantController). The backend list endpoint already filters by what
@@ -53,7 +59,7 @@ export default function TenantsList() {
                 <td className="px-3 py-2 text-slate-500">{new Date(t.createdAt).toLocaleDateString()}</td>
                 <td className="px-3 py-2 text-right">
                   {canDelete && (
-                    <button onClick={() => { if (confirm(`Delete tenant ${t.slug}?`)) del.mutate(t.id); }}
+                    <button onClick={() => setConfirmTarget(t)}
                             className="text-red-700 hover:underline text-xs">Delete</button>
                   )}
                   {t.status !== 'ACTIVE' && (
@@ -73,6 +79,30 @@ export default function TenantsList() {
           </tbody>
         </table>
       )}
+      <ConfirmDialog
+        isOpen={!!confirmTarget}
+        title={`Delete tenant ${confirmTarget?.slug ?? ''}?`}
+        description="This permanently removes the tenant's Keycloak realm and edge routing. Apps under this tenant will stop authenticating."
+        confirmLabel="Delete"
+        danger
+        requireText={confirmTarget?.slug}
+        isLoading={del.isPending}
+        onCancel={() => setConfirmTarget(null)}
+        onConfirm={() => {
+          if (!confirmTarget) return;
+          const slug = confirmTarget.slug;
+          del.mutate(confirmTarget.id, {
+            onSuccess: () => {
+              toast.success(`Tenant ${slug} deleted`);
+              setConfirmTarget(null);
+            },
+            onError: (err) => {
+              toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+              setConfirmTarget(null);
+            },
+          });
+        }}
+      />
     </div>
   );
 }

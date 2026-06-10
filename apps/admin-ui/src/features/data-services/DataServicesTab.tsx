@@ -3,9 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api } from '../../api/client';
 import type { DatabaseProvisionResult } from '../../api/types';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { useToast } from '../../components/Toast';
 
 interface Props {
   tenantId: string;
+  slug: string;
 }
 
 /**
@@ -14,9 +17,11 @@ interface Props {
  * cluster. Credentials are revealed ONCE on provision; subsequent visits
  * show only the connection coordinates (no password).
  */
-export default function DataServicesTab({ tenantId }: Props) {
+export default function DataServicesTab({ tenantId, slug }: Props) {
   const canManage = usePermission('TENANT_EDIT');
   const qc = useQueryClient();
+  const toast = useToast();
+  const [confirmDeprovision, setConfirmDeprovision] = useState(false);
 
   const status = useQuery({
     queryKey: ['tenant-db', tenantId],
@@ -39,6 +44,12 @@ export default function DataServicesTab({ tenantId }: Props) {
     onSuccess: () => {
       setRevealed(null);
       qc.invalidateQueries({ queryKey: ['tenant-db', tenantId] });
+      setConfirmDeprovision(false);
+      toast.success('Database deprovisioned');
+    },
+    onError: (err) => {
+      setConfirmDeprovision(false);
+      toast.error(`Deprovision failed: ${err instanceof Error ? err.message : String(err)}`);
     },
   });
 
@@ -135,12 +146,7 @@ export default function DataServicesTab({ tenantId }: Props) {
               {canManage && (
                 <button
                   type="button"
-                  onClick={() => {
-                    const ok = confirm(
-                      'Deprovision the database for this tenant? This DROPs the database — ALL DATA IS LOST. Cannot be undone.'
-                    );
-                    if (ok) deprovision.mutate();
-                  }}
+                  onClick={() => setConfirmDeprovision(true)}
                   disabled={deprovision.isPending}
                   className="text-red-700 hover:underline text-xs disabled:opacity-50"
                 >
@@ -154,6 +160,18 @@ export default function DataServicesTab({ tenantId }: Props) {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        isOpen={confirmDeprovision}
+        title="Deprovision the database for this tenant?"
+        description="This DROPs the database — ALL DATA IS LOST. Cannot be undone."
+        confirmLabel="Deprovision"
+        danger
+        requireText={slug}
+        isLoading={deprovision.isPending}
+        onCancel={() => setConfirmDeprovision(false)}
+        onConfirm={() => deprovision.mutate()}
+      />
     </div>
   );
 }

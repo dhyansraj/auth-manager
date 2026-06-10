@@ -4,6 +4,8 @@ import type { RoleDto } from '../../api/types';
 import { useRolesQuery, useDeleteRoleMutation } from './useRolesQuery';
 import { ApiError } from '../../api/client';
 import RoleEditor from './RoleEditor';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { useToast } from '../../components/Toast';
 
 interface Props {
   slug: string;
@@ -19,25 +21,33 @@ export default function RolesTab({ slug }: Props) {
   const roles = useRolesQuery(slug);
   const del = useDeleteRoleMutation(slug);
 
+  const toast = useToast();
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<RoleDto | null>(null);
   const [conflict, setConflict] = useState<DeleteConflict | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RoleDto | null>(null);
 
   const openNew = () => { setEditing(null); setEditorOpen(true); };
   const openEdit = (r: RoleDto) => { setEditing(r); setEditorOpen(true); };
   const close = () => setEditorOpen(false);
 
-  const onDelete = (r: RoleDto) => {
-    if (!confirm(`Are you sure you want to delete role '${r.name}'?`)) return;
+  const confirmDelete = (r: RoleDto) => {
     setConflict(null);
     del.mutate(r.name, {
+      onSuccess: () => {
+        toast.success(`Role '${r.name}' deleted`);
+        setDeleteTarget(null);
+      },
       onError: (err) => {
+        setDeleteTarget(null);
         if (err instanceof ApiError && err.status === 409) {
           const body = err.body as { error?: string; role?: string; userCount?: number } | null;
           if (body && body.error === 'role_in_use') {
             setConflict({ role: body.role ?? r.name, userCount: body.userCount ?? 0 });
+            return;
           }
         }
+        toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
       },
     });
   };
@@ -124,7 +134,7 @@ export default function RolesTab({ slug }: Props) {
                       >Edit</button>
                       {' '}
                       <button
-                        onClick={() => onDelete(r)}
+                        onClick={() => setDeleteTarget(r)}
                         className="text-red-700 hover:underline ml-2"
                         aria-label={`Delete ${r.name}`}
                       >Delete</button>
@@ -147,6 +157,17 @@ export default function RolesTab({ slug }: Props) {
       {editorOpen && (
         <RoleEditor slug={slug} role={editing} onClose={close} />
       )}
+
+      <ConfirmDialog
+        isOpen={!!deleteTarget}
+        title={`Delete role '${deleteTarget?.name ?? ''}'?`}
+        description="Users assigned this role lose the permissions it grants."
+        confirmLabel="Delete"
+        danger
+        isLoading={del.isPending}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => { if (deleteTarget) confirmDelete(deleteTarget); }}
+      />
     </div>
   );
 }

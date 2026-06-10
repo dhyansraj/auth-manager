@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { bffFetch, usePermission } from '@mcpmesh/auth-lib-react';
 import { api, ApiError } from '../../api/client';
+import ConfirmDialog from '../../components/ConfirmDialog';
+import { useToast } from '../../components/Toast';
 import type {
   BrandingConfig,
   LayoutVariant,
@@ -18,6 +20,8 @@ interface Props {
 export default function BrandingTab({ slug }: Props) {
   const canManage = usePermission('BRANDING_EDIT');
   const qc = useQueryClient();
+  const toast = useToast();
+  const [confirmReset, setConfirmReset] = useState(false);
 
   const meta = useQuery({
     queryKey: ['theme', slug],
@@ -51,6 +55,12 @@ export default function BrandingTab({ slug }: Props) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['theme', slug] });
       qc.invalidateQueries({ queryKey: ['theme-status', slug] });
+      setConfirmReset(false);
+      toast.success('Branding reset to the platform default');
+    },
+    onError: (err) => {
+      setConfirmReset(false);
+      toast.error(`Reset failed: ${err instanceof Error ? err.message : String(err)}`);
     },
   });
 
@@ -120,7 +130,7 @@ export default function BrandingTab({ slug }: Props) {
         <CurrentThemeCard
           meta={meta.data}
           canManage={canManage}
-          onDelete={() => { if (confirm('Reset branding to default? This drops your custom theme.')) del.mutate(); }}
+          onDelete={() => setConfirmReset(true)}
           deleting={del.isPending}
           status={status.data?.state ?? 'READY'}
           progress={status.data?.progress ?? 100}
@@ -132,6 +142,17 @@ export default function BrandingTab({ slug }: Props) {
           {String(del.error)}
         </div>
       )}
+
+      <ConfirmDialog
+        isOpen={confirmReset}
+        title="Reset branding to default?"
+        description="This drops your custom theme. Login and account pages revert to the platform default."
+        confirmLabel="Reset"
+        danger
+        isLoading={del.isPending}
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={() => del.mutate()}
+      />
     </div>
   );
 }

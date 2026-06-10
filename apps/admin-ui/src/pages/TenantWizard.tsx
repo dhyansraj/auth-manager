@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import type { Tenant, IdentityProviderDto } from '../api/types';
+import { useToast } from '../components/Toast';
 
 // v2 = added the Email step (step 3). v1 drafts auto-discarded on load.
 const DRAFT_STORAGE_KEY = 'mcpmesh.tenantwizard.draft.v2';
@@ -1511,6 +1512,7 @@ function SuccessPage({
   onViewTenant: () => void;
   onOnboardAnother: () => void;
 }) {
+  const toast = useToast();
   // Only apps that actually got a clientSecret back are confidential — SPA
   // apps + pre-existing apps (whose secret was captured on a prior run) have
   // clientSecret === null and shouldn't appear in the env-vars block.
@@ -1720,7 +1722,7 @@ function SuccessPage({
         <button
           onClick={async () => {
             try { await api.downloadOnboardingBundle(tenant.id); }
-            catch (e) { alert('Download failed: ' + (e instanceof Error ? e.message : String(e))); }
+            catch (e) { toast.error('Download failed: ' + (e instanceof Error ? e.message : String(e))); }
           }}
           className="bg-white border px-3 py-1.5 rounded text-sm hover:bg-slate-50"
         >
