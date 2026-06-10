@@ -45,6 +45,7 @@ authManager:
     bundleKcBase: "https://auth.mcp-mesh.io/auth"
     bundleAdminBase: "https://auth.mcp-mesh.io/admin"
     bundleAuthMgrInClusterBase: "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080"
+    bundleAuthMgrPublicBase: "https://auth.mcp-mesh.io"
   env: {}
 
 # ───── admin-ui ─────

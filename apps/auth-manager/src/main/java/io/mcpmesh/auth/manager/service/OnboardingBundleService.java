@@ -25,7 +25,6 @@ import org.keycloak.admin.client.Keycloak;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -57,10 +56,12 @@ public class OnboardingBundleService {
     private final ObjectMapper manifestYamlMapper;
     // Public + in-cluster URLs embedded in the rendered bundle. Env-aware so
     // dev downloads show auth-dev.mcp-mesh.io and the dev namespace service
-    // DNS. Defaults are the prod values — unmigrated deploys keep working.
+    // DNS. Centralized in BundleBaseResolver (config-only, no auto-detect);
+    // the same resolver backs GET /api/v1/bundle/bases for the admin-UI.
     private final String kcBase;
     private final String adminBase;
     private final String authMgrInClusterBase;
+    private final String authMgrPublicBase;
 
     public OnboardingBundleService(TenantService tenants,
                                    AppRepository appRepo,
@@ -72,9 +73,7 @@ public class OnboardingBundleService {
                                    TenantManifestService manifestService,
                                    LoginMethodService loginMethodService,
                                    ThemeService themeService,
-                                   @Value("${auth-manager.bundle.kc-base:https://auth.mcp-mesh.io/auth}") String kcBase,
-                                   @Value("${auth-manager.bundle.admin-base:https://auth.mcp-mesh.io/admin}") String adminBase,
-                                   @Value("${auth-manager.bundle.auth-mgr-incluster-base:http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080}") String authMgrInClusterBase) {
+                                   BundleBaseResolver bases) {
         this.tenants = tenants;
         this.appRepo = appRepo;
         this.admin = admin;
@@ -85,9 +84,10 @@ public class OnboardingBundleService {
         this.manifestService = manifestService;
         this.loginMethodService = loginMethodService;
         this.themeService = themeService;
-        this.kcBase = kcBase;
-        this.adminBase = adminBase;
-        this.authMgrInClusterBase = authMgrInClusterBase;
+        this.kcBase = bases.kcBase();
+        this.adminBase = bases.adminBase();
+        this.authMgrInClusterBase = bases.authMgrInClusterBase();
+        this.authMgrPublicBase = bases.authMgrPublicBase();
         YAMLFactory yf = new YAMLFactory()
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
@@ -338,6 +338,54 @@ public class OnboardingBundleService {
             - Issuer: `{{issuer}}`
             - Admin console: {{adminBase}}/tenants/{{tenantId}}
             {{configuredBlock}}
+            ## Integration checklist
+
+            1. Copy `.env.example` into your deployment config; pull secret values
+               from auth-manager UI → Apps → <client> → Reveal.
+            2. Validate Bearer tokens against the issuer below —
+               `03-backend-java.md` / `03-backend-python.md`.
+            3. Pick the right `AUTH_MGR_BASE` for where your backend runs —
+               `07-in-cluster-vs-public.md`.
+            4. Grant your service account the platform permissions it needs —
+               `04-service-account.md`. To invite users grant `USER_INVITE`; to
+               send branded email grant `EMAIL_SEND`. Steps: auth-manager UI →
+               Apps → <service account> → Service account permissions → tick →
+               Save.
+            5. If Google login is enabled, register the Google redirect URI below
+               in the Google OAuth console — `01-broker-urls.md`.
+            6. Wire the frontend — `02-frontend.md`.
+            7. Sending email from your app? — `08-email.md`.
+
+            ## Values you'll need
+
+            | What | Value |
+            |---|---|
+            | Issuer (`AUTH_LIB_ISSUER_URI`) | `{{issuer}}` |
+            | Tenant ID (UUID) | `{{tenantId}}` |
+            | Tenant slug | `{{slug}}` |
+            | Realm | `{{realmName}}` |
+            | Client IDs | see "Apps registered" below |
+            | Auth-manager API, in-cluster (backend runs in cluster) | `{{authMgrInClusterBase}}` |
+            | Auth-manager API, public (local / external backend) | `{{authMgrPublicBase}}` |
+            | Service-account token endpoint | `{{issuer}}/protocol/openid-connect/token` |
+            | Google redirect URI (if Google login enabled) | `{{kcBase}}/realms/{{realmName}}/broker/google/endpoint` |
+
+            **UUID vs slug:** user + email APIs are keyed by the tenant **UUID**
+            (`/api/v1/tenants/{{tenantId}}/users`,
+            `/api/v1/tenants/{{tenantId}}/emails/{typeKey}`); routes, IdP, and
+            roles/manifest APIs are keyed by the **slug**
+            (`/api/v1/tenants/{{slug}}/...`). The `.env.example` carries both as
+            `{{upperSlug}}_TENANT_ID` / `{{upperSlug}}_TENANT_SLUG`.
+
+            **Invite a user** (service account needs `USER_INVITE`):
+
+            ```bash
+            curl -X POST "$AUTH_MGR_BASE/api/v1/tenants/{{tenantId}}/users" \\
+              -H "Authorization: Bearer $SA_TOKEN" \\
+              -H "Content-Type: application/json" \\
+              -d '{"email":"new.user@example.com","firstName":"New","lastName":"User","roles":["user-viewer"],"sendInvite":true,"inviterName":"Jane Admin"}'
+            ```
+
             ## Apps registered
 
             {{appsList}}
@@ -352,10 +400,14 @@ public class OnboardingBundleService {
             """)
             .replace("{{tenantName}}", t.getDisplayName())
             .replace("{{slug}}", slug)
+            .replace("{{upperSlug}}", slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_'))
             .replace("{{realmName}}", realmName)
             .replace("{{issuer}}", issuer)
             .replace("{{tenantId}}", t.getId() == null ? slug : t.getId().toString())
             .replace("{{adminBase}}", adminBase)
+            .replace("{{kcBase}}", kcBase)
+            .replace("{{authMgrInClusterBase}}", authMgrInClusterBase)
+            .replace("{{authMgrPublicBase}}", authMgrPublicBase)
             .replace("{{modeBadge}}", modeBadge)
             .replace("{{modeExplanation}}", modeExplanation)
             .replace("{{fileList}}", fileListBlock)
@@ -461,6 +513,8 @@ public class OnboardingBundleService {
     private String renderEnv(Tenant t, String issuer, String slug, List<AppInfo> apps,
                               boolean bffMode, boolean dbProvisioned) {
         String dbBlock = renderDbBlock(slug, dbProvisioned);
+        String upperSlug = slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_');
+        String tenantId = t.getId() == null ? "<tenant-uuid>" : t.getId().toString();
         if (bffMode) {
             String backendClientId = firstBackendClientId(apps);
             StringBuilder backendClientsBlock = new StringBuilder();
@@ -504,6 +558,7 @@ public class OnboardingBundleService {
                 # Backend services (validate Bearer tokens received from platform-edge)
                 AUTH_LIB_ISSUER_URI={{issuer}}
                 AUTH_LIB_CLIENT_ID={{clientId}}
+                AUTH_LIB_CLIENT_SECRET=<provided out-of-band — auth-manager UI → Apps → {{clientId}} → Reveal>
                 AUTH_LIB_PERMISSIONS_SOURCE=claims
                 # Python lib only: comma-separated extra audiences if you serve multiple backends
                 # AUTH_LIB_AUDIENCES=other-backend,another-one
@@ -514,6 +569,15 @@ public class OnboardingBundleService {
 
                 {{backendClientsBlock}}# If your backend needs to call other services as itself (service account):
                 {{serviceAccountBlock}}
+
+                # Platform admin API (user invites, branded email send, user lookup)
+                # Backend runs IN the cluster → use the in-cluster base instead:
+                #   AUTH_MGR_BASE={{authMgrInClusterBase}}
+                AUTH_MGR_BASE={{authMgrPublicBase}}
+                # Tenant UUID — keys the invite/email API paths (/users, /emails/{typeKey})
+                {{upperSlug}}_TENANT_ID={{tenantId}}
+                # Tenant slug — keys the routes/IdP/roles API paths
+                {{upperSlug}}_TENANT_SLUG={{slug}}
                 {{dbBlock}}
                 """)
                 .replace("{{tenantName}}", t.getDisplayName())
@@ -522,6 +586,11 @@ public class OnboardingBundleService {
                 .replace("{{clientId}}", backendClientId)
                 .replace("{{backendClientsBlock}}", backendClients)
                 .replace("{{serviceAccountBlock}}", sa)
+                .replace("{{authMgrInClusterBase}}", authMgrInClusterBase)
+                .replace("{{authMgrPublicBase}}", authMgrPublicBase)
+                .replace("{{upperSlug}}", upperSlug)
+                .replace("{{tenantId}}", tenantId)
+                .replace("{{slug}}", slug)
                 .replace("{{dbBlock}}", dbBlock)
                 .stripTrailing() + "\n";
         }
@@ -544,7 +613,9 @@ public class OnboardingBundleService {
             backendBlock.append(cidUpper).append("_CLIENT_ID=").append(cid).append('\n');
             backendBlock.append(cidUpper).append("_CLIENT_SECRET=<paste from auth-manager UI → Apps → ")
                 .append(cid).append(" → Reveal>\n");
-            backendBlock.append("AUTH_LIB_CLIENT_ID=").append(cid).append("\n\n");
+            backendBlock.append("AUTH_LIB_CLIENT_ID=").append(cid).append('\n');
+            backendBlock.append("AUTH_LIB_CLIENT_SECRET=<provided out-of-band — auth-manager UI → Apps → ")
+                .append(cid).append(" → Reveal>\n\n");
         }
         StringBuilder saBlock = new StringBuilder();
         for (AppInfo a : apps) {
@@ -576,6 +647,15 @@ public class OnboardingBundleService {
 
             # Service account (m2m)
             {{serviceAccountBlock}}
+
+            # Platform admin API (user invites, branded email send, user lookup)
+            # Backend runs IN the cluster → use the in-cluster base instead:
+            #   AUTH_MGR_BASE={{authMgrInClusterBase}}
+            AUTH_MGR_BASE={{authMgrPublicBase}}
+            # Tenant UUID — keys the invite/email API paths (/users, /emails/{typeKey})
+            {{upperSlug}}_TENANT_ID={{tenantId}}
+            # Tenant slug — keys the routes/IdP/roles API paths
+            {{upperSlug}}_TENANT_SLUG={{slug}}
             {{dbBlock}}
             """)
             .replace("{{tenantName}}", t.getDisplayName())
@@ -585,6 +665,11 @@ public class OnboardingBundleService {
             .replace("{{spaBlock}}", spa)
             .replace("{{backendBlock}}", backend)
             .replace("{{serviceAccountBlock}}", sa)
+            .replace("{{authMgrInClusterBase}}", authMgrInClusterBase)
+            .replace("{{authMgrPublicBase}}", authMgrPublicBase)
+            .replace("{{upperSlug}}", upperSlug)
+            .replace("{{tenantId}}", tenantId)
+            .replace("{{slug}}", slug)
             .replace("{{dbBlock}}", dbBlock)
             .stripTrailing() + "\n";
     }
@@ -1083,13 +1168,20 @@ public class OnboardingBundleService {
             ### Env convention
 
             ```
+            # Backend runs IN the cluster → in-cluster service DNS (fast, no CF hop):
             AUTH_MGR_BASE={{authMgrInClusterBase}}
+            # Backend runs locally / outside the cluster → public URL (via Cloudflare):
+            # AUTH_MGR_BASE={{authMgrPublicBase}}
+            {{upperSlug}}_TENANT_ID={{tenantId}}
             {{upperSlug}}_TENANT_SLUG={{slug}}
             ```
 
-            For local dev (outside the cluster), point `AUTH_MGR_BASE` at the
-            public URL `https://auth.mcp-mesh.io` — same paths, just routed via
-            Cloudflare so a touch slower.
+            Pick ONE `AUTH_MGR_BASE`: the in-cluster base when your backend runs
+            inside the cluster, the public base `{{authMgrPublicBase}}` for local
+            dev or external backends — same paths, just routed via Cloudflare so
+            a touch slower. Keying rule: user + email endpoints are keyed by the
+            tenant **UUID** (`{{upperSlug}}_TENANT_ID`); routes/IdP/roles
+            endpoints are keyed by the **slug** (`{{upperSlug}}_TENANT_SLUG`).
 
             ### Token
 
@@ -1112,15 +1204,16 @@ public class OnboardingBundleService {
                 private static final String AUTH_MGR_BASE =
                     System.getenv().getOrDefault("AUTH_MGR_BASE",
                         "{{authMgrInClusterBase}}");
-                private static final String TENANT_SLUG =
-                    System.getenv().getOrDefault("{{upperSlug}}_TENANT_SLUG", "{{slug}}");
+                // User + email endpoints are keyed by the tenant UUID (not the slug)
+                private static final String TENANT_ID =
+                    System.getenv().getOrDefault("{{upperSlug}}_TENANT_ID", "{{tenantId}}");
 
                 private final RestClient http = RestClient.create();
 
                 public List<Map<String, Object>> listUsersByRole(String role,
                                                                  String saToken,
                                                                  int first, int max) {
-                    String url = AUTH_MGR_BASE + "/api/v1/tenants/" + TENANT_SLUG
+                    String url = AUTH_MGR_BASE + "/api/v1/tenants/" + TENANT_ID
                         + "/users?role=" + role
                         + "&first=" + first + "&max=" + max;
                     @SuppressWarnings("unchecked")
@@ -1149,10 +1242,16 @@ public class OnboardingBundleService {
 
             ### Useful endpoints
 
-            - `GET /api/v1/tenants/{{slug}}/users?role=X&search=Y` — list users (paged)
-            - `GET /api/v1/tenants/{{slug}}/users/{userId}` — lookup one user
-            - `POST /api/v1/tenants/{{slug}}/users` — invite a user
-            - `PUT /api/v1/tenants/{{slug}}/users/{userId}/roles` — update assigned roles
+            User + email endpoints are keyed by the tenant **UUID** (`{{tenantId}}`):
+
+            - `GET /api/v1/tenants/{{tenantId}}/users?role=X&search=Y` — list users (paged)
+            - `GET /api/v1/tenants/{{tenantId}}/users/{userId}` — lookup one user
+            - `POST /api/v1/tenants/{{tenantId}}/users` — invite a user (needs `USER_INVITE`)
+            - `PUT /api/v1/tenants/{{tenantId}}/users/{userId}/roles` — update assigned roles
+            - `POST /api/v1/tenants/{{tenantId}}/emails/{typeKey}` — send branded email (needs `EMAIL_SEND`)
+
+            Routes/IdP/roles endpoints are keyed by the tenant **slug** instead
+            (`/api/v1/tenants/{{slug}}/...`).
 
             (`{userId}` is the KC subject UUID; substitute at call time.)
 
@@ -1163,10 +1262,12 @@ public class OnboardingBundleService {
             .replace("{{realmName}}", realmName)
             .replace("{{slug}}", slug)
             .replace("{{upperSlug}}", slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_'))
+            .replace("{{tenantId}}", t.getId() == null ? "<tenant-uuid>" : t.getId().toString())
             .replace("{{firstBackend}}", firstBackend)
             .replace("{{bearerOrigin}}", bearerOrigin)
             .replace("{{backendClientCredsSection}}", backendClientCredsSection)
             .replace("{{authMgrInClusterBase}}", authMgrInClusterBase)
+            .replace("{{authMgrPublicBase}}", authMgrPublicBase)
             .replace("{{issuer}}", issuer);
     }
 
@@ -1295,13 +1396,20 @@ public class OnboardingBundleService {
             ### Env convention
 
             ```
+            # Backend runs IN the cluster → in-cluster service DNS (fast, no CF hop):
             AUTH_MGR_BASE={{authMgrInClusterBase}}
+            # Backend runs locally / outside the cluster → public URL (via Cloudflare):
+            # AUTH_MGR_BASE={{authMgrPublicBase}}
+            {{upperSlug}}_TENANT_ID={{tenantId}}
             {{upperSlug}}_TENANT_SLUG={{slug}}
             ```
 
-            For local dev (outside the cluster), point `AUTH_MGR_BASE` at the
-            public URL `https://auth.mcp-mesh.io` — same paths, just routed via
-            Cloudflare so a touch slower.
+            Pick ONE `AUTH_MGR_BASE`: the in-cluster base when your backend runs
+            inside the cluster, the public base `{{authMgrPublicBase}}` for local
+            dev or external backends — same paths, just routed via Cloudflare so
+            a touch slower. Keying rule: user + email endpoints are keyed by the
+            tenant **UUID** (`{{upperSlug}}_TENANT_ID`); routes/IdP/roles
+            endpoints are keyed by the **slug** (`{{upperSlug}}_TENANT_SLUG`).
 
             ### Token
 
@@ -1322,11 +1430,12 @@ public class OnboardingBundleService {
                 "AUTH_MGR_BASE",
                 "{{authMgrInClusterBase}}",
             )
-            TENANT_SLUG = os.environ.get("{{upperSlug}}_TENANT_SLUG", "{{slug}}")
+            # User + email endpoints are keyed by the tenant UUID (not the slug)
+            TENANT_ID = os.environ.get("{{upperSlug}}_TENANT_ID", "{{tenantId}}")
 
 
             def list_users_by_role(role: str, sa_token: str, first: int = 0, max_results: int = 200) -> dict:
-                url = f"{AUTH_MGR_BASE}/api/v1/tenants/{TENANT_SLUG}/users"
+                url = f"{AUTH_MGR_BASE}/api/v1/tenants/{TENANT_ID}/users"
                 params = {"role": role, "first": first, "max": max_results}
                 headers = {"Authorization": f"Bearer {sa_token}"}
                 r = httpx.get(url, params=params, headers=headers, timeout=10.0)
@@ -1349,10 +1458,16 @@ public class OnboardingBundleService {
 
             ### Useful endpoints
 
-            - `GET /api/v1/tenants/{{slug}}/users?role=X&search=Y` — list users (paged)
-            - `GET /api/v1/tenants/{{slug}}/users/{userId}` — lookup one user
-            - `POST /api/v1/tenants/{{slug}}/users` — invite a user
-            - `PUT /api/v1/tenants/{{slug}}/users/{userId}/roles` — update assigned roles
+            User + email endpoints are keyed by the tenant **UUID** (`{{tenantId}}`):
+
+            - `GET /api/v1/tenants/{{tenantId}}/users?role=X&search=Y` — list users (paged)
+            - `GET /api/v1/tenants/{{tenantId}}/users/{userId}` — lookup one user
+            - `POST /api/v1/tenants/{{tenantId}}/users` — invite a user (needs `USER_INVITE`)
+            - `PUT /api/v1/tenants/{{tenantId}}/users/{userId}/roles` — update assigned roles
+            - `POST /api/v1/tenants/{{tenantId}}/emails/{typeKey}` — send branded email (needs `EMAIL_SEND`)
+
+            Routes/IdP/roles endpoints are keyed by the tenant **slug** instead
+            (`/api/v1/tenants/{{slug}}/...`).
 
             (`{userId}` is the KC subject UUID; substitute at call time.)
 
@@ -1363,9 +1478,11 @@ public class OnboardingBundleService {
             .replace("{{realmName}}", realmName)
             .replace("{{slug}}", slug)
             .replace("{{upperSlug}}", slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_'))
+            .replace("{{tenantId}}", t.getId() == null ? "<tenant-uuid>" : t.getId().toString())
             .replace("{{issuer}}", issuer)
             .replace("{{firstBackend}}", firstBackend)
             .replace("{{authMgrInClusterBase}}", authMgrInClusterBase)
+            .replace("{{authMgrPublicBase}}", authMgrPublicBase)
             .replace("{{bearerOrigin}}", bearerOrigin);
     }
 
@@ -1583,7 +1700,7 @@ public class OnboardingBundleService {
             |---|---|---|---|---|
             | JWT issuer (JWKS + UMA) | `AUTH_LIB_ISSUER_URI` | n/a | `{{kcBase}}/realms/{{realmName}}` | **Public only** |
             | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/token` | `{{kcBase}}/realms/{{realmName}}/protocol/openid-connect/token` | Either; in-cluster faster |
-            | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `https://auth.mcp-mesh.io` | In-cluster strongly preferred |
+            | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `{{authMgrPublicBase}}` | In-cluster strongly preferred |
 
             ## Why the issuer URI must be public
 
@@ -1623,10 +1740,11 @@ public class OnboardingBundleService {
 
             ## Platform admin API — prefer in-cluster
 
-            `AUTH_MGR_BASE` should default to the in-cluster service DNS:
-            `{{authMgrBase}}`. The same bearer your backend mints for KC works
-            against `/api/v1/tenants/{{slug}}/...` (see the backend docs for
-            the code). Use the public URL `https://auth.mcp-mesh.io` only for
+            `AUTH_MGR_BASE` should default to the in-cluster service DNS
+            (backend runs in the cluster): `{{authMgrBase}}`. The same bearer
+            your backend mints for KC works against `/api/v1/tenants/...`
+            (see the backend docs for the code). Use the public URL
+            `{{authMgrPublicBase}}` (local / external backend) only for
             local dev or one-off scripts running outside the cluster.
 
             ## Gotcha — no `/auth/` on the in-cluster KC URL
@@ -1649,7 +1767,8 @@ public class OnboardingBundleService {
             .replace("{{slug}}", slug)
             .replace("{{realmName}}", realmName)
             .replace("{{kcBase}}", kcBase)
-            .replace("{{authMgrBase}}", authMgrInClusterBase);
+            .replace("{{authMgrBase}}", authMgrInClusterBase)
+            .replace("{{authMgrPublicBase}}", authMgrPublicBase);
     }
 
     /**

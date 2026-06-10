@@ -66,6 +66,8 @@ spec:
               value: {{ .Values.authManager.config.bundleAdminBase | default "https://auth.mcp-mesh.io/admin" | quote }}
             - name: AUTH_MANAGER_BUNDLE_AUTH_MGR_INCLUSTER_BASE
               value: {{ .Values.authManager.config.bundleAuthMgrInClusterBase | default "http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080" | quote }}
+            - name: AUTH_MANAGER_BUNDLE_AUTH_MGR_PUBLIC_BASE
+              value: {{ .Values.authManager.config.bundleAuthMgrPublicBase | default "https://auth.mcp-mesh.io" | quote }}
             # Namespace used by ThemeStorage / ThemeApplier when talking to
             # the Kubernetes API. Sourced from the downward API so the same
             # image works in any namespace.

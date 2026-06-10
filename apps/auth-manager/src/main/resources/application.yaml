@@ -89,6 +89,10 @@ auth-manager:
     kc-base: ${AUTH_MANAGER_BUNDLE_KC_BASE:https://auth.mcp-mesh.io/auth}
     admin-base: ${AUTH_MANAGER_BUNDLE_ADMIN_BASE:https://auth.mcp-mesh.io/admin}
     auth-mgr-incluster-base: ${AUTH_MANAGER_BUNDLE_AUTH_MGR_INCLUSTER_BASE:http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080}
+    # Public auth-manager base for backends running OUTSIDE the cluster
+    # (local dev, external services). Embedded in bundle docs/.env and
+    # served to the admin-UI via GET /api/v1/bundle/bases.
+    auth-mgr-public-base: ${AUTH_MANAGER_BUNDLE_AUTH_MGR_PUBLIC_BASE:https://auth.mcp-mesh.io}
 
 # CNPG superuser connection: used by TenantDatabaseService to run CREATE
 # DATABASE / DROP DATABASE DDL when provisioning per-tenant databases on
