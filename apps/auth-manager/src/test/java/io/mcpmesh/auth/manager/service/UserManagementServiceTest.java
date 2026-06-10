@@ -77,7 +77,7 @@ class UserManagementServiceTest {
     @Test
     void create_withEmptyRoles_grantsUserViewer() {
         CreateUserRequest req = new CreateUserRequest(
-            "bob@app1.test", "Bob", "Test", List.of(), false);
+            "bob@app1.test", "Bob", "Test", List.of(), false, null);
 
         svc.create(TENANT_ID, req, "alice");
 
@@ -89,7 +89,7 @@ class UserManagementServiceTest {
     @Test
     void create_withNullRoles_grantsUserViewer() {
         CreateUserRequest req = new CreateUserRequest(
-            "bob@app1.test", "Bob", "Test", null, false);
+            "bob@app1.test", "Bob", "Test", null, false, null);
 
         svc.create(TENANT_ID, req, "alice");
 
@@ -100,7 +100,7 @@ class UserManagementServiceTest {
     @Test
     void create_withTenantAdminRole_grantsBothRoles() {
         CreateUserRequest req = new CreateUserRequest(
-            "bob@app1.test", "Bob", "Test", List.of("tenant-admin"), false);
+            "bob@app1.test", "Bob", "Test", List.of("tenant-admin"), false, null);
 
         svc.create(TENANT_ID, req, "alice");
 
@@ -111,7 +111,7 @@ class UserManagementServiceTest {
     @Test
     void create_withExplicitUserViewerRole_assignsUserViewerOnce() {
         CreateUserRequest req = new CreateUserRequest(
-            "bob@app1.test", "Bob", "Test", List.of("user-viewer"), false);
+            "bob@app1.test", "Bob", "Test", List.of("user-viewer"), false, null);
 
         svc.create(TENANT_ID, req, "alice");
 
@@ -155,6 +155,15 @@ class UserManagementServiceTest {
         } catch (IllegalArgumentException e) {
             assertThat(e.getMessage()).contains("ghost-role");
         }
+    }
+
+    @Test
+    void verifyEmail_setsEmailVerifiedAndAudits() {
+        svc.verifyEmail(TENANT_ID, USER_ID, "alice");
+
+        verify(keycloak).setEmailVerified(REALM, USER_ID, true);
+        verify(audit).recordSuccess(eq("alice"), any(), eq(TENANT_ID),
+            eq("user.email.verify"), eq("user"), eq(USER_ID), any(), any());
     }
 
     // ---- listWithRoles (slug-keyed) ----

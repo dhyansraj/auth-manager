@@ -128,9 +128,9 @@ public class KeycloakAdminService {
         realm.setResetPasswordAllowed(true);
         realm.setEditUsernameAllowed(false);
         realm.setBruteForceProtected(true);
-        realm.setAccessTokenLifespan(300);
-        realm.setSsoSessionIdleTimeout(1800);
-        realm.setSsoSessionMaxLifespan(36000);
+        realm.setAccessTokenLifespan(900);
+        realm.setSsoSessionIdleTimeout(14400);
+        realm.setSsoSessionMaxLifespan(86400);
 
         // SMTP config so the realm can send password-reset / verify-email actions.
         // In dev this points at MailHog; in prod, override via property (TODO).

@@ -165,7 +165,7 @@ public class UserManagementService {
             }
             boolean sendInvite = req.sendInvite() == null ? true : req.sendInvite();
             if (sendInvite) {
-                sendInvite(t, userId, req.email());
+                sendInvite(t, userId, req.email(), req.inviterName());
             }
         } catch (Exception e) {
             audit.recordFailure(actor, ACTOR_KIND, tenantId,
@@ -211,9 +211,21 @@ public class UserManagementService {
     public void resendInvite(UUID tenantId, String userId, String actor) {
         Tenant t = tenants.get(tenantId);
         UserRepresentation u = keycloak.getUser(t.getRealmName(), userId);
-        sendInvite(t, userId, u == null ? null : u.getEmail());
+        sendInvite(t, userId, u == null ? null : u.getEmail(), null);
         audit.recordSuccess(actor, ACTOR_KIND, tenantId,
             "user.invite.resend", "user", userId, null, Map.of());
+    }
+
+    /**
+     * Marks the user's email verified in KC. Operator/admin escape hatch for
+     * accounts stuck on KC's verify-email gate (e.g. operator-provisioned
+     * admins created before auto-verify, or tenants without email delivery).
+     */
+    public void verifyEmail(UUID tenantId, String userId, String actor) {
+        Tenant t = tenants.get(tenantId);
+        keycloak.setEmailVerified(t.getRealmName(), userId, true);
+        audit.recordSuccess(actor, ACTOR_KIND, tenantId,
+            "user.email.verify", "user", userId, null, Map.of());
     }
 
     /**
@@ -231,7 +243,7 @@ public class UserManagementService {
      * <p>A mail-send failure is logged at WARN and swallowed — it must never
      * fail the caller's primary operation (user creation / role update).
      */
-    private void sendInvite(Tenant t, String userId, String email) {
+    private void sendInvite(Tenant t, String userId, String email, String inviterName) {
         boolean passwordEnabled;
         try {
             passwordEnabled = loginMethods.isPasswordEnabled(t.getRealmName());
@@ -260,7 +272,9 @@ public class UserManagementService {
                 userId, t.getRealmName(), e.getMessage());
         }
         try {
-            transactionalEmail.sendInvitation(t, email, null);
+            // Blank → null so the template's conditional inviter line stays off.
+            String inviter = (inviterName == null || inviterName.isBlank()) ? null : inviterName;
+            transactionalEmail.sendInvitation(t, email, inviter);
         } catch (Exception e) {
             log.warn("Failed to send branded invitation to {}: {}", email, e.getMessage());
         }

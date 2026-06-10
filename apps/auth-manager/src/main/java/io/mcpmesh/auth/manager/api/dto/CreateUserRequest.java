@@ -15,7 +15,12 @@ public record CreateUserRequest(
     /** Roles to assign on the usermanagement client. Defaults to ["user-viewer"] if null/empty. */
     List<String> roles,
     /** If true, send a Set-Password invite email after creation. Default true. */
-    Boolean sendInvite
+    Boolean sendInvite,
+    /**
+     * Optional display name of the inviting user, rendered in the branded
+     * invitation email ("X invited you to ..."). Null/blank omits the inviter.
+     */
+    @Size(max = 255) String inviterName
 ) {
     public static final Set<String> ALLOWED_ROLES = Set.of("tenant-admin", "tenant-user-manager", "user-viewer");
 }

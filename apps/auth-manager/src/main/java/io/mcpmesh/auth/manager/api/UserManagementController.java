@@ -98,6 +98,20 @@ public class UserManagementController {
         service.resendInvite(tenantId, userId, principal(auth));
     }
 
+    /**
+     * Marks the user's email verified (PUTs {@code emailVerified=true} on the
+     * KC user). Gated by USER_INVITE: this is part of the invite/activation
+     * lifecycle — the brokered invite path (same permission) already performs
+     * the identical KC mutation.
+     */
+    @PostMapping("/{userId}/verify-email")
+    @PreAuthorize("@perms.hasOnTenantId(#tenantId, 'USER_INVITE')")
+    @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    public void verifyEmail(@PathVariable UUID tenantId, @PathVariable String userId,
+                            Authentication auth) {
+        service.verifyEmail(tenantId, userId, principal(auth));
+    }
+
     private static String principal(Authentication auth) {
         if (auth instanceof JwtAuthenticationToken jwtAuth) {
             Jwt jwt = jwtAuth.getToken();

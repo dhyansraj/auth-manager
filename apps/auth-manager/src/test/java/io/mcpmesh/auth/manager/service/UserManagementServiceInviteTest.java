@@ -76,7 +76,11 @@ class UserManagementServiceInviteTest {
     }
 
     private CreateUserRequest req() {
-        return new CreateUserRequest(EMAIL, "New", "User", List.of(), true);
+        return req(null);
+    }
+
+    private CreateUserRequest req(String inviterName) {
+        return new CreateUserRequest(EMAIL, "New", "User", List.of(), true, inviterName);
     }
 
     @Test
@@ -88,6 +92,24 @@ class UserManagementServiceInviteTest {
         verify(keycloak).setEmailVerified(REALM, USER_ID, true);
         verify(transactionalEmail).sendInvitation(tenant, EMAIL, null);
         verify(keycloak, never()).sendExecuteActionsEmail(anyString(), anyString(), anyList(), anyInt());
+    }
+
+    @Test
+    void brokeredTenant_threadsInviterNameIntoBrandedInvite() {
+        when(loginMethods.isPasswordEnabled(REALM)).thenReturn(false);
+
+        service.create(TENANT_ID, req("Alice Admin"), "admin");
+
+        verify(transactionalEmail).sendInvitation(tenant, EMAIL, "Alice Admin");
+    }
+
+    @Test
+    void brokeredTenant_blankInviterName_normalizedToNull() {
+        when(loginMethods.isPasswordEnabled(REALM)).thenReturn(false);
+
+        service.create(TENANT_ID, req("   "), "admin");
+
+        verify(transactionalEmail).sendInvitation(tenant, EMAIL, null);
     }
 
     @Test

@@ -185,6 +185,11 @@ public class UsermanagementBootstrap {
         try {
             String userId = keycloak.createUser(
                 tenant.getRealmName(), email, email, "Admin", "User");
+            // Operator-provisioned admin: mark the email verified up front.
+            // There's no email-verification delivery wired for the operator,
+            // and KC's verify-email gate would otherwise lock them out (#90).
+            // Regular invited users keep emailVerified=false.
+            keycloak.setEmailVerified(tenant.getRealmName(), userId, true);
             keycloak.assignClientRoleToUser(
                 tenant.getRealmName(), userId, CLIENT_SLUG, ROLE_TENANT_ADMIN);
             try {
@@ -201,7 +206,8 @@ public class UsermanagementBootstrap {
                 "tenant.bootstrap.admin", "user", userId,
                 java.util.Map.of("email", email),
                 java.util.Map.of("realm", tenant.getRealmName(),
-                                  "role", ROLE_TENANT_ADMIN));
+                                  "role", ROLE_TENANT_ADMIN,
+                                  "emailVerified", true));
         } catch (Exception e) {
             log.error("Admin user bootstrap failed for {}: {}", email, e.getMessage(), e);
             audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, tenant.getId(),
