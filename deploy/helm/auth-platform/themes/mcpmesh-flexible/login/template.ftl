@@ -115,6 +115,7 @@
     body.mcp-no-password #kc-form-login,
     body.mcp-no-password #kc-form-forgot-password,
     body.mcp-no-password .pf-v5-c-form__helper-text,
+    body.mcp-no-password #kc-registration-container,
     body.mcp-no-password .pf-v5-c-login__main-footer-band {
       display: none !important;
     }
