@@ -1,12 +1,15 @@
 package io.mcpmesh.auth.manager.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.mcpmesh.auth.manager.authflow.LoginMethodService;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.email.SmtpConfigBootstrap;
 import io.mcpmesh.auth.manager.keycloak.IdentityProvidersBootstrap;
 import io.mcpmesh.auth.manager.persistence.AuditEventRepository;
 import io.mcpmesh.auth.manager.security.Permissions;
 import io.mcpmesh.auth.manager.security.TenantSecurity;
+import io.mcpmesh.auth.manager.service.OnboardingBundleService;
+import io.mcpmesh.auth.manager.service.TenantDatabaseService;
 import io.mcpmesh.auth.manager.service.TenantService;
 import io.mcpmesh.auth.manager.service.UsermanagementBootstrap;
 import org.junit.jupiter.api.BeforeEach;
@@ -79,6 +82,9 @@ class TenantControllerWebMvcTest {
     @MockitoBean UsermanagementBootstrap bootstrap;
     @MockitoBean IdentityProvidersBootstrap idpBootstrap;
     @MockitoBean SmtpConfigBootstrap smtpBootstrap;
+    @MockitoBean OnboardingBundleService bundleService;
+    @MockitoBean TenantDatabaseService databaseService;
+    @MockitoBean LoginMethodService loginMethods;
     @MockitoBean(name = "tenantSecurity") TenantSecurity tenantSecurity;
     @MockitoBean(name = "perms") Permissions perms;
 
