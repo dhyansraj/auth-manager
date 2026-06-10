@@ -26,11 +26,13 @@ public class BundleController {
                                       String authMgrInClusterBase, String authMgrPublicBase) {}
 
     /**
-     * Read-only platform config, non-tenant-scoped — gated the same way as
-     * {@code GET /api/v1/tenants} (any authenticated platform/tenant JWT).
+     * Read-only platform config feeding the tenant-creation wizard — gated
+     * the same way as {@code POST /api/v1/tenants} ({@code TENANT_CREATE},
+     * which the platform-admin composite carries) so the wizard keeps
+     * working for exactly the audience that can actually create tenants.
      */
     @GetMapping("/bases")
-    @PreAuthorize("isAuthenticated()")
+    @PreAuthorize("@perms.has('TENANT_CREATE')")
     public BundleBasesResponse getBases() {
         return new BundleBasesResponse(
             bases.kcBase(),

@@ -105,12 +105,24 @@ class TenantControllerWebMvcTest {
 
     @Test
     void list_returns_401_without_auth() throws Exception {
-        // No JWT in request -> @PreAuthorize("isAuthenticated()") denies and
-        // the TestSecurityConfig entry-point returns 401. (In prod the chain
-        // is permitAll() and Spring's AccessDeniedHandler returns 403 — the
-        // status differs but the gate works either way.)
+        // No JWT in request -> the TestSecurityConfig entry-point returns
+        // 401. (In prod the chain is permitAll() and Spring's
+        // AccessDeniedHandler returns 403 — the status differs but the gate
+        // works either way.)
         mvc.perform(get("/api/v1/tenants"))
             .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void list_returns_403_for_tenant_user_without_tenant_view() throws Exception {
+        // A tenant end-user authenticates (multi-realm resolver accepts any
+        // realm's JWT) but holds neither platform-admin nor TENANT_VIEW —
+        // must be denied, not silently self-scoped.
+        when(tenantSecurity.isPlatformAdmin()).thenReturn(false);
+        when(perms.has("TENANT_VIEW")).thenReturn(false);
+
+        mvc.perform(get("/api/v1/tenants").with(jwt()))
+            .andExpect(status().isForbidden());
     }
 
     @Test
@@ -130,6 +142,7 @@ class TenantControllerWebMvcTest {
     @Test
     void list_returns_only_own_tenant_for_tenant_admin() throws Exception {
         when(tenantSecurity.isPlatformAdmin()).thenReturn(false);
+        when(perms.has("TENANT_VIEW")).thenReturn(true);
         when(tenantSecurity.currentTenantId()).thenReturn(Optional.of(APP1_ID));
         Tenant app1 = tenantWith(APP1_ID, "app1", "App 1");
         when(tenantService.get(APP1_ID)).thenReturn(app1);
@@ -142,8 +155,10 @@ class TenantControllerWebMvcTest {
 
     @Test
     void list_returns_empty_for_authenticated_caller_without_tenant() throws Exception {
-        // E.g. a JWT from a tenant realm whose backing row has been removed.
+        // E.g. a JWT from a tenant realm whose backing row has been removed,
+        // but the token still carries TENANT_VIEW.
         when(tenantSecurity.isPlatformAdmin()).thenReturn(false);
+        when(perms.has("TENANT_VIEW")).thenReturn(true);
         when(tenantSecurity.currentTenantId()).thenReturn(Optional.empty());
 
         mvc.perform(get("/api/v1/tenants").with(jwt()))

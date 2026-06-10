@@ -1,5 +1,6 @@
+import type { ReactNode } from 'react';
 import { Link, NavLink, Route, Routes, BrowserRouter } from 'react-router-dom';
-import { BffAutoSignIn, MeProvider, useBffAuth, useCurrentTenant } from '@mcpmesh/auth-lib-react';
+import { BffAutoSignIn, MeProvider, useBffAuth, useCurrentTenant, useMeContext } from '@mcpmesh/auth-lib-react';
 import Dashboard from './pages/Dashboard';
 import TenantsList from './pages/TenantsList';
 import TenantWizard from './pages/TenantWizard';
@@ -71,6 +72,43 @@ function AccountConsoleLink() {
   );
 }
 
+// Full-page lockout for authenticated users with zero admin signal. Tenant
+// end-users can reach this host while signed in; the backend 403s them, so
+// show a clear dead-end instead of an admin shell full of failing panels.
+function NoAdminAccess({ email }: { email?: string }) {
+  const auth = useBffAuth();
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="text-center space-y-6 max-w-md px-6">
+        <div className="space-y-2">
+          <h1 className="text-4xl font-bold text-slate-900 tracking-tight">auth-manager</h1>
+          <p className="text-slate-600 text-lg">Your account doesn&apos;t have access to the admin console.</p>
+        </div>
+        {email && <p className="text-slate-500 text-sm">Signed in as {email}</p>}
+        <button
+          onClick={() => auth.signoutRedirect()}
+          className="bg-slate-900 hover:bg-slate-800 text-white px-6 py-2.5 rounded-lg shadow text-sm font-medium"
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Sits between MeProvider and the shell so /me data is available. Gates on the
+// settled `me` value only — NOT isFetching — because a background refetch keeps
+// the cached `me` and default-DENY-while-fetching would flash the no-access
+// screen for legitimate admins (same hazard as the tenant-tab-reset fix).
+function AdminAccessGate({ children }: { children: ReactNode }) {
+  const { me, isLoading } = useMeContext();
+  if (isLoading) return <SplashLoading />;
+  if (me && !me.isPlatformAdmin && !me.isTenantAdmin && me.permissions.length === 0) {
+    return <NoAdminAccess email={me.user.email || me.user.preferredUsername} />;
+  }
+  return <>{children}</>;
+}
+
 function AuthenticatedShell() {
   const auth = useBffAuth();
   return (
@@ -118,7 +156,9 @@ export default function App() {
   // MeProvider only mounts after auth — otherwise /me 401s on the splash screen.
   return (
     <MeProvider endpoint="/admin/api/v1/me" authMode="cookie">
-      <AuthenticatedShell />
+      <AdminAccessGate>
+        <AuthenticatedShell />
+      </AdminAccessGate>
     </MeProvider>
   );
 }

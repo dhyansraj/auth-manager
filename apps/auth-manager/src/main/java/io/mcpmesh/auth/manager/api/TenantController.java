@@ -138,13 +138,13 @@ public class TenantController {
     }
 
     /**
-     * Platform-admin sees every active tenant. Tenant-admins (and any other
-     * authenticated caller bearing a tenant-realm JWT) see only their own
-     * tenant. Unauthenticated requests get 403 via the
-     * {@code isAuthenticated()} guard.
+     * Platform-admin sees every active tenant. Tenant-scoped callers holding
+     * {@code TENANT_VIEW} (tenant-admin / tenant-user-manager bundles) see
+     * only their own tenant. Tenant end-users without {@code TENANT_VIEW}
+     * — and unauthenticated callers — are denied by the guard.
      */
     @GetMapping
-    @PreAuthorize("isAuthenticated()")
+    @PreAuthorize("@tenantSecurity.isPlatformAdmin() or @perms.has('TENANT_VIEW')")
     public List<TenantResponse> list() {
         if (tenantSecurity.isPlatformAdmin()) {
             return service.list().stream()

@@ -27,14 +27,15 @@ public class AuditController {
 
     /**
      * Global audit log, newest first. Platform-admins see every event;
-     * tenant-scoped callers see only events scoped to their own tenant.
-     * Unauthenticated requests get 403 via the {@code isAuthenticated()}
-     * guard.
+     * tenant-scoped callers holding {@code AUDIT_VIEW} (tenant-admin /
+     * tenant-user-manager bundles) see only events scoped to their own
+     * tenant. Tenant end-users without {@code AUDIT_VIEW} — and
+     * unauthenticated callers — are denied by the guard.
      *
      * <p>Default page size 50, max 200.
      */
     @GetMapping
-    @PreAuthorize("isAuthenticated()")
+    @PreAuthorize("@tenantSecurity.isPlatformAdmin() or @perms.has('AUDIT_VIEW')")
     public PageResponse<AuditEventResponse> list(
         @RequestParam(defaultValue = "0")  int page,
         @RequestParam(defaultValue = "50") int size
