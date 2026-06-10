@@ -433,6 +433,25 @@ re-verified against the codebase on 2026-06-10.
    longer urgent, but it's still good defense-in-depth.
 
 * DEFERRED
+** [#C] edge-admin-host — serve /admin/* only on the platform hostname
+   :PROPERTIES:
+   :TASK: (not filed)
+   :STATUS: pending
+   :END:
+
+   The Lua router intentionally serves =/admin/*= on *every* tenant
+   hostname (single shared edge), and the CF WAF IP-allowlist only
+   covers =/auth/admin/*= on the auth host — so the admin UI/API are
+   reachable from any tenant domain without passing the WAF gate.
+
+   After the 0.1.80 server-side authz fixes (formerly ungated endpoints
+   now perm-gated) this is defense-in-depth, *not* an open hole — but
+   the admin surface still shouldn't be exposed on tenant hostnames.
+
+   Scope: either a host check in =router.lua= (only route =/admin/*=
+   when Host matches the platform hostname) or extend the CF WAF rule
+   to cover =/admin/*= across all hostnames.
+
 ** [#D] #110 — Phase 2: dev→prod migration tool
    :PROPERTIES:
    :TASK: 110
@@ -520,6 +539,10 @@ These are completed but useful context for picking up next session:
 
 | ID  | Subject                                                                 |
 |-----+-------------------------------------------------------------------------|
+| -   | SECURITY: gate ungated/under-gated endpoints — manifests apply/list     |
+| -   |   (was ANONYMOUS); GET /tenants + /audit + /bundle/bases now perm-gated |
+| -   |   (MANIFEST_APPLY/APPS_EDIT/TENANT_VIEW/AUDIT_VIEW/TENANT_CREATE);      |
+| -   |   admin-ui no-access screen for zero-perm users                         |
 | -   | Theme: hide "Create one" registration link on password-disabled tenants |
 | -   |   (KC 26.2+ dropped footer-band class; added #kc-registration-container |
 | -   |   selector — live DEV; prod needs theme ConfigMap upgrade + KC restart) |
@@ -572,16 +595,15 @@ These are completed but useful context for picking up next session:
 * OPERATIONAL NOTES (relevant to several backlog items)
 
 - Prod release versions (current as of handoff):
-  - auth-manager: 0.1.78
-  - admin-ui: 0.1.47
+  - auth-manager: 0.1.80
+  - admin-ui: 0.1.49
   - platform-edge: 0.1.22
   - smtp-relay: 0.1.0
-  (values-beelink.yaml and values-beelink-dev.yaml both pin these tags;
-  prod rolled via commit =0c78ae2=.)
+  (values-beelink.yaml and values-beelink-dev.yaml both pin 0.1.80/0.1.49;
+  promoted 2026-06-10 with the endpoint-authz security fix.)
 
-- Dev release: dev namespace now runs AHEAD of prod — auth-manager 0.1.79 /
-  admin-ui 0.1.48 (all 2026-06-10 backlog work); prod still 0.1.78 / 0.1.47.
-  Promote by retagging the =values-beelink.yaml= pins after dev validation.
+- Dev release: dev and prod are now in LOCKSTEP — auth-manager 0.1.80 /
+  admin-ui 0.1.49 in both namespaces (2026-06-10).
   Separate namespace =auth-platform-dev=, separate CNPG (=platform-pg-dev=),
   separate KC (=platform-kc-dev=), shared SMTP relay (cross-namespace).
 

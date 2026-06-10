@@ -39,7 +39,7 @@ authManager:
   replicas: 1
   image:
     repository: auth-manager
-    tag: "0.1.79"
+    tag: "0.1.80"
   # KC StatefulSet lives in this dev namespace, named after the dev Bitnami
   # KC release (platform-kc-dev). Used by the RBAC Role for theme-reload
   # rolling-restart patches AND by ThemeApplier at runtime (env var
@@ -96,7 +96,7 @@ adminUi:
   replicas: 1
   image:
     repository: admin-ui
-    tag: "0.1.48"
+    tag: "0.1.49"
 
 # Dev shares prod's smtp-relay — no separate relay deployment in this
 # namespace. (auth-manager + KC realms reach it via cross-namespace DNS
