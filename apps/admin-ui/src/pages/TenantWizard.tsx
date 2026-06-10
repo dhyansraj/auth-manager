@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import type { Tenant, IdentityProviderDto } from '../api/types';
 import { useToast } from '../components/Toast';
+import { bundleBases } from '../lib/env';
 
 // v2 = added the Email step (step 3). v1 drafts auto-discarded on load.
 const DRAFT_STORAGE_KEY = 'mcpmesh.tenantwizard.draft.v2';
@@ -1519,13 +1520,16 @@ function SuccessPage({
   const confidentialApps = apps.filter(a => a.clientSecret !== null);
   const realmName = tenant.realmName ?? `t-${tenant.slug}`;
   const upperSlug = tenant.slug.toUpperCase().replace(/-/g, '_');
+  // Env-aware bases: dev admin must print dev URLs, not prod (the downloadable
+  // bundle is already env-correct server-side; this on-screen snippet must match).
+  const { kcBase, authMgrInClusterBase } = bundleBases();
 
   // Always-render lines: apply to any tenant regardless of confidential apps.
   const alwaysRenderLines = [
-    `AUTH_LIB_ISSUER_URI         = https://auth.mcp-mesh.io/auth/realms/${realmName}`,
+    `AUTH_LIB_ISSUER_URI         = ${kcBase}/realms/${realmName}`,
     `AUTH_LIB_PERMISSIONS_SOURCE = claims`,
-    `KC_BASE                     = https://auth.mcp-mesh.io/auth`,
-    `AUTH_MGR_BASE               = http://auth-platform-auth-manager.auth-platform.svc.cluster.local:8080`,
+    `KC_BASE                     = ${kcBase}`,
+    `AUTH_MGR_BASE               = ${authMgrInClusterBase}`,
     `${upperSlug}_TENANT_SLUG = ${tenant.slug}`,
   ];
 
@@ -1689,7 +1693,7 @@ function SuccessPage({
           </div>
         ) : (
           enabledIdps.map(idp => {
-            const brokerUrl = `https://auth.mcp-mesh.io/auth/realms/${realmName}/broker/${idp.id}/endpoint`;
+            const brokerUrl = `${kcBase}/realms/${realmName}/broker/${idp.id}/endpoint`;
             const openHref =
               idp.id === 'google' ? 'https://console.cloud.google.com/apis/credentials' :
               idp.id === 'github' ? 'https://github.com/settings/developers' :

@@ -5,6 +5,7 @@ import TenantsList from './pages/TenantsList';
 import TenantWizard from './pages/TenantWizard';
 import TenantDetail from './pages/TenantDetail';
 import AuditLog from './pages/AuditLog';
+import { isDevEnv } from './lib/env';
 
 // vite's BASE_URL is '/admin/' here; React Router wants a basename without
 // the trailing slash (so '/admin' for routes like '/admin/tenants').
@@ -23,11 +24,7 @@ function SplashLoading() {
 // looking at. Absence-of-badge = production; intentional, keeps prod chrome
 // clean.
 function EnvBadge() {
-  const host = typeof window !== 'undefined' ? window.location.host : '';
-  // Dev env hostnames: auth-dev.mcp-mesh.io (canonical single-host architecture
-  // mirroring prod), legacy admin-dev.* (since removed but kept for safety),
-  // and localhost (vite dev server).
-  if (host.startsWith('auth-dev.') || host.startsWith('admin-dev.') || host.startsWith('localhost')) {
+  if (isDevEnv()) {
     return (
       <span className="ml-2 inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
         DEV
