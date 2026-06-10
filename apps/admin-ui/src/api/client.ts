@@ -17,7 +17,10 @@ import type {
   DatabaseProvisionResult,
   TenantEmailResponse,
   TenantEmailUpdateRequest,
+  TenantEmailRateLimitResponse,
+  TenantEmailRateLimitUpdateRequest,
   DomainAuthResponse,
+  BundleBasesResponse,
   LoginMethodStatus,
   EmailTemplateSummary,
   EmailTemplateDetail,
@@ -181,6 +184,9 @@ export const api = {
     req<void>(`/tenants/${tenantId}/users/${userId}`, { method: 'DELETE' }),
   resendInvite: (tenantId: string, userId: string) =>
     req<void>(`/tenants/${tenantId}/users/${userId}/invite`, { method: 'POST' }),
+  /** Marks the user's email verified in KC (operator override; gated by USER_INVITE). */
+  verifyUserEmail: (tenantId: string, userId: string) =>
+    req<void>(`/tenants/${tenantId}/users/${userId}/verify-email`, { method: 'POST' }),
   getRoutes: (slug: string) =>
     req<import('./types').RoutingConfig>(`/tenants/${slug}/routes`),
   replaceRoutes: (slug: string, body: import('./types').RoutingConfig) =>
@@ -315,6 +321,17 @@ export const api = {
     req<DomainAuthResponse>(`/tenants/${tenantId}/email/domain-auth/revalidate`, {
       method: 'POST',
     }),
+  getEmailRateLimit: (tenantId: string) =>
+    req<TenantEmailRateLimitResponse>(`/tenants/${tenantId}/email/rate-limit`),
+  /**
+   * Sets/clears the tenant's send-API rate-limit overrides. ALWAYS sends both
+   * fields — null clears that override (the backend treats a missing field as
+   * "clear", so omitting one would silently wipe it).
+   */
+  updateEmailRateLimit: (tenantId: string, body: TenantEmailRateLimitUpdateRequest) =>
+    req<TenantEmailRateLimitResponse>(`/tenants/${tenantId}/email/rate-limit`, {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
 
   // -------------------------------------------------------------------------
   // Per-tenant email templates (slug-keyed; zip-driven, same UX as branding)
@@ -399,6 +416,8 @@ export const api = {
   // -------------------------------------------------------------------------
   // Onboarding bundle (.zip handoff for tenant teams)
   // -------------------------------------------------------------------------
+  /** Config-driven platform base URLs (env-correct; any authenticated caller). */
+  getBundleBases: () => req<BundleBasesResponse>('/bundle/bases'),
   downloadOnboardingBundle: async (tenantId: string): Promise<void> => {
     const r = await bffFetch(`${base}/tenants/${tenantId}/onboarding-bundle`, {
       credentials: 'include',

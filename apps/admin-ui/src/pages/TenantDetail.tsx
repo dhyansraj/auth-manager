@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { usePermission } from '@mcpmesh/auth-lib-react';
+import { useMeContext, usePermission } from '@mcpmesh/auth-lib-react';
 import { api } from '../api/client';
 import RoutesTab from '../features/routes/RoutesTab';
 import IdentityProvidersTab from '../features/idp/IdentityProvidersTab';
@@ -18,6 +18,15 @@ import { useToast } from '../components/Toast';
 
 type TabKey = 'overview' | 'apps' | 'routes' | 'identity-providers' | 'branding' | 'email' | 'permissions' | 'roles' | 'data-services' | 'users' | 'audit';
 
+const TAB_KEYS: readonly TabKey[] = [
+  'overview', 'apps', 'routes', 'identity-providers', 'branding', 'email',
+  'permissions', 'roles', 'data-services', 'users', 'audit',
+];
+
+function isTabKey(v: string | null): v is TabKey {
+  return v !== null && (TAB_KEYS as readonly string[]).includes(v);
+}
+
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
   // Per-tab permission checks. Each tab is independently gated on an
@@ -33,7 +42,23 @@ export default function TenantDetail() {
   const canListUsers        = usePermission('USER_LIST');
   const canViewAudit        = usePermission('AUDIT_VIEW');
 
-  const [tab, setTab] = useState<TabKey>('overview');
+  // Active tab lives in a ?tab= search param (deep-linkable, refresh-safe,
+  // and immune to state loss from the /me focus-refetch — see snap-back
+  // guard below). Absent/unknown values default to 'overview'.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab');
+  const tab: TabKey = isTabKey(rawTab) ? rawTab : 'overview';
+  const setTab = (next: TabKey) => {
+    setSearchParams(prev => {
+      const p = new URLSearchParams(prev);
+      if (next === 'overview') p.delete('tab'); else p.set('tab', next);
+      return p;
+    }, { replace: true });
+  };
+  // isFetching is true for ANY in-flight /me request (including the
+  // refetch-on-window-focus the auth lib does); usePermission default-DENIES
+  // while it's true, so visibleTabs is transiently [] — not a real demotion.
+  const { isFetching: meFetching } = useMeContext();
   const toast = useToast();
   const tenant = useQuery({ queryKey: ['tenant', id], queryFn: () => api.getTenant(id!), enabled: !!id });
 
@@ -65,9 +90,14 @@ export default function TenantDetail() {
 
   // If the selected tab is no longer in the visible set (e.g. /me resolved
   // late and demoted the caller's tier), snap to the first visible one.
+  // Skip while /me is merely refetching (perms unknown, not demoted) and
+  // while visibleTabs is empty for the same reason.
   useEffect(() => {
+    if (meFetching) return;
+    if (visibleTabs.length === 0) return;
     if (!visibleTabs.includes(tab)) setTab(visibleTabs[0] ?? 'overview');
-  }, [tab, visibleTabs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, visibleTabs, meFetching]);
 
   if (tenant.isLoading) return <div>Loading…</div>;
   if (tenant.isError) return <div className="text-red-700">{String(tenant.error)}</div>;
@@ -449,6 +479,17 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
     onError: (err) => toast.error(`Resend failed: ${err instanceof Error ? err.message : String(err)}`),
   });
 
+  // Operator override for users stuck on KC's verify-email gate (#90).
+  // Backend gates this on USER_INVITE — same affordance tier as resend.
+  const verifyEmail = useMutation({
+    mutationFn: (userId: string) => api.verifyUserEmail(tenantId, userId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['users', tenantId] });
+      toast.success('Email marked verified');
+    },
+    onError: (err) => toast.error(`Mark verified failed: ${err instanceof Error ? err.message : String(err)}`),
+  });
+
   // Build a roleName -> description map for tooltips on the row badges.
   const roleDescByName: Record<string, string> = {};
   for (const r of roles.data ?? []) {
@@ -526,6 +567,13 @@ function UsersTab({ tenantId, slug }: { tenantId: string; slug: string }) {
                       <button onClick={() => resend.mutate(u.id)} className="text-blue-700 hover:underline">
                         resend invite
                       </button>
+                    )}
+                    {!u.emailVerified && (
+                      <button
+                        onClick={() => verifyEmail.mutate(u.id)}
+                        disabled={verifyEmail.isPending}
+                        className="text-emerald-700 hover:underline ml-2 disabled:opacity-50"
+                      >mark verified</button>
                     )}
                     {' '}
                     {canDisable && u.enabled && (
@@ -674,6 +722,11 @@ function InviteUserForm({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  // Logged-in operator's display name, rendered in the invite email's
+  // "X invited you" line. Falls back through the /me user fields; the
+  // backend ignores it where not applicable.
+  const { me } = useMeContext();
+  const inviterName = (me?.user.name || me?.user.preferredUsername || me?.user.email || '').slice(0, 255);
   const [email, setEmail] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -705,6 +758,7 @@ function InviteUserForm({
       else if (grantUserManager) roles.push('tenant-user-manager');
       const created = await api.createUser(tenantId, {
         email, firstName, lastName, roles,
+        inviterName: inviterName || undefined,
       });
       if (composite.size > 0) {
         // Omit systemRoles: the invite POST already set the system roles

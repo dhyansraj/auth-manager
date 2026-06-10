@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePermission } from '@mcpmesh/auth-lib-react';
 import { api, ApiError } from '../../api/client';
 import type {
   TenantEmailResponse,
+  TenantEmailRateLimitResponse,
   DomainAuthResponse,
   DomainAuthCname,
   DomainAuthStatus,
 } from '../../api/types';
+import { useToast } from '../../components/Toast';
 import EmailTemplatesCard from './EmailTemplatesCard';
 
 interface Props {
@@ -97,6 +99,19 @@ export default function EmailTab({ tenantId, slug }: Props) {
           }}
         />
       )}
+
+      <hr className="border-slate-200" />
+
+      <div>
+        <h3 className="text-base font-semibold">Send rate limits</h3>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Caps on the tenant-app send API (per-minute burst + per-day quota).
+          Defaults to the platform limits; set an override for high-volume
+          tenants. Clearing an override falls back to the platform default.
+        </p>
+      </div>
+
+      <RateLimitsCard tenantId={tenantId} canManage={canManage} />
 
       <hr className="border-slate-200" />
 
@@ -251,6 +266,7 @@ function DomainAuthCard({
   canManage: boolean;
   onRefresh: () => void;
 }) {
+  const toast = useToast();
   const defaultDomain = domainAuth.domain
     ?? extractDomain(email.fromAddressOverride ?? email.fromAddress)
     ?? '';
@@ -260,9 +276,56 @@ function DomainAuthCard({
     setDomainInput(defaultDomain);
   }, [defaultDomain]);
 
+  // ---- auto-validation after a DKIM CNAME push (#103) ----------------------
+  // When the push succeeds but SendGrid hasn't validated yet, wait ~30s for
+  // DNS to settle, then poll revalidate a few times (mirrors the wizard's
+  // domain-auth poll loop). The manual Re-verify button keeps working
+  // throughout. Timers are cleaned up on unmount.
+  const [autoValidating, setAutoValidating] = useState(false);
+  const cancelledRef = useRef(false);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(() => () => {
+    cancelledRef.current = true;
+    timersRef.current.forEach(t => window.clearTimeout(t));
+  }, []);
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      timersRef.current.push(window.setTimeout(resolve, ms));
+    });
+  }
+
+  function scheduleAutoValidate() {
+    setAutoValidating(true);
+    void (async () => {
+      await sleep(30_000);
+      for (let attempt = 0; attempt < 4 && !cancelledRef.current; attempt++) {
+        try {
+          const resp = await api.revalidateDomainAuth(tenantId);
+          onRefresh();
+          if (resp.valid === true) {
+            if (!cancelledRef.current) toast.success('Email domain validated');
+            break;
+          }
+        } catch {
+          break; // transient revalidate error — stop polling, manual Re-verify remains
+        }
+        if (attempt < 3) await sleep(15_000);
+      }
+      if (!cancelledRef.current) setAutoValidating(false);
+    })();
+  }
+
   const start = useMutation({
     mutationFn: (d: string) => api.startDomainAuth(tenantId, d),
-    onSuccess: () => onRefresh(),
+    onSuccess: (resp) => {
+      onRefresh();
+      // CNAMEs pushed to CF but not yet validated → auto-validate shortly.
+      if (resp.valid !== true && resp.zoneInOurAccount && resp.cnames.length > 0) {
+        scheduleAutoValidate();
+      }
+    },
   });
 
   const revalidate = useMutation({
@@ -309,6 +372,17 @@ function DomainAuthCard({
               {revalidate.isPending ? 'Re-verifying…' : 'Re-verify'}
             </button>
           )}
+        </div>
+      )}
+
+      {autoValidating && domainAuth.valid !== true && (
+        <div className="flex items-center gap-2 text-xs text-slate-600">
+          <span
+            className="inline-block w-3.5 h-3.5 border-2 border-slate-400 border-t-transparent rounded-full animate-spin"
+            aria-hidden
+          />
+          Validating… DKIM CNAMEs pushed; re-checking with SendGrid automatically
+          (usually completes within a minute).
         </div>
       )}
 
@@ -376,6 +450,189 @@ function CnamesPushedBlock({ cnames, valid }: { cnames: DomainAuthCname[]; valid
         ))}
       </ul>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Send rate limits (per-tenant overrides on the send-API limiter)
+// ---------------------------------------------------------------------------
+
+const RATE_LIMIT_MAX = 100_000;
+
+/** Blank = clear (platform default); otherwise a positive int ≤ 100000. */
+function parseRateLimitInput(raw: string): { ok: boolean; value: number | null } {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { ok: true, value: null };
+  if (!/^\d+$/.test(trimmed)) return { ok: false, value: null };
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < 1 || n > RATE_LIMIT_MAX) return { ok: false, value: null };
+  return { ok: true, value: n };
+}
+
+function RateLimitsCard({
+  tenantId, canManage,
+}: {
+  tenantId: string;
+  canManage: boolean;
+}) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const rl = useQuery({
+    queryKey: ['tenant-email-rate-limit', tenantId],
+    queryFn: () => api.getEmailRateLimit(tenantId),
+    enabled: !!tenantId,
+  });
+
+  const [editing, setEditing] = useState(false);
+  const [perMinuteInput, setPerMinuteInput] = useState('');
+  const [perDayInput, setPerDayInput] = useState('');
+
+  const perMinuteParsed = parseRateLimitInput(perMinuteInput);
+  const perDayParsed = parseRateLimitInput(perDayInput);
+
+  const save = useMutation({
+    // ALWAYS send both fields: null clears that override server-side, so an
+    // omitted field would silently wipe the other override.
+    mutationFn: () => api.updateEmailRateLimit(tenantId, {
+      perMinute: perMinuteParsed.value,
+      perDay: perDayParsed.value,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tenant-email-rate-limit', tenantId] });
+      toast.success('Send rate limits saved');
+      setEditing(false);
+    },
+    onError: (err) => toast.error(updateErrorMessage(err)),
+  });
+
+  if (rl.isLoading) return <div>Loading…</div>;
+  if (rl.isError) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-900">
+        {String(rl.error)}
+      </div>
+    );
+  }
+  if (!rl.data) return null;
+  const data = rl.data;
+
+  function openEditor() {
+    setPerMinuteInput(data.perMinuteOverride !== null ? String(data.perMinuteOverride) : '');
+    setPerDayInput(data.perDayOverride !== null ? String(data.perDayOverride) : '');
+    setEditing(true);
+  }
+
+  return (
+    <div className="bg-white border rounded p-4 space-y-3">
+      {!data.enabled && (
+        <div className="bg-slate-50 border border-slate-200 rounded p-2 text-xs text-slate-600">
+          Rate limiting is currently disabled platform-wide; these limits are
+          not being enforced.
+        </div>
+      )}
+
+      <dl className="grid grid-cols-[140px_1fr] gap-y-1 text-sm items-center">
+        <dt className="text-slate-500">Per minute</dt>
+        <dd>
+          <span className="font-mono">{data.perMinute}</span>
+          <RateLimitProvenance override={data.perMinuteOverride} platform={data.platformPerMinute} />
+        </dd>
+        <dt className="text-slate-500">Per day</dt>
+        <dd>
+          <span className="font-mono">{data.perDay}</span>
+          <RateLimitProvenance override={data.perDayOverride} platform={data.platformPerDay} />
+        </dd>
+      </dl>
+
+      {canManage && !editing && (
+        <button
+          type="button"
+          onClick={openEditor}
+          className="bg-white border px-3 py-1.5 rounded text-sm hover:bg-slate-50"
+        >
+          Edit overrides
+        </button>
+      )}
+
+      {canManage && editing && (
+        <div className="border-t pt-3 space-y-3">
+          <div className="grid grid-cols-2 gap-3 max-w-md">
+            <FormRow
+              label="Per-minute override"
+              helper={`Blank = platform default (${data.platformPerMinute})`}
+            >
+              <input
+                value={perMinuteInput}
+                onChange={(e) => setPerMinuteInput(e.target.value)}
+                placeholder={String(data.platformPerMinute)}
+                disabled={save.isPending}
+                className="w-full border rounded px-2 py-1 text-sm font-mono disabled:bg-slate-50"
+              />
+              {!perMinuteParsed.ok && (
+                <div className="text-red-700 text-xs">
+                  Must be a positive integer ≤ {RATE_LIMIT_MAX.toLocaleString()}
+                </div>
+              )}
+            </FormRow>
+            <FormRow
+              label="Per-day override"
+              helper={`Blank = platform default (${data.platformPerDay})`}
+            >
+              <input
+                value={perDayInput}
+                onChange={(e) => setPerDayInput(e.target.value)}
+                placeholder={String(data.platformPerDay)}
+                disabled={save.isPending}
+                className="w-full border rounded px-2 py-1 text-sm font-mono disabled:bg-slate-50"
+              />
+              {!perDayParsed.ok && (
+                <div className="text-red-700 text-xs">
+                  Must be a positive integer ≤ {RATE_LIMIT_MAX.toLocaleString()}
+                </div>
+              )}
+            </FormRow>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => save.mutate()}
+              disabled={save.isPending || !perMinuteParsed.ok || !perDayParsed.ok}
+              className="bg-slate-900 text-white px-3 py-1.5 rounded text-sm hover:bg-slate-700 disabled:opacity-50"
+            >
+              {save.isPending ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              disabled={save.isPending}
+              className="text-sm text-slate-600 hover:text-slate-900 px-3 py-1.5"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RateLimitProvenance({
+  override, platform,
+}: {
+  override: number | null;
+  platform: number;
+}) {
+  return override !== null ? (
+    <span
+      className="ml-2 text-xs px-2 py-0.5 rounded border bg-blue-50 text-blue-800 border-blue-200"
+      title={`Platform default: ${platform}`}
+    >
+      override
+    </span>
+  ) : (
+    <span className="ml-2 text-xs px-2 py-0.5 rounded border bg-slate-100 text-slate-600 border-slate-200">
+      platform default
+    </span>
   );
 }
 

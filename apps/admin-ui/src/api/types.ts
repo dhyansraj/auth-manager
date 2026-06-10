@@ -77,6 +77,8 @@ export interface CreateUserPayload {
   lastName?: string;
   roles?: string[];
   sendInvite?: boolean;
+  /** Display name of the operator sending the invite (rendered in the invite email). */
+  inviterName?: string;
 }
 
 export type UserRole = 'tenant-admin' | 'tenant-user-manager' | 'user-viewer';
@@ -317,6 +319,34 @@ export interface DomainAuthResponse {
   cnames: DomainAuthCname[];
 }
 
+/**
+ * Per-tenant send-API rate-limit view returned by GET/PUT
+ * /tenants/{id}/email/rate-limit.
+ *
+ * {@code perMinute}/{@code perDay} are the resolved effective limits (tenant
+ * override if set, else the platform default). The *Override fields are the
+ * raw tenant columns or null; the platform* fields are the platform defaults
+ * an override falls back to when cleared.
+ */
+export interface TenantEmailRateLimitResponse {
+  perMinute: number;
+  perDay: number;
+  perMinuteOverride: number | null;
+  perDayOverride: number | null;
+  platformPerMinute: number;
+  platformPerDay: number;
+  enabled: boolean;
+}
+
+/**
+ * PUT body for the rate-limit endpoint. Both fields are always sent: a number
+ * sets the override, null clears it (falls back to the platform default).
+ */
+export interface TenantEmailRateLimitUpdateRequest {
+  perMinute: number | null;
+  perDay: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Per-tenant email templates (slug-keyed; zip-driven, same UX as branding)
 // ---------------------------------------------------------------------------
@@ -343,4 +373,16 @@ export interface EmailTemplateDetail {
 export interface LoginMethodStatus {
   passwordEnabled: boolean;
   enabledIdpAliases: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding bundle (config-driven platform base URLs)
+// ---------------------------------------------------------------------------
+
+/** Platform base URLs from GET /bundle/bases (config-driven, env-correct). */
+export interface BundleBasesResponse {
+  kcBase: string;
+  adminBase: string;
+  authMgrInClusterBase: string;
+  authMgrPublicBase: string;
 }

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../api/client';
 import type { Tenant, IdentityProviderDto } from '../api/types';
 import { useToast } from '../components/Toast';
-import { bundleBases } from '../lib/env';
 
 // v2 = added the Email step (step 3). v1 drafts auto-discarded on load.
 const DRAFT_STORAGE_KEY = 'mcpmesh.tenantwizard.draft.v2';
@@ -1520,18 +1520,26 @@ function SuccessPage({
   const confidentialApps = apps.filter(a => a.clientSecret !== null);
   const realmName = tenant.realmName ?? `t-${tenant.slug}`;
   const upperSlug = tenant.slug.toUpperCase().replace(/-/g, '_');
-  // Env-aware bases: dev admin must print dev URLs, not prod (the downloadable
-  // bundle is already env-correct server-side; this on-screen snippet must match).
-  const { kcBase, authMgrInClusterBase } = bundleBases();
+  // Env-correct bases come from the backend's config-driven resolver (the
+  // same source the downloadable bundle uses) — no hardcoded hostnames here.
+  const bases = useQuery({
+    queryKey: ['bundle-bases'],
+    queryFn: () => api.getBundleBases(),
+    staleTime: Infinity,
+  });
+  const kcBase = bases.data?.kcBase;
+  const authMgrInClusterBase = bases.data?.authMgrInClusterBase;
+  const basesReady = !!(kcBase && authMgrInClusterBase);
 
   // Always-render lines: apply to any tenant regardless of confidential apps.
-  const alwaysRenderLines = [
+  // Empty until the bases query resolves (the snippet shows a loading note).
+  const alwaysRenderLines = basesReady ? [
     `AUTH_LIB_ISSUER_URI         = ${kcBase}/realms/${realmName}`,
     `AUTH_LIB_PERMISSIONS_SOURCE = claims`,
     `KC_BASE                     = ${kcBase}`,
     `AUTH_MGR_BASE               = ${authMgrInClusterBase}`,
     `${upperSlug}_TENANT_SLUG = ${tenant.slug}`,
-  ];
+  ] : [];
 
   // For the Copy-block button: include CLIENT_ID + AUDIENCES per confidential
   // app (with a section header when >1) but NEVER the secret — operator copies
@@ -1645,7 +1653,8 @@ function SuccessPage({
           <div className="text-sm font-semibold">Env vars for tenant team's helm-values</div>
           <button
             onClick={() => navigator.clipboard.writeText(copyBlock).catch(() => { /* clipboard blocked */ })}
-            className="text-xs bg-slate-900 text-white px-2 py-1 rounded hover:bg-slate-700"
+            disabled={!basesReady}
+            className="text-xs bg-slate-900 text-white px-2 py-1 rounded hover:bg-slate-700 disabled:opacity-50"
           >
             Copy block
           </button>
@@ -1679,7 +1688,13 @@ function SuccessPage({
               </div>
             );
           })}
-          <pre className="whitespace-pre">{alwaysRenderLines.join('\n')}</pre>
+          {basesReady ? (
+            <pre className="whitespace-pre">{alwaysRenderLines.join('\n')}</pre>
+          ) : bases.isError ? (
+            <div className="text-red-700">Failed to load platform URLs: {String(bases.error)}</div>
+          ) : (
+            <div className="text-slate-500">Loading platform URLs…</div>
+          )}
         </div>
       </section>
 
@@ -1691,6 +1706,8 @@ function SuccessPage({
             creation. Visit the Identity Providers tab on the tenant detail page to enable
             Google or GitHub.
           </div>
+        ) : !kcBase ? (
+          <div className="text-sm text-slate-500">Loading platform URLs…</div>
         ) : (
           enabledIdps.map(idp => {
             const brokerUrl = `${kcBase}/realms/${realmName}/broker/${idp.id}/endpoint`;
