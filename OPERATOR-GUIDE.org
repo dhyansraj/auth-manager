@@ -151,14 +151,15 @@ Pulled by cluster nodes over the LAN.
 
 | Image            | Prod     | Dev      |
 |------------------+----------+----------|
-| auth-manager     | =0.1.78= | =0.1.78= |
-| admin-ui         | =0.1.43= | =0.1.43= |
+| auth-manager     | =0.1.80= | =0.1.80= |
+| admin-ui         | =0.1.49= | =0.1.49= |
 | platform-edge    | =0.1.22= | =0.1.22= |
 | smtp-relay       | =0.1.0=  | (shared) |
 
-*Prod is back in sync with dev.* The invite-only access, first-broker-login
-auto-link, and per-tenant email-templates features are now rolled out to prod
-(=auth-manager 0.1.78= / =admin-ui 0.1.43=, helm rev 120, 2026-06-09).
+*Prod is in sync with dev.* =auth-manager 0.1.80= / =admin-ui 0.1.49= promoted
+to prod 2026-06-10 — includes the endpoint-authz security fix (see *Endpoint
+authorization* under Reference), per-tenant email rate-limit overrides,
+inviter-name in invite emails, and wizard admin auto-verify.
 
 Bump the tag in =deploy/helm/auth-platform/values-beelink.yaml= (prod) and/or
 =values-beelink-dev.yaml= (dev) when deploying new versions.
@@ -344,6 +345,8 @@ In admin UI → Tenants → "+ New tenant":
    CNAME, tunnel ingress rule, theme upload. Returns onboarding bundle for
    the tenant team.
 
+Tenant-detail tabs are deep-linkable via =?tab== and survive window refocus.
+
 ** Configuring Identity Providers post-creation
 
 Tenant detail → Identity Providers tab. Three toggle cards:
@@ -403,7 +406,9 @@ Tenant detail → Email tab → *Email templates*. Per type:
   the available variables.
 - *+ New template* — pick a free-form =typeKey= (lowercase slug).
 - *Upload / Replace* — drop the edited =.zip= (pre-scanned on upload).
-- *Preview* — renders in an iframe (=[var]= placeholders, assets inlined).
+- *Preview* — renders in an iframe (=[var]= placeholders, assets inlined; loop
+  sections render exactly one =[placeholder]= row, inverted ={{^x}}= sections
+  are suppressed).
 - *Delete*.
 
 Templating is logic-less *Mustache*: variables from the send model as
@@ -421,8 +426,8 @@ Upload a template with =typeKey=invitation= to override the default invite
 email (the branded "sign in to get started" mail). The invite flow uses the
 tenant's =invitation= template if present, else the platform default.
 Variables: ={{tenantDisplayName}}=, ={{inviteUrl}}= (or ={{ctaUrl}}=, same
-value), ={{recipientEmail}}=, ={{inviterName}}= (optional — currently always
-blank; see backlog =email-invite=).
+value), ={{recipientEmail}}=, ={{inviterName}}= (the inviting operator's
+display name — sent by the admin UI; optional in the API).
 
 *** App-send API  [tenant backend, =EMAIL_SEND=]
 
@@ -442,7 +447,10 @@ account).
 Per-tenant Redis counters protect domain reputation: defaults =100/min= +
 =5000/day= (=auth-manager.email.rate-limit.{per-minute,per-day,enabled}=,
 env-overridable). Over the limit → =429= + =Retry-After=. *Fail-open* if Redis
-is unreachable. Per-tenant overrides are backlog (=email-rl-override=).
+is unreachable. Per-tenant overrides:
+=GET/PUT ${AUTH_MGR_BASE}/api/v1/tenants/{tenantUuid}/email/rate-limit=
+(=TENANT_VIEW= to read, =TENANT_EDIT= to write; =null= clears an override back
+to the platform default). Admin UI: Email tab → *Send rate limits* card.
 
 ** Theming
 
@@ -526,7 +534,8 @@ skipped and every login fails with =invalid_user_credentials=.
 *** Inviting users
 
 Create the invited (provisioned) account two ways:
-- Admin UI: Tenant detail → Users tab → *+ Invite user* (email + roles).
+- Admin UI: Tenant detail → Users tab → *+ Invite user* (email + roles). The
+  Users tab also has a per-row *mark verified* action for unverified users.
 - API (for tenant apps): =POST ${AUTH_MGR_BASE}/api/v1/tenants/<tenantUuid>/users=
   body ={"email","firstName","lastName","roles":["user-viewer"],"sendInvite":true}=
   (gated =USER_INVITE=). The tenant backend calls this with its service-account
@@ -715,8 +724,11 @@ All in =https://auth.mcp-mesh.io/admin/=:
    bundle (or KC console → realm → Clients → backend → Credentials). Hand
    =client_id= + =client_secret= to the tenant *out of band* (not over the
    relay).
-7. *Users*: create test users; assign one the =admin= role; mark their emails
-   *verified* by hand (the wizard leaves new users unverified — gap #90).
+7. *Users*: create test users; assign one the =admin= role. The wizard
+   provisions the tenant admin user with =emailVerified=true=; mark other
+   users verified via the Users-tab *mark verified* action or
+   =POST ${AUTH_MGR_BASE}/api/v1/tenants/{tenantUuid}/users/{userId}/verify-email=
+   (gated =USER_INVITE=).
 
 *** Phase 3 — App integration  [App Claude]
 - Delete any tenant-side OAuth/OIDC/session code (e.g. an nginx Lua Google flow).
@@ -817,7 +829,7 @@ dev auth-manager (reads =CF_TUNNEL_ID=) auto-creates each dev tenant's DNS CNAME
 2. App =backend= (CONFIDENTIAL_BACKEND).
 3. Routes → targets = dev machine LAN IP (=http://192.168.10.50:3000= UI, =:8080= gateway); rules =/api→REQUIRED→backend=, =/*→OPTIONAL→frontend=.
 4. Hostname =<slug>-dev.mcp-mesh.io= — dev auth-manager auto-creates the CNAME → dev tunnel; catch-all ingress routes it; TLS covered. *No tunnel/DNS edits.*
-5. Upload the perms/roles manifest. Create test users (mark emails verified — gap #90).
+5. Upload the perms/roles manifest. Create test users (admin user comes verified; mark others via Users-tab *mark verified*).
 6. Apps → =backend= → *Reveal* the client secret; hand =client_id=backend= + secret to the tenant *out of band*.
 7. (Optional) Enable Google: add =https://auth-dev.mcp-mesh.io/auth/realms/t-<slug>-dev/broker/google/endpoint= to the *dev* Google client. (Don't enable GitHub unless a dev GitHub client is set up — the dev secret otherwise holds copied prod GitHub creds whose redirect URIs are on the prod host.)
 
@@ -931,17 +943,22 @@ the inline JSON in the Deployment → "Cloudflare tunnel updates" section above.
 ** Theme iteration in dev
 
 The dev KC has theme cache DISABLED (=KC_SPI_THEME_CACHE_*= env vars).
-Iterate without redeploying:
+Iterate without redeploying via =scripts/theme-dev-sync.sh= (#114):
 
 #+BEGIN_SRC bash
-# Watch local theme dir, kubectl-cp changes to the dev KC pod
-# (Phase 2 task #114 will package this as scripts/theme-dev-sync.sh; for now manual)
-ssh beelink1 'kubectl cp <local-file> auth-platform-dev/platform-kc-dev-keycloak-0:/opt/bitnami/keycloak/themes/mcpmesh-flexible/login/template.ftl'
-# Refresh login page in browser — change visible immediately
+# fswatch the local theme dir, kubectl-cp changed files into the dev KC pod
+# at /opt/bitnami/keycloak/themes/mcpmesh-flexible — refresh the login page,
+# change is visible immediately
+bash scripts/theme-dev-sync.sh
+# env overrides: NAMESPACE / CONTEXT / KC_SELECTOR / THEME_SRC
 #+END_SRC
 
+Dev-only (theme caching is off there); the script refuses non =-dev=
+namespaces unless =FORCE=1=. Synced files are ephemeral — they live only in
+the pod and are lost on restart until committed + helm-upgraded.
+
 For tenant-specific themes, target =/opt/bitnami/keycloak/themes/t-<slug>/=
-instead of =mcpmesh-flexible=.
+instead of =mcpmesh-flexible= (=THEME_SRC= + =kubectl cp= by hand).
 
 ** Re-deploy after code change
 
@@ -1018,12 +1035,39 @@ in-code defaults. Helm chart overrides via env vars in
 Notable env vars wired through helm values:
 - =AUTH_MANAGER_THEME_KC_STATEFULSET_NAME=
 - =AUTH_MANAGER_BUNDLE_KC_BASE= / =BUNDLE_ADMIN_BASE= / =BUNDLE_AUTH_MGR_INCLUSTER_BASE=
+- =AUTH_MANAGER_BUNDLE_AUTH_MGR_PUBLIC_BASE= — public auth-manager base used
+  when rendering onboarding bundles (helm value
+  =authManager.config.bundleAuthMgrPublicBase=; dev overrides it to
+  =https://auth-dev.mcp-mesh.io=). The wizard reads the effective bases via
+  =GET /api/v1/bundle/bases=.
 - =AUTH_MANAGER_SMTP_HOST= / =SMTP_FROM_ADDRESS= / =SMTP_SENDGRID_API_KEY=
 - =PLATFORM_PG_SUPERUSER_URL= / =CNPG_SUPERUSER_PASSWORD=
 - =KEYCLOAK_PLATFORM_HOST=
 - =KEYCLOAK_ADMIN_PASSWORD= / =KC_ADMIN_PASSWORD=
 - =SPRING_DATASOURCE_URL= / =USERNAME= / =PASSWORD=
 - =SPRING_DATA_REDIS_*= (Sentinel config)
+
+** KC realm session/token defaults
+
+New tenant realms are created with =accessTokenLifespan=900= (15 min),
+=ssoSessionIdleTimeout=14400= (4 h), =ssoSessionMaxLifespan=86400= (24 h).
+The manual bump via KC admin console (realm → Sessions/Tokens) is only needed
+for realms created before =auth-manager 0.1.80=.
+
+** Endpoint authorization (as of 0.1.80)
+
+Platform API endpoints that were previously ungated now require perms:
+
+| Endpoint                          | Requires                          |
+|-----------------------------------+-----------------------------------|
+| =GET /api/v1/tenants=             | platform-admin or =TENANT_VIEW=   |
+| =GET /api/v1/audit=               | platform-admin or =AUDIT_VIEW=    |
+| =GET /api/v1/bundle/bases=        | =TENANT_CREATE=                   |
+| app-manifest apply / list         | =MANIFEST_APPLY= / =APPS_EDIT=    |
+
+Old anonymous =curl= examples against these endpoints won't work anymore —
+send a bearer token with the right perms. Non-admin users now get a
+no-access screen in the admin UI instead of a broken tenant list.
 
 ** Library exports
 
@@ -1069,11 +1113,13 @@ failure. Should parse structured error code and show a friendly message.
 First-install bugs: doesn't enable CNPG superuserAccess automatically, doesn't
 seed =postgres-password= / =keycloak-admin-password= into the chart's secret.
 
-** #114 theme-dev-sync.sh missing
-Should script the kubectl cp loop for fast theme iteration in dev.
+** #114 theme-dev-sync.sh missing — RESOLVED (2026-06-10)
+Fixed: =scripts/theme-dev-sync.sh= exists (fswatch + kubectl cp into the dev
+KC pod; see "Theme iteration in dev" under Common ops).
 
-** #90 Wizard auto-verify admin email
-After tenant create, operator must manually mark admin user's email verified.
+** #90 Wizard auto-verify admin email — RESOLVED
+Fixed: the wizard provisions the tenant admin user with =emailVerified=true=;
+other users via the Users-tab *mark verified* action or the verify-email API.
 
 ** #94 IdP auto-link operator user
 When operator-provisioned user later logs in via Google, KC creates a NEW
