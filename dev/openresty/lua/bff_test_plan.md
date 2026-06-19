@@ -283,7 +283,7 @@ bff_sid).
 | Test | Expected |
 |---|---|
 | `GET /_bff/login` with `?redirect=https://evil.com/x` | 302 to KC; redirect_back stored in tx as `/` (open-redirect guard). After callback the browser ends up at `/`, not evil.com. |
-| `GET /_bff/callback?code=x&state=nonexistent` | 400 `invalid_state`. |
+| `GET /_bff/callback?code=x&state=nonexistent` | 302 to `/_bff/login` (stale/replayed/expired state self-recovers by restarting login instead of dead-ending on a JSON 400). |
 | `POST /_bff/logout` with no cookie | 204 (idempotent). |
 | `GET /admin/` with no Bearer + no cookie | unchanged behavior: served by admin-ui at OPTIONAL auth. |
 | Existing `GET /api/v1/me` with Bearer (no cookie) | unchanged: REQUIRED enforced via header. |

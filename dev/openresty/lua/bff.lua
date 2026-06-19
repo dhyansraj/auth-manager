@@ -40,8 +40,10 @@ local CLIENT_ID = "usermanagement"
 -- Whole-key EXPIRE so an idle browser eventually re-auths.
 local SESSION_TTL = 1800
 
--- Short-lived tx key TTL (login → callback round-trip).
-local TX_TTL = 300
+-- Short-lived tx key TTL (login → callback round-trip). 10 min gives a
+-- slow user time at the KC login page before the state expires; a stale
+-- callback past this is recovered by restarting login (see handle_callback).
+local TX_TTL = 600
 
 -- Refresh the access_token when it has <= REFRESH_WINDOW seconds left.
 local REFRESH_WINDOW = 30
@@ -404,7 +406,16 @@ function _M.handle_callback()
         return json_response(502, { error = "tx_lookup_failed" })
     end
     if not tx then
-        return json_response(400, { error = "invalid_state" })
+        -- Stale or expired login state: the tx is single-use (deleted on
+        -- first use) and TTL-bounded, so this fires when a callback URL is
+        -- replayed (browser history / restored tab / back button) or the
+        -- user dawdled past TX_TTL. Don't dead-end with a JSON 400 the user
+        -- has to escape by hand-editing the URL — restart login. KC usually
+        -- still has an SSO session and bounces them straight back; otherwise
+        -- they get a fresh login page. redirect_back is lost with the tx, so
+        -- the fresh flow defaults to "/".
+        log_info("callback: missing/expired tx for state; restarting login")
+        return ngx.redirect("/_bff/login")
     end
 
     local host = strip_port(ngx.var.http_host or ngx.var.host)
