@@ -474,51 +474,44 @@ re-verified against the codebase on 2026-06-10.
    the user explicitly said defer. Don't pick up unless we hit a real
    need.
 
-** [#D] BFF single-flight refresh + KC reuse-detection policy review
+** [#B] bff-self-recovery — BFF recovers instead of dead-ending the user (epic)
    :PROPERTIES:
-   :TASK: (not filed — was P1 before #118 shipped, now P3)
-   :STATUS: pending
+   :TASK: bff-resilience
+   :STATUS: in progress — case 1 shipping in platform-edge 0.1.23 (2026-06-19)
    :END:
 
-   Maya claude's hypothesis was that concurrent /api/* bursts could
-   cause two parallel refresh attempts → first rotates the refresh
-   token, second submits the stale one → KC refuse-detection revokes
-   the token family → session dies. Evidence didn't actually support
-   this (the failure mode we hit was cookie Max-Age expiry, not refresh
-   reuse — Redis session was alive when "death" occurred), but it's a
-   latent issue under burst load.
+   Theme: when BFF login/session state goes stale, recover transparently
+   instead of stranding the user. Three sibling cases, all in =bff.lua=
+   (clubbed 2026-06-19 from the old single-flight + dead-cookie entries
+   plus the live invalid_state report).
 
-   *If we ever decide to fix:*
-   - Add a Redis-based mutex in =maybe_refresh= (=SET NX PX=) so only
-     the first concurrent request actually calls KC; the others wait
-     and re-read the session
-   - OR set realm's =refreshTokenMaxReuse=1= to give us one free retry
-     under race
+   *Case 1 — invalid_state dead-end on stale/expired callback — [#B], ACTIVE
+   (platform-edge 0.1.23).* A replayed/bookmarked =/_bff/callback?state=...=
+   (browser history, restored tab, back button) or a dawdle past =TX_TTL=
+   hit a JSON 400 =invalid_state= the user had to escape by hand-editing the
+   URL. Fix: when the single-use tx is missing in =handle_callback=,
+   =ngx.redirect("/_bff/login")= to mint a fresh state — KC SSO usually
+   bounces them straight back; otherwise they get a clean login page. Also
+   bumped =TX_TTL= 300→600. =redirect_back= is lost with the tx, so the
+   restart defaults to "/". Hit live on wisefolio.net prod.
 
-   Currently P3 because the symptom is gone and we have no evidence of
-   the race actually firing.
+   *Case 2 — dead-cookie silent 401 loop — DONE (already shipped, =d6ebf90=,
+   Session 7).* When =load_session= returns nil for a sid the browser sent,
+   =try_inject_bearer_from_cookie= (~bff.lua:821) already calls
+   =clear_session_cookies()=, and =maybe_refresh= clears on every failure
+   path — so the next request takes the no-cookie path and the BFF
+   auto-redirects to KC. The earlier claim that the =enforce_auth= catch-all
+   was unpatched was stale; verified 2026-06-19.
 
-** [#D] BFF dead-cookie silent 401 loop UX
-   :PROPERTIES:
-   :TASK: (not filed)
-   :STATUS: pending
-   :END:
-
-   If the browser has a =bff_sid= cookie but the Redis session is gone
-   (TTL'd out while tab was backgrounded, manual session invalidation
-   from admin, etc.), every /api/* returns 401 with no =Set-Cookie:
-   bff_sid=; Max-Age=0= to clear the dead cookie. SPAs either need to
-   redirect-on-401 (Maya's wrapper) or sit there showing errors.
-
-   Cleaner contract: when load_session returns nil for a sid that the
-   browser sent, BFF should =clear_session_cookies()= so the next
-   request goes through the no-cookie path → BFF auto-redirects to KC.
-   Already done in some paths (=/_bff/me= line 730, =maybe_refresh=
-   failure paths) but not in the catch-all =enforce_auth= →
-   =try_inject_bearer_from_cookie= path.
-
-   ~5-line fix in bff.lua but worth verifying we're not breaking any
-   intentional silent-401 callers first.
+   *Case 3 — single-flight refresh + KC reuse-detection — [#D], DEFERRED.*
+   Concurrent /api/* bursts could fire two parallel token refreshes → first
+   rotates the refresh token, second submits the stale one → KC
+   reuse-detection revokes the family → session dies. NO evidence it fires
+   (the #118 failure was cookie Max-Age expiry; Redis session was alive). If
+   ever fixed: Redis mutex in =maybe_refresh= (=SET NX PX=) so only the first
+   request calls KC; OR realm =refreshTokenMaxReuse=1= for one free retry.
+   Deliberately kept OUT of 0.1.23 — a speculative concurrency change doesn't
+   belong in a UX-recovery roll.
 
 ** [#D] email-compliance — marketing-email gate (List-Unsubscribe + suppression list)
    :PROPERTIES:
