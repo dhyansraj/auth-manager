@@ -1685,22 +1685,63 @@ public class OnboardingBundleService {
 
     private String renderInClusterVsPublic(String slug, String realmName) {
         return ("""
-            # In-cluster vs public URLs
+            # Inbound + outbound URLs (browser → your app, and your app → the platform)
 
             > See also `03-backend-java.md` / `03-backend-python.md` for the
-            > code that uses these URLs.
+            > code that uses the outbound URLs.
 
-            Three platform URLs your backend talks to. Two should be in-cluster,
-            one MUST stay public. Get this wrong and you'll either round-trip
-            through Cloudflare unnecessarily or get JWT validation failures.
+            Two directions to get right:
+            - **Inbound** (this first section): the public hostname → your app,
+              configured under the admin UI **Routes** tab.
+            - **Outbound** (the rest of this doc): your app → the platform
+              (issuer, KC token, admin API).
+
+            ## Inbound: how requests reach your app (Routes tab)
+
+            A browser always reaches your tenant over an internet URL — your
+            tenant's **public hostname** served by the platform edge. The edge
+            then forwards each request to the **Target service URLs** you
+            configure under the admin UI **Routes** tab. So the chain is:
+
+            ```
+            browser → https://<your-tenant-hostname>/ (platform edge) → Target service URL
+            ```
+
+            Point the targets at wherever your app actually listens — which
+            depends on WHERE YOUR APP RUNS:
+
+            - **Dev (app on your machine):** point targets at your dev machine's
+              LAN IP that the cluster can reach, e.g.
+              `frontend → 192.168.10.50:3000`, `backend → 192.168.10.50:8080`.
+            - **Prod (app in the cluster):** point targets at in-cluster service
+              DNS, e.g. `frontend → <svc>.<ns>.svc.cluster.local:3000`,
+              `backend → <svc>.<ns>.svc.cluster.local:8080`.
+
+            In short: inbound is the public hostname → your app (Routes tab);
+            outbound (below) is your app → the platform.
+
+            # Outbound: in-cluster vs public URLs
+
+            Three platform URLs your backend talks to. Which to use depends on
+            **WHERE YOUR BACKEND RUNS** — not which environment you're in:
+
+            - **Backend on your laptop / outside the cluster (typical in dev):**
+              use the PUBLIC bases for all three (issuer, KC token, admin API).
+              The `*.svc.cluster.local` URLs won't resolve from your machine.
+            - **Backend inside the cluster (typical in prod):** the issuer stays
+              public (issuer-match requirement, see below); the KC token endpoint
+              and admin API prefer in-cluster for speed and to avoid egress.
+
+            Get this wrong and you'll either round-trip through Cloudflare
+            unnecessarily, hit DNS failures, or get JWT validation failures.
 
             ## Decision table
 
             | URL purpose | Env var | In-cluster value | Public value | Use which? |
             |---|---|---|---|---|
             | JWT issuer (JWKS + UMA) | `AUTH_LIB_ISSUER_URI` | n/a | `{{kcBase}}/realms/{{realmName}}` | **Public only** |
-            | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/token` | `{{kcBase}}/realms/{{realmName}}/protocol/openid-connect/token` | Either; in-cluster faster |
-            | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `{{authMgrPublicBase}}` | In-cluster strongly preferred |
+            | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/token` | `{{kcBase}}/realms/{{realmName}}/protocol/openid-connect/token` | In-cluster if backend is in-cluster; public otherwise |
+            | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `{{authMgrPublicBase}}` | In-cluster if backend is in-cluster; public otherwise |
 
             ## Why the issuer URI must be public
 
@@ -1730,22 +1771,26 @@ public class OnboardingBundleService {
             perf cost is negligible. Forcing it through an in-cluster URL just
             breaks issuer matching for no real gain.
 
-            ## KC token endpoint — pick whatever
+            ## KC token endpoint — depends on where the backend runs
 
             For `client_credentials` grants (minting service-account tokens),
             either in-cluster or public works because the token endpoint doesn't
             care about issuer-matching — it issues tokens, it doesn't validate
-            them. In-cluster is meaningfully faster (no TLS handshake, no
-            Cloudflare hop). Recommend in-cluster.
+            them. If your backend runs IN the cluster, prefer the in-cluster URL
+            — it's meaningfully faster (no TLS handshake, no Cloudflare hop). If
+            your backend runs on your laptop / outside the cluster (typical in
+            dev), use the public URL `{{kcBase}}/realms/{{realmName}}/protocol/openid-connect/token`
+            — the `svc.cluster.local` host won't resolve from your machine.
 
-            ## Platform admin API — prefer in-cluster
+            ## Platform admin API — depends on where the backend runs
 
-            `AUTH_MGR_BASE` should default to the in-cluster service DNS
-            (backend runs in the cluster): `{{authMgrBase}}`. The same bearer
-            your backend mints for KC works against `/api/v1/tenants/...`
-            (see the backend docs for the code). Use the public URL
-            `{{authMgrPublicBase}}` (local / external backend) only for
-            local dev or one-off scripts running outside the cluster.
+            If your backend runs IN the cluster, set `AUTH_MGR_BASE` to the
+            in-cluster service DNS `{{authMgrBase}}` — faster and no egress. The
+            same bearer your backend mints for KC works against
+            `/api/v1/tenants/...` (see the backend docs for the code). If your
+            backend runs on your laptop / outside the cluster (local dev,
+            one-off scripts), use the public URL `{{authMgrPublicBase}}` — the
+            in-cluster host won't resolve from outside.
 
             ## Gotcha — no `/auth/` on the in-cluster KC URL
 
@@ -1924,7 +1969,7 @@ public class OnboardingBundleService {
                 .findFirst()
                 .map(a -> a.app.getClientId())
                 .orElse(null);
-            return TenantManifestYamlRenderer.render(manifestYamlMapper, tenant, manifest, firstBackend);
+            return TenantManifestYamlRenderer.render(manifestYamlMapper, tenant, manifest, firstBackend, adminBase);
         } catch (Exception e) {
             log.warn("renderTenantManifest({}) failed: {}", tenant.getSlug(), e.getMessage());
             return "# Manifest could not be generated at download time ("

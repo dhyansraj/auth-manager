@@ -32,8 +32,9 @@ public final class TenantManifestYamlRenderer {
 
     public static String render(ObjectMapper yamlMapper,
                                 Tenant tenant,
-                                TenantManifest manifest) throws Exception {
-        return render(yamlMapper, tenant, manifest, null);
+                                TenantManifest manifest,
+                                String adminBase) throws Exception {
+        return render(yamlMapper, tenant, manifest, null, adminBase);
     }
 
     /**
@@ -42,14 +43,20 @@ public final class TenantManifestYamlRenderer {
      *                             line in the starter. Pass null to fall back
      *                             to the {@code <your-backend-client-id>}
      *                             placeholder.
+     * @param adminBase the platform admin base URL (already includes the
+     *                  {@code /admin} segment, e.g.
+     *                  {@code https://auth-dev.mcp-mesh.io/admin}). Used to
+     *                  build the curl apply URL in the starter so DEV bundles
+     *                  don't leak a PROD url.
      */
     public static String render(ObjectMapper yamlMapper,
                                 Tenant tenant,
                                 TenantManifest manifest,
-                                String firstBackendClientId) throws Exception {
+                                String firstBackendClientId,
+                                String adminBase) throws Exception {
         boolean empty = isEmpty(manifest);
         if (empty) {
-            return renderStarter(tenant, firstBackendClientId);
+            return renderStarter(tenant, firstBackendClientId, adminBase);
         }
         String header = "# " + tenant.getDisplayName()
             + " — current permission catalog + role bundles"
@@ -64,7 +71,7 @@ public final class TenantManifestYamlRenderer {
         return (perms == null || perms.isEmpty()) && (roles == null || roles.isEmpty());
     }
 
-    private static String renderStarter(Tenant tenant, String firstBackendClientId) {
+    private static String renderStarter(Tenant tenant, String firstBackendClientId, String adminBase) {
         String clientPlaceholder = (firstBackendClientId == null || firstBackendClientId.isBlank())
             ? "<your-backend-client-id>"
             : firstBackendClientId;
@@ -76,7 +83,7 @@ public final class TenantManifestYamlRenderer {
             #   curl -X POST \\
             #     -H "Authorization: Bearer $TOKEN" \\
             #     -H "Content-Type: application/x-yaml" \\
-            #     "https://auth.mcp-mesh.io/admin/api/v1/tenants/{{tenantId}}/manifest:apply?applyRoles=true" \\
+            #     "{{adminBase}}/api/v1/tenants/{{tenantId}}/manifest:apply?applyRoles=true" \\
             #     --data-binary @tenant-manifest.yaml
             #
             # Or download the current state any time from the Permissions tab → Download manifest.
@@ -108,6 +115,7 @@ public final class TenantManifestYamlRenderer {
             """)
             .replace("{{tenantName}}", tenant.getDisplayName())
             .replace("{{tenantId}}", tenant.getId().toString())
+            .replace("{{adminBase}}", adminBase)
             .replace("{{clientPlaceholder}}", clientPlaceholder);
     }
 }

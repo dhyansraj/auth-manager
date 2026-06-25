@@ -10,6 +10,7 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import io.mcpmesh.auth.manager.domain.app.App;
 import io.mcpmesh.auth.manager.domain.tenant.Tenant;
 import io.mcpmesh.auth.manager.persistence.AppRepository;
+import io.mcpmesh.auth.manager.service.BundleBaseResolver;
 import io.mcpmesh.auth.manager.service.TenantService;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.representations.idm.ClientRepresentation;
@@ -65,18 +66,21 @@ public class TenantManifestRestController {
     private final TenantManifestApplyService applyService;
     private final AppRepository appRepo;
     @Nullable private final Keycloak admin;
+    private final String adminBase;
     private final ObjectMapper yamlMapper;
 
     public TenantManifestRestController(TenantService tenants,
                                         TenantManifestService service,
                                         TenantManifestApplyService applyService,
                                         AppRepository appRepo,
-                                        @Nullable Keycloak admin) {
+                                        @Nullable Keycloak admin,
+                                        BundleBaseResolver resolver) {
         this.tenants = tenants;
         this.service = service;
         this.applyService = applyService;
         this.appRepo = appRepo;
         this.admin = admin;
+        this.adminBase = resolver.adminBase();
         YAMLFactory yf = new YAMLFactory()
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
@@ -101,7 +105,7 @@ public class TenantManifestRestController {
         String slug = tenant.getSlug();
         TenantManifest manifest = service.generate(slug);
         String firstBackendClientId = firstBackendClientId(tenant);
-        String body = TenantManifestYamlRenderer.render(yamlMapper, tenant, manifest, firstBackendClientId);
+        String body = TenantManifestYamlRenderer.render(yamlMapper, tenant, manifest, firstBackendClientId, adminBase);
         String filename = slug + "-manifest.yaml";
         return ResponseEntity.ok()
             .header(HttpHeaders.CONTENT_DISPOSITION,
