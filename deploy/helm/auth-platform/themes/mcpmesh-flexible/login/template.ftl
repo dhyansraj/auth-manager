@@ -120,6 +120,19 @@
       display: none !important;
     }
     body.mcp-no-password #kc-social-providers { padding-top: 1rem; }
+
+    /* ===== Social-button focus ring ==================================
+     * The "Continue with X" buttons (#social-google etc.) are autofocused
+     * on social-only login, so Chrome draws its default BLUE :focus-visible
+     * outline. Kill it platform-wide. Inlined (not mcp-layout.css) so it
+     * survives the child `styles=` override and reaches every tenant theme;
+     * structural selector, not the PF class (.pf-m-secondary), which shifts
+     * between KC versions. Tenants can add their own brand ring in custom.css. */
+    #kc-social-providers a:focus,
+    #kc-social-providers a:focus-visible {
+      outline: none !important;
+      box-shadow: none !important;
+    }
   </style>
 </head>
 <#-- Read the per-realm password-login flag set by auth-manager's
