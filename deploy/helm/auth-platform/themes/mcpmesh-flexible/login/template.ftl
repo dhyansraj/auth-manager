@@ -121,13 +121,18 @@
     }
     body.mcp-no-password #kc-social-providers { padding-top: 1rem; }
 
-    /* ===== Social-button focus ring ==================================
-     * The "Continue with X" buttons (#social-google etc.) are autofocused
-     * on social-only login, so Chrome draws its default BLUE :focus-visible
-     * outline. Kill it platform-wide. Inlined (not mcp-layout.css) so it
+    /* ===== Social-button border + focus =============================
+     * The BLUE border on "Continue with X" is PatternFly v5 drawing the
+     * button's visible border via ::after — the PF default blue (#0066CC)
+     * shows there because tenant themes only set the <a> border, never
+     * ::after. Neutralize ::after on the social buttons, and also kill the
+     * UA blue :focus-visible outline. Inlined (not mcp-layout.css) so it
      * survives the child `styles=` override and reaches every tenant theme;
-     * structural selector, not the PF class (.pf-m-secondary), which shifts
-     * between KC versions. Tenants can add their own brand ring in custom.css. */
+     * structural selector, not the PF class which shifts between KC
+     * versions. Tenants can recolor ::after in their own custom.css. */
+    #kc-social-providers a::after {
+      border-color: rgba(255, 255, 255, 0.16) !important;
+    }
     #kc-social-providers a:focus,
     #kc-social-providers a:focus-visible {
       outline: none !important;
