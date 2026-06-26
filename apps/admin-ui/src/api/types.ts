@@ -177,7 +177,7 @@ export interface UpdateUserRolesRequest {
 // ---------------------------------------------------------------------------
 
 /** Provider id string union — keep in lockstep with backend SUPPORTED_PROVIDERS. */
-export type IdentityProviderId = 'google' | 'github';
+export type IdentityProviderId = 'google' | 'github' | 'apple';
 
 /** Per-tenant view of a social-login identity provider. */
 export interface IdentityProviderDto {

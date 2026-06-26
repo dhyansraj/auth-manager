@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
@@ -45,7 +46,10 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     private static final Logger log = LoggerFactory.getLogger(IdentityProvidersBootstrap.class);
 
     public static final Set<String> SUPPORTED_PROVIDERS =
-        new LinkedHashSet<>(java.util.List.of("google", "github"));
+        new LinkedHashSet<>(java.util.List.of("google", "github", "apple"));
+
+    /** IdP alias for the brokered "Sign in with Apple" provider. */
+    public static final String APPLE_ALIAS = "apple";
 
     /** Realm-name prefix used by tenant realms (see TenantService). */
     private static final String TENANT_REALM_PREFIX = "t-";
@@ -55,17 +59,20 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     private final TenantRepository tenantRepo;
     private final KeycloakAdminService keycloakAdmin;
     private final KeycloakProperties keycloakProps;
+    private final AppleClientSecretSigner appleSigner;
 
     public IdentityProvidersBootstrap(Keycloak admin,
                                       PlatformOAuthProperties oauth,
                                       TenantRepository tenantRepo,
                                       KeycloakAdminService keycloakAdmin,
-                                      KeycloakProperties keycloakProps) {
+                                      KeycloakProperties keycloakProps,
+                                      AppleClientSecretSigner appleSigner) {
         this.admin = admin;
         this.oauth = oauth;
         this.tenantRepo = tenantRepo;
         this.keycloakAdmin = keycloakAdmin;
         this.keycloakProps = keycloakProps;
+        this.appleSigner = appleSigner;
     }
 
     /**
@@ -172,11 +179,17 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
         for (var e : oauth.asMap().entrySet()) {
             if (e.getValue().isConfigured()) out.add(e.getKey());
         }
+        // Apple is shaped differently (not in asMap) — derive availability from
+        // its own creds record.
+        if (oauth.apple().isConfigured()) out.add(APPLE_ALIAS);
         return out;
     }
 
     /** True iff platform creds are configured for the given provider id. */
     public boolean isAvailable(String providerId) {
+        if (APPLE_ALIAS.equals(providerId)) {
+            return oauth.apple().isConfigured();
+        }
         var p = oauth.asMap().get(providerId);
         return p != null && p.isConfigured();
     }
@@ -389,6 +402,9 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     // -------------------------------------------------------------------------
 
     private boolean ensureProvider(RealmResource realm, String realmName, String providerId) {
+        if (APPLE_ALIAS.equals(providerId)) {
+            return ensureAppleProvider(realm, realmName);
+        }
         var creds = oauth.asMap().get(providerId);
         if (creds == null || !creds.isConfigured()) {
             log.warn("IdentityProvidersBootstrap: '{}' creds missing — skipping realm '{}'",
@@ -419,6 +435,192 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
         }
         log.info("IdentityProvidersBootstrap: created IdP '{}' on realm '{}'", providerId, realmName);
         return true;
+    }
+
+    /**
+     * Apple-specific ensure path. Unlike google/github, Apple's client secret
+     * is a short-lived ES256 JWT that EXPIRES, so this is NOT a create-only
+     * idempotent no-op:
+     * <ul>
+     *   <li>If the apple IdP is missing: create it (rep carries a freshly-minted
+     *       JWT + the email importer mapper).</li>
+     *   <li>If it already exists: re-mint the JWT and PUT-update the existing
+     *       IdP's {@code clientSecret} so the realm never serves a stale secret
+     *       across a bootstrap/refresh pass.</li>
+     * </ul>
+     * Returns true only when a new IdP was created.
+     */
+    private boolean ensureAppleProvider(RealmResource realm, String realmName) {
+        var creds = oauth.apple();
+        if (!creds.isConfigured()) {
+            log.warn("IdentityProvidersBootstrap: apple creds missing — skipping realm '{}'", realmName);
+            return false;
+        }
+
+        // Re-mint the client-secret JWT on every pass (it expires).
+        String clientSecret;
+        try {
+            clientSecret = appleSigner.mint(creds);
+        } catch (Exception e) {
+            log.warn("IdentityProvidersBootstrap: apple client-secret mint failed for realm '{}': {}",
+                realmName, e.getMessage());
+            return false;
+        }
+
+        // Already present? Update its clientSecret with the fresh JWT.
+        try {
+            var ipr = realm.identityProviders().get(APPLE_ALIAS);
+            IdentityProviderRepresentation existing = ipr.toRepresentation();
+            Map<String, String> config = existing.getConfig() != null
+                ? existing.getConfig() : new LinkedHashMap<>();
+            config.put("clientSecret", clientSecret);
+            existing.setConfig(config);
+            ipr.update(existing);
+            log.info("IdentityProvidersBootstrap: refreshed apple client-secret on realm '{}'", realmName);
+            return false;
+        } catch (NotFoundException ignored) {
+            // fall through to create
+        }
+
+        keycloakAdmin.ensureAutoLinkFlow(realmName);
+
+        IdentityProviderRepresentation rep = buildAppleRep(creds, clientSecret);
+        try (Response r = realm.identityProviders().create(rep)) {
+            int status = r.getStatus();
+            if (status < 200 || status >= 300) {
+                throw new RuntimeException(
+                    "Keycloak Apple IdP create failed: HTTP " + status + " " + r.getStatusInfo().getReasonPhrase());
+            }
+        }
+        ensureAppleEmailMapper(realm, realmName);
+        log.info("IdentityProvidersBootstrap: created IdP 'apple' on realm '{}'", realmName);
+        return true;
+    }
+
+    /**
+     * Idempotently ensures an OIDC attribute-importer mapper that copies the
+     * Apple {@code email} claim from the id_token into the brokered user's
+     * email, so first-login captures the address. Best-effort; never throws.
+     *
+     * <p>TODO(apple-name): Apple sends the user's name only in the FIRST
+     * {@code form_post} callback (never in the id_token), so a name mapper is
+     * not wired for v1. Add form_post name capture when we move to the wider
+     * {@code openid email name} scope (see {@link #buildAppleRep}).
+     */
+    private void ensureAppleEmailMapper(RealmResource realm, String realmName) {
+        try {
+            var ipr = realm.identityProviders().get(APPLE_ALIAS);
+            for (IdentityProviderMapperRepresentation m : ipr.getMappers()) {
+                if ("apple-email-importer".equals(m.getName())) return;
+            }
+            IdentityProviderMapperRepresentation rep = new IdentityProviderMapperRepresentation();
+            rep.setName("apple-email-importer");
+            rep.setIdentityProviderAlias(APPLE_ALIAS);
+            rep.setIdentityProviderMapper("oidc-user-attribute-idp-mapper");
+            Map<String, String> cfg = new HashMap<>();
+            cfg.put("claim", "email");
+            cfg.put("user.attribute", "email");
+            cfg.put("syncMode", "IMPORT");
+            rep.setConfig(cfg);
+            try (Response resp = ipr.addMapper(rep)) {
+                if (resp.getStatus() >= 300) {
+                    log.warn("IdentityProvidersBootstrap: apple email mapper add failed on realm '{}': HTTP {}",
+                        realmName, resp.getStatus());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("IdentityProvidersBootstrap: apple email mapper ensure failed on realm '{}': {}",
+                realmName, e.getMessage());
+        }
+    }
+
+    /**
+     * Scheduled re-mint: Apple's client-secret JWT expires (we mint with a
+     * 150-day window), so a long-running pod would eventually serve a stale
+     * secret. Monthly we walk every realm that has the apple IdP enabled and
+     * PUT-update its clientSecret with a fresh JWT. Best-effort; never throws.
+     */
+    @Scheduled(cron = "${platform.oauth.apple.refresh-cron:0 0 3 1 * *}")
+    public void refreshAppleClientSecrets() {
+        if (!oauth.apple().isConfigured()) return;
+        log.info("IdentityProvidersBootstrap: scheduled apple client-secret refresh starting");
+        try {
+            String platformRealm = keycloakProps.platform().realm();
+            if (platformRealm != null && !platformRealm.isBlank()
+                && isEnabled(platformRealm, APPLE_ALIAS)) {
+                ensureProvider(admin.realm(platformRealm), platformRealm, APPLE_ALIAS);
+            }
+        } catch (Exception e) {
+            log.warn("IdentityProvidersBootstrap: apple refresh on platform realm failed: {}", e.getMessage());
+        }
+        try {
+            var tenants = tenantRepo.findAllByDeletedAtIsNullOrderByCreatedAtDesc();
+            for (var t : tenants) {
+                String realmName = t.getRealmName();
+                if (realmName == null || !realmName.startsWith(TENANT_REALM_PREFIX)) continue;
+                try {
+                    if (isEnabled(realmName, APPLE_ALIAS)) {
+                        ensureProvider(admin.realm(realmName), realmName, APPLE_ALIAS);
+                    }
+                } catch (Exception e) {
+                    log.warn("IdentityProvidersBootstrap: apple refresh failed for realm '{}': {}",
+                        realmName, e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("IdentityProvidersBootstrap: apple scheduled refresh aborted: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Builds the Apple IdP representation. Apple is brokered via KC's GENERIC
+     * {@code oidc} provider (NOT a built-in template) because KC has no native
+     * Apple template that mints the ES256 client-secret JWT for us.
+     *
+     * <p>Scope decision (v1): we request {@code openid email} only. The email
+     * claim ships in the id_token and works with the default (query) response
+     * mode, so login succeeds end-to-end without form_post handling. Apple only
+     * returns the user's NAME when the {@code name} scope is requested, and
+     * that requires {@code response_mode=form_post} (Apple rejects query mode
+     * for name/email scopes) plus capturing the name from the first POST
+     * callback (never the id_token). KC's generic oidc IdP does not auto-send
+     * form_post, so wiring name is deferred.
+     *
+     * <p>TODO(apple-name): widen scope to {@code openid email name}, set the KC
+     * config to drive {@code response_mode=form_post}, and capture the name
+     * from the first callback. Tracked as a follow-up.
+     *
+     * <p>CRITICAL: no {@code userInfoUrl} is set — Apple has NO userinfo
+     * endpoint; all claims come from the id_token (validated via JWKS).
+     */
+    private static IdentityProviderRepresentation buildAppleRep(
+        PlatformOAuthProperties.AppleProvider creds, String clientSecret
+    ) {
+        IdentityProviderRepresentation rep = new IdentityProviderRepresentation();
+        rep.setAlias(APPLE_ALIAS);
+        rep.setProviderId("oidc");
+        rep.setEnabled(true);
+        rep.setTrustEmail(true);
+        rep.setStoreToken(false);
+        rep.setAddReadTokenRoleOnCreate(false);
+        rep.setFirstBrokerLoginFlowAlias(KeycloakAdminService.FIRST_BROKER_LOGIN_AUTOLINK);
+        rep.setDisplayName("Continue with Apple");
+
+        Map<String, String> config = new LinkedHashMap<>();
+        config.put("clientId", creds.servicesId());
+        config.put("clientSecret", clientSecret);
+        config.put("clientAuthMethod", "client_secret_post");
+        config.put("authorizationUrl", "https://appleid.apple.com/auth/authorize");
+        config.put("tokenUrl", "https://appleid.apple.com/auth/token");
+        config.put("jwksUrl", "https://appleid.apple.com/auth/keys");
+        config.put("useJwksUrl", "true");
+        config.put("validateSignature", "true");
+        config.put("issuer", "https://appleid.apple.com");
+        config.put("defaultScope", "openid email");
+        config.put("syncMode", "IMPORT");
+        // Intentionally NO userInfoUrl — Apple has no userinfo endpoint.
+        rep.setConfig(config);
+        return rep;
     }
 
     private static IdentityProviderRepresentation buildRep(
@@ -454,6 +656,7 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
         Map<String, String> m = new LinkedHashMap<>();
         m.put("google", "Google");
         m.put("github", "GitHub");
+        m.put("apple", "Apple");
         return m;
     }
 

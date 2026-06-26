@@ -44,6 +44,7 @@ class IdentityProvidersBootstrapTest {
     private TenantRepository tenantRepo;
     private KeycloakAdminService keycloakAdmin;
     private KeycloakProperties keycloakProps;
+    private AppleClientSecretSigner appleSigner;
 
     @BeforeEach
     void setUp() {
@@ -54,6 +55,7 @@ class IdentityProvidersBootstrapTest {
         githubResource = mock(IdentityProviderResource.class);
         tenantRepo = mock(TenantRepository.class);
         keycloakAdmin = mock(KeycloakAdminService.class);
+        appleSigner = mock(AppleClientSecretSigner.class);
         keycloakProps = new KeycloakProperties(
             "http://kc", "master",
             new KeycloakProperties.Admin("admin-cli", "admin", "admin"),
@@ -69,20 +71,22 @@ class IdentityProvidersBootstrapTest {
     }
 
     private IdentityProvidersBootstrap newBootstrap(PlatformOAuthProperties creds) {
-        return new IdentityProvidersBootstrap(admin, creds, tenantRepo, keycloakAdmin, keycloakProps);
+        return new IdentityProvidersBootstrap(admin, creds, tenantRepo, keycloakAdmin, keycloakProps, appleSigner);
     }
 
     private PlatformOAuthProperties fullCreds() {
         return new PlatformOAuthProperties(
             new PlatformOAuthProperties.Provider("g-id", "g-secret"),
-            new PlatformOAuthProperties.Provider("gh-id", "gh-secret")
+            new PlatformOAuthProperties.Provider("gh-id", "gh-secret"),
+            new PlatformOAuthProperties.AppleProvider(null, null, null, null)
         );
     }
 
     private PlatformOAuthProperties noCreds() {
         return new PlatformOAuthProperties(
             new PlatformOAuthProperties.Provider(null, null),
-            new PlatformOAuthProperties.Provider(null, null)
+            new PlatformOAuthProperties.Provider(null, null),
+            new PlatformOAuthProperties.AppleProvider(null, null, null, null)
         );
     }
 
@@ -134,7 +138,8 @@ class IdentityProvidersBootstrapTest {
         // Only github has creds; google's are null.
         var creds = new PlatformOAuthProperties(
             new PlatformOAuthProperties.Provider(null, null),
-            new PlatformOAuthProperties.Provider("gh-id", "gh-secret")
+            new PlatformOAuthProperties.Provider("gh-id", "gh-secret"),
+            new PlatformOAuthProperties.AppleProvider(null, null, null, null)
         );
         when(githubResource.toRepresentation()).thenThrow(new NotFoundException("missing"));
         when(idps.create(any())).thenAnswer(inv -> createdResponse());
@@ -202,7 +207,8 @@ class IdentityProvidersBootstrapTest {
     void isAvailable_reflectsCreds() {
         var partial = new PlatformOAuthProperties(
             new PlatformOAuthProperties.Provider("g", "s"),
-            new PlatformOAuthProperties.Provider(null, null)
+            new PlatformOAuthProperties.Provider(null, null),
+            new PlatformOAuthProperties.AppleProvider(null, null, null, null)
         );
         var bootstrap = newBootstrap(partial);
         assertThat(bootstrap.isAvailable("google")).isTrue();
@@ -213,7 +219,8 @@ class IdentityProvidersBootstrapTest {
     void defaultProvidersForNewTenant_onlyIncludesConfigured() {
         var partial = new PlatformOAuthProperties(
             new PlatformOAuthProperties.Provider("g", "s"),
-            new PlatformOAuthProperties.Provider(null, null)
+            new PlatformOAuthProperties.Provider(null, null),
+            new PlatformOAuthProperties.AppleProvider(null, null, null, null)
         );
         var bootstrap = newBootstrap(partial);
         assertThat(bootstrap.defaultProvidersForNewTenant()).containsExactly("google");

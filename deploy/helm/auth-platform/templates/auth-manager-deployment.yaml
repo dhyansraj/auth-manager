@@ -114,6 +114,36 @@ spec:
                   name: platform-oauth-providers
                   key: github.client-secret
                   optional: true
+            # Apple "Sign in with Apple" creds. Apple needs more than a
+            # client-id/secret pair: a Services ID (the OIDC client_id), the
+            # Developer Team ID, the Key ID, and the PKCS8 .p8 private key.
+            # auth-manager mints the short-lived ES256 client-secret JWT from
+            # these (AppleClientSecretSigner). All four keys are optional —
+            # absent ⇒ Apple shows available=false.
+            - name: PLATFORM_OAUTH_APPLE_SERVICES_ID
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: apple.services-id
+                  optional: true
+            - name: PLATFORM_OAUTH_APPLE_TEAM_ID
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: apple.team-id
+                  optional: true
+            - name: PLATFORM_OAUTH_APPLE_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: apple.key-id
+                  optional: true
+            - name: PLATFORM_OAUTH_APPLE_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: platform-oauth-providers
+                  key: apple.private-key
+                  optional: true
             # Cloudflare API creds for per-tenant DNS + tunnel-ingress auto-
             # provisioning (CloudflareTunnelService, called from TenantService
             # on create/delete). The `cloudflare-api` Secret is created out-of-
