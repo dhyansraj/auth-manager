@@ -122,16 +122,18 @@
     body.mcp-no-password #kc-social-providers { padding-top: 1rem; }
 
     /* ===== Social-button border + focus =============================
-     * The BLUE border on "Continue with X" is PatternFly v5 drawing the
-     * button's visible border via ::after — the PF default blue (#0066CC)
-     * shows there because tenant themes only set the <a> border, never
-     * ::after. Neutralize ::after on the social buttons, and also kill the
-     * UA blue :focus-visible outline. Inlined (not mcp-layout.css) so it
-     * survives the child `styles=` override and reaches every tenant theme;
+     * The stray border on "Continue with X" is PatternFly v5 drawing a
+     * SECOND border via ::after (default blue #0066CC, and at the PF
+     * border-radius ~3px, so it shows as a rectangle behind the button's
+     * own rounded <a> border). Tenant themes style the <a> border but never
+     * ::after, so PF's competing rectangle leaks through. Remove it entirely
+     * — the tenant's <a> border is the intended one — and kill the UA blue
+     * :focus-visible outline. Inlined (not mcp-layout.css) so it survives
+     * the child `styles=` override and reaches every tenant theme;
      * structural selector, not the PF class which shifts between KC
-     * versions. Tenants can recolor ::after in their own custom.css. */
+     * versions. Tenants can add their own ::after border in custom.css. */
     #kc-social-providers a::after {
-      border-color: rgba(255, 255, 255, 0.16) !important;
+      border-color: transparent !important;
     }
     #kc-social-providers a:focus,
     #kc-social-providers a:focus-visible {
