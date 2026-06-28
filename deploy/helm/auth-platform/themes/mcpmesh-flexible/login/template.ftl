@@ -140,6 +140,39 @@
       outline: none !important;
       box-shadow: none !important;
     }
+
+    /* ===== Apple social-button logo ================================
+     * The klausbetz Apple SPI sets the button's iconClasses to the
+     * FontAwesome class `fa fa-apple`, but keycloak.v2 is PatternFly and
+     * ships no FontAwesome font, so the glyph renders blank — the "Sign in
+     * with Apple" button shows text only while Google shows its logo. Draw
+     * the official Apple logo with a CSS mask, using `background-color:
+     * currentColor` + mask so it inherits the button's text color and adapts
+     * per tenant (white on dark buttons, dark on light) with no hardcoded
+     * fill. Inlined here (not in mcp-layout.css) so it survives child themes'
+     * `styles=` override and reaches every tenant, matching the ::after
+     * border fix above.
+     *
+     * Layout mirrors Google: that button is a space-between flex row with two
+     * children — a leading <svg> logo (pinned far-left) and a
+     * <span class="pf-v5-u-m-auto"> label (margin:auto centers it). Apple's
+     * label arrives as the <a>'s only child <span class="fa fa-apple">, so we
+     * add the logo as a flex child via the anchor's ::before (pinned left) and
+     * center the label span with margin:auto. */
+    #kc-social-providers #social-apple::before {
+      content: "";
+      flex: 0 0 auto;
+      width: 1.15em;
+      height: 1.5em;
+      background-color: currentColor;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 384 512'%3E%3Cpath d='M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z'/%3E%3C/svg%3E") center / contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 384 512'%3E%3Cpath d='M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
+    /* center the label in the remaining space, mirroring Google's
+     * pf-v5-u-m-auto text span */
+    #kc-social-providers #social-apple .fa-apple {
+      margin: auto;
+    }
   </style>
 </head>
 <#-- Read the per-realm password-login flag set by auth-manager's

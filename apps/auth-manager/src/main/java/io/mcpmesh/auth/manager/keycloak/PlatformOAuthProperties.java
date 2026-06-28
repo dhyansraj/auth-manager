@@ -50,8 +50,9 @@ public record PlatformOAuthProperties(
 
     /**
      * Apple "Sign in with Apple" credentials. Unlike google/github there is no
-     * static client secret: Apple requires a short-lived ES256 JWT (minted by
-     * {@code AppleClientSecretSigner}) as the OIDC client secret.
+     * static client secret: the raw {@code .p8} private key is passed to the
+     * Apple SPI as the {@code clientSecret} config value, and the SPI mints the
+     * short-lived ES256 JWT from it.
      *
      * <ul>
      *   <li>{@code servicesId} — the Apple "Services ID" identifier; this is the

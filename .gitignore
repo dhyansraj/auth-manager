@@ -3,6 +3,10 @@ target/
 build/
 *.class
 *.jar
+# Exception: vendored Keycloak SPI extensions under dev/keycloak/providers are
+# build INPUTS for dev/keycloak/Dockerfile (not build artifacts), so keep them
+# tracked despite the global *.jar ignore above.
+!dev/keycloak/providers/*.jar
 *.war
 *.ear
 *.nar

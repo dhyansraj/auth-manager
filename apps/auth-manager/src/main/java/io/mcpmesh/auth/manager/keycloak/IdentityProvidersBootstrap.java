@@ -59,20 +59,17 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     private final TenantRepository tenantRepo;
     private final KeycloakAdminService keycloakAdmin;
     private final KeycloakProperties keycloakProps;
-    private final AppleClientSecretSigner appleSigner;
 
     public IdentityProvidersBootstrap(Keycloak admin,
                                       PlatformOAuthProperties oauth,
                                       TenantRepository tenantRepo,
                                       KeycloakAdminService keycloakAdmin,
-                                      KeycloakProperties keycloakProps,
-                                      AppleClientSecretSigner appleSigner) {
+                                      KeycloakProperties keycloakProps) {
         this.admin = admin;
         this.oauth = oauth;
         this.tenantRepo = tenantRepo;
         this.keycloakAdmin = keycloakAdmin;
         this.keycloakProps = keycloakProps;
-        this.appleSigner = appleSigner;
     }
 
     /**
@@ -457,34 +454,39 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
             return false;
         }
 
-        // Re-mint the client-secret JWT on every pass (it expires).
-        String clientSecret;
-        try {
-            clientSecret = appleSigner.mint(creds);
-        } catch (Exception e) {
-            log.warn("IdentityProvidersBootstrap: apple client-secret mint failed for realm '{}': {}",
-                realmName, e.getMessage());
-            return false;
-        }
+        // The klausbetz SPI mints the client-secret JWT internally from the .p8,
+        // so we no longer pre-mint it here — clientSecret carries the raw .p8.
 
-        // Already present? Update its clientSecret with the fresh JWT.
+        // Already present? Reconcile. But the provider TYPE can't be changed in
+        // place: if the realm still has the legacy generic-"oidc" apple IdP,
+        // remove it and recreate as providerId="apple" below. If it's already
+        // the SPI provider, just push the desired config (preserving internalId
+        // so federated-user links survive).
         try {
             var ipr = realm.identityProviders().get(APPLE_ALIAS);
             IdentityProviderRepresentation existing = ipr.toRepresentation();
-            Map<String, String> config = existing.getConfig() != null
-                ? existing.getConfig() : new LinkedHashMap<>();
-            config.put("clientSecret", clientSecret);
-            existing.setConfig(config);
-            ipr.update(existing);
-            log.info("IdentityProvidersBootstrap: refreshed apple client-secret on realm '{}'", realmName);
-            return false;
+            if (!"apple".equals(existing.getProviderId())) {
+                ipr.remove();
+                log.info("IdentityProvidersBootstrap: removed legacy oidc apple IdP on realm '{}' (migrating to SPI)", realmName);
+                // fall through to create the SPI provider
+            } else {
+                IdentityProviderRepresentation desired = buildAppleRep(creds);
+                existing.setConfig(desired.getConfig());
+                existing.setTrustEmail(desired.isTrustEmail());
+                existing.setStoreToken(desired.isStoreToken());
+                existing.setFirstBrokerLoginFlowAlias(desired.getFirstBrokerLoginFlowAlias());
+                existing.setDisplayName(desired.getDisplayName());
+                ipr.update(existing);
+                log.info("IdentityProvidersBootstrap: reconciled apple IdP config on realm '{}'", realmName);
+                return false;
+            }
         } catch (NotFoundException ignored) {
             // fall through to create
         }
 
         keycloakAdmin.ensureAutoLinkFlow(realmName);
 
-        IdentityProviderRepresentation rep = buildAppleRep(creds, clientSecret);
+        IdentityProviderRepresentation rep = buildAppleRep(creds);
         try (Response r = realm.identityProviders().create(rep)) {
             int status = r.getStatus();
             if (status < 200 || status >= 300) {
@@ -502,10 +504,10 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
      * Apple {@code email} claim from the id_token into the brokered user's
      * email, so first-login captures the address. Best-effort; never throws.
      *
-     * <p>TODO(apple-name): Apple sends the user's name only in the FIRST
-     * {@code form_post} callback (never in the id_token), so a name mapper is
-     * not wired for v1. Add form_post name capture when we move to the wider
-     * {@code openid email name} scope (see {@link #buildAppleRep}).
+     * <p>The klausbetz Apple SPI is configured with scope {@code "name email"}
+     * and handles the {@code form_post} callback itself, mapping both email and
+     * name from the first POST (see {@link #buildAppleRep}); this mapper just
+     * back-stops the email claim from the id_token.
      */
     private void ensureAppleEmailMapper(RealmResource realm, String realmName) {
         try {
@@ -535,10 +537,11 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     }
 
     /**
-     * Scheduled re-mint: Apple's client-secret JWT expires (we mint with a
-     * 150-day window), so a long-running pod would eventually serve a stale
-     * secret. Monthly we walk every realm that has the apple IdP enabled and
-     * PUT-update its clientSecret with a fresh JWT. Best-effort; never throws.
+     * Scheduled reconcile: monthly we walk every realm that has the apple IdP
+     * enabled and re-push the SPI config (idempotent reconcile). The klausbetz
+     * SPI mints the ES256 client-secret JWT internally per request, so nothing
+     * is minted here — this just keeps the apple IdP config in sync across
+     * realms. Best-effort; never throws.
      */
     @Scheduled(cron = "${platform.oauth.apple.refresh-cron:0 0 3 1 * *}")
     public void refreshAppleClientSecrets() {
@@ -573,32 +576,29 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
     }
 
     /**
-     * Builds the Apple IdP representation. Apple is brokered via KC's GENERIC
-     * {@code oidc} provider (NOT a built-in template) because KC has no native
-     * Apple template that mints the ES256 client-secret JWT for us.
-     *
-     * <p>Scope decision (v1): we request {@code openid email} only. The email
-     * claim ships in the id_token and works with the default (query) response
-     * mode, so login succeeds end-to-end without form_post handling. Apple only
-     * returns the user's NAME when the {@code name} scope is requested, and
-     * that requires {@code response_mode=form_post} (Apple rejects query mode
-     * for name/email scopes) plus capturing the name from the first POST
-     * callback (never the id_token). KC's generic oidc IdP does not auto-send
-     * form_post, so wiring name is deferred.
-     *
-     * <p>TODO(apple-name): widen scope to {@code openid email name}, set the KC
-     * config to drive {@code response_mode=form_post}, and capture the name
-     * from the first callback. Tracked as a follow-up.
+     * Builds the Apple IdP representation. Apple is brokered via the klausbetz
+     * Apple SPI (providerId {@code "apple"}). We request scope
+     * {@code "name email"}, which drives {@code response_mode=form_post}; the
+     * SPI handles the POST callback and mints the ES256 client-secret JWT
+     * internally from the raw {@code .p8} (config key {@code clientSecret}
+     * carries the raw {@code .p8}, NOT a pre-minted JWT).
      *
      * <p>CRITICAL: no {@code userInfoUrl} is set — Apple has NO userinfo
      * endpoint; all claims come from the id_token (validated via JWKS).
      */
     private static IdentityProviderRepresentation buildAppleRep(
-        PlatformOAuthProperties.AppleProvider creds, String clientSecret
+        PlatformOAuthProperties.AppleProvider creds
     ) {
         IdentityProviderRepresentation rep = new IdentityProviderRepresentation();
         rep.setAlias(APPLE_ALIAS);
-        rep.setProviderId("oidc");
+        // The klausbetz Apple SPI (providerId="apple"), NOT KC's generic "oidc"
+        // broker. Apple requires response_mode=form_post when the email/name
+        // scope is requested, which makes it POST the code back — and KC's
+        // generic OIDC broker endpoint has NO @POST handler (returns 405). This
+        // SPI adds the form_post POST handler, mints the ES256 client-secret
+        // JWT internally from the .p8, maps email/name, and renders the Apple
+        // logo. See dev/keycloak/Dockerfile (the JAR is baked into the KC image).
+        rep.setProviderId("apple");
         rep.setEnabled(true);
         rep.setTrustEmail(true);
         rep.setStoreToken(false);
@@ -606,19 +606,21 @@ public class IdentityProvidersBootstrap implements ApplicationRunner {
         rep.setFirstBrokerLoginFlowAlias(KeycloakAdminService.FIRST_BROKER_LOGIN_AUTOLINK);
         rep.setDisplayName("Continue with Apple");
 
+        // Extension config keys (klausbetz v1.15.0):
+        //   clientId     = Apple Services ID
+        //   teamId/keyId = from the Apple Developer account
+        //   clientSecret = the RAW .p8 private-key contents (the SPI mints the
+        //                  short-lived ES256 JWT from it per request — so this
+        //                  is the static key, not a pre-minted JWT)
+        //   defaultScope = "name email" → drives form_post; email + name on
+        //                  first login.
         Map<String, String> config = new LinkedHashMap<>();
         config.put("clientId", creds.servicesId());
-        config.put("clientSecret", clientSecret);
-        config.put("clientAuthMethod", "client_secret_post");
-        config.put("authorizationUrl", "https://appleid.apple.com/auth/authorize");
-        config.put("tokenUrl", "https://appleid.apple.com/auth/token");
-        config.put("jwksUrl", "https://appleid.apple.com/auth/keys");
-        config.put("useJwksUrl", "true");
-        config.put("validateSignature", "true");
-        config.put("issuer", "https://appleid.apple.com");
-        config.put("defaultScope", "openid email");
+        config.put("teamId", creds.teamId());
+        config.put("keyId", creds.keyId());
+        config.put("clientSecret", creds.privateKey());
+        config.put("defaultScope", "name email");
         config.put("syncMode", "IMPORT");
-        // Intentionally NO userInfoUrl — Apple has no userinfo endpoint.
         rep.setConfig(config);
         return rep;
     }

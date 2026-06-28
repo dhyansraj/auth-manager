@@ -43,8 +43,22 @@ PG_CHART_VERSION="${PG_CHART_VERSION:-18.6.7}"
 REDIS_CHART_VERSION="${REDIS_CHART_VERSION:-25.5.3}"
 KC_CHART_VERSION="${KC_CHART_VERSION:-25.2.0}"
 
-KC_IMAGE_REPO="${KC_IMAGE_REPO:-bitnamilegacy/keycloak}"
-KC_IMAGE_TAG="${KC_IMAGE_TAG:-26.3.3-debian-12-r0}"
+# Custom KC image = Bitnami KC 26.3.3 + the klausbetz Apple Identity Provider
+# SPI (providerId=apple) baked into /opt/bitnami/keycloak/providers. Required
+# because Sign in with Apple uses response_mode=form_post (Apple POSTs the code
+# back) and KC's stock generic-OIDC broker endpoint has no @POST handler (405).
+# Built + pushed from dev/keycloak/Dockerfile to the in-cluster registry.
+# r1 sets the JAR to 1001:1001 mode 0644 so Bitnami's `prepare-write-dirs` init
+# container (uid 1001) can copy it into the providers emptyDir that shadows the
+# image's providers dir — r0 left it root:root 0600, so the cp silently skipped
+# it and KC never registered providerId=apple.
+#
+# NOTE: because this is a non-Bitnami image, the helm command below must pass
+# global.security.allowInsecureImages=true — the chart otherwise refuses to
+# deploy a substituted container image (the guard added Aug 2025).
+KC_IMAGE_REGISTRY="${KC_IMAGE_REGISTRY:-192.168.10.1:5000}"
+KC_IMAGE_REPO="${KC_IMAGE_REPO:-keycloak-apple}"
+KC_IMAGE_TAG="${KC_IMAGE_TAG:-26.3.3-r1}"
 
 DB_USER="${DB_USER:-authmanager}"
 DB_PASSWORD="${DB_PASSWORD:-}"
@@ -249,9 +263,10 @@ helm upgrade --install platform-kc-dev bitnami/keycloak \
   --namespace "$NAMESPACE" \
   --version "$KC_CHART_VERSION" \
   -f deploy/helm/keycloak-overrides/values-platform-kc.yaml \
-  --set "image.registry=docker.io" \
+  --set "image.registry=$KC_IMAGE_REGISTRY" \
   --set "image.repository=$KC_IMAGE_REPO" \
   --set "image.tag=$KC_IMAGE_TAG" \
+  --set "global.security.allowInsecureImages=true" \
   --set "auth.adminUser=$KC_ADMIN_USER" \
   --set "auth.adminPassword=$KC_ADMIN_PASSWORD" \
   --set "postgresql.enabled=false" \

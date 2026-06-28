@@ -44,7 +44,6 @@ class IdentityProvidersBootstrapTest {
     private TenantRepository tenantRepo;
     private KeycloakAdminService keycloakAdmin;
     private KeycloakProperties keycloakProps;
-    private AppleClientSecretSigner appleSigner;
 
     @BeforeEach
     void setUp() {
@@ -55,7 +54,6 @@ class IdentityProvidersBootstrapTest {
         githubResource = mock(IdentityProviderResource.class);
         tenantRepo = mock(TenantRepository.class);
         keycloakAdmin = mock(KeycloakAdminService.class);
-        appleSigner = mock(AppleClientSecretSigner.class);
         keycloakProps = new KeycloakProperties(
             "http://kc", "master",
             new KeycloakProperties.Admin("admin-cli", "admin", "admin"),
@@ -71,7 +69,7 @@ class IdentityProvidersBootstrapTest {
     }
 
     private IdentityProvidersBootstrap newBootstrap(PlatformOAuthProperties creds) {
-        return new IdentityProvidersBootstrap(admin, creds, tenantRepo, keycloakAdmin, keycloakProps, appleSigner);
+        return new IdentityProvidersBootstrap(admin, creds, tenantRepo, keycloakAdmin, keycloakProps);
     }
 
     private PlatformOAuthProperties fullCreds() {
