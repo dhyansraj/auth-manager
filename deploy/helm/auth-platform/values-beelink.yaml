@@ -16,7 +16,7 @@ authManager:
   replicas: 2
   image:
     repository: auth-manager
-    tag: "0.1.82"
+    tag: "0.1.85"
   config:
     keycloakUrl: "https://auth.mcp-mesh.io/auth"
     postgresHost: "platform-pg-rw"  # CNPG primary service (3-node HA cluster)
@@ -50,6 +50,18 @@ postgresql:
   auth:
     password: ""
 keycloak:
+  # Custom KC image = Bitnami KC 26.3.3 + the klausbetz Apple Identity Provider
+  # SPI (providerId=apple), required for Sign in with Apple (form_post POST
+  # callback that KC's stock generic-OIDC broker can't handle). Built from
+  # dev/keycloak/Dockerfile. The SPI JAR is inert until an apple IdP exists, so
+  # this ships the capability without enabling Apple on any tenant — prod has no
+  # Apple creds in platform-oauth-providers, so the bootstrap creates no apple
+  # IdP. (deploy-beelink.sh also passes global.security.allowInsecureImages=true
+  # for the separate platform-kc release, which this block does not drive.)
+  image:
+    registry: 192.168.10.1:5000
+    repository: keycloak-apple
+    tag: "26.3.3-r1"
   auth:
     adminPassword: ""
 
@@ -74,7 +86,7 @@ platformEdge:
   replicaCount: 3
   image:
     repository: platform-edge
-    tag: "0.1.23"
+    tag: "0.1.24"
   config:
     # Fully-qualified service DNS names — nginx's `resolver` directive does
     # NOT apply /etc/resolv.conf's `search` list to cosocket DNS lookups,
