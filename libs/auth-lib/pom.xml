@@ -154,7 +154,10 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.7.0</version>
+                        <!-- 0.11.0: 0.7.0 threw UnrecognizedPropertyException on the
+                             Central API's `warnings` field AFTER a successful publish,
+                             red-X'ing the release despite the artifact going live. -->
+                        <version>0.11.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
