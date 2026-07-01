@@ -106,7 +106,7 @@ public class AppService {
         // Profile-specific KC mutations. All idempotent so re-running this
         // method on a recovered app row produces the same KC state.
         try {
-            applyProfile(profile, tenant, slug, clientUuid, req);
+            applyProfile(profile, tenant, slug, clientUuid, req.iosBundleId());
         } catch (Exception e) {
             audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, tenantId,
                 "app.create", "app", null,
@@ -116,35 +116,8 @@ public class AppService {
             throw new RuntimeException("Keycloak profile apply failed: " + e.getMessage(), e);
         }
 
-        // Backend profiles: wire audience via a per-backend client_scope on
-        // 'usermanagement' so BFF-minted tokens carry aud:<slug>. The previous
-        // implementation installed an oidc-audience-mapper on the backend client
-        // itself, which never fires because tokens flow through usermanagement,
-        // not the backend client.
-        //
-        // SPA_PKCE: still call the legacy ensureAudienceMapper for req.audience()
-        // entries — that's the direct-SPA-to-KC flow which mints via the SPA
-        // client and DOES need self-aud mappers on that client.
-        // SPA_PKCE and NATIVE_PKCE mint tokens directly against their own client,
-        // so they need self-aud mappers on that client for each req.audience() entry.
-        if (profile == AppProfile.CONFIDENTIAL_BACKEND || profile == AppProfile.SERVICE_ACCOUNT_ONLY) {
-            try {
-                keycloak.ensureUsermanagementAudienceFor(realmName, slug);
-            } catch (Exception e) {
-                log.warn("Failed to ensure usermanagement audience for {}: {}", slug, e.getMessage());
-                // Don't fail the create — operator can retry via UI / admin repair endpoint.
-            }
-        } else if (req.audience() != null) {
-            for (String aud : req.audience()) {
-                if (aud == null || aud.isBlank() || aud.equals(slug)) continue;
-                try {
-                    keycloak.ensureAudienceMapper(realmName, clientUuid, aud);
-                } catch (Exception e) {
-                    log.warn("Failed to create audience mapper '{}' on client {}: {}",
-                        aud, slug, e.getMessage());
-                }
-            }
-        }
+        // Audience wiring (see applyAudience for the backend vs SPA/NATIVE split).
+        applyAudience(profile, realmName, slug, clientUuid, req.audience());
 
         App entity = new App(tenantId, slug, displayName, slug);
         entity.setProfile(profile.name());
@@ -153,6 +126,11 @@ public class AppService {
             entity.setIosBundleId(req.iosBundleId());
             entity.setAndroidPackage(req.androidPackage());
             entity.setAndroidCertSha256(req.androidCertSha256());
+        }
+        // Persist the requested audience so a startup reconcile can re-apply the
+        // audience mappers after a realm rebuild.
+        if (req.audience() != null && !req.audience().isEmpty()) {
+            entity.setAudience(String.join(",", req.audience()));
         }
         App app = repo.save(entity);
         // Public clients (SPA_PKCE, NATIVE_PKCE) have no secret; KC returns null/empty.
@@ -200,7 +178,7 @@ public class AppService {
     }
 
     private void applyProfile(AppProfile profile, Tenant tenant, String slug, String clientUuid,
-                              CreateAppRequest req) {
+                              String iosBundleId) {
         String realmName = tenant.getRealmName();
         switch (profile) {
             case CONFIDENTIAL_BACKEND -> {
@@ -241,7 +219,7 @@ public class AppService {
                 List<String> hostnames = hostnameRepo.findByTenantId(tenant.getId()).stream()
                     .map(h -> h.getHostname())
                     .toList();
-                keycloak.setNativeRedirectUris(realmName, clientUuid, hostnames, req.iosBundleId());
+                keycloak.setNativeRedirectUris(realmName, clientUuid, hostnames, iosBundleId);
                 // 3. Disable directGrants + serviceAccounts (native uses auth-code + PKCE).
                 keycloak.setClientFlowFlags(realmName, clientUuid,
                     /* standardFlow */ true,
@@ -258,6 +236,84 @@ public class AppService {
                 keycloak.setClientAttributes(realmName, clientUuid, attrs);
             }
         }
+    }
+
+    /**
+     * Wires token audience for a freshly-shaped client. Backend profiles
+     * (CONFIDENTIAL_BACKEND / SERVICE_ACCOUNT_ONLY) get a per-backend
+     * client_scope on {@code usermanagement} so BFF-minted tokens carry
+     * {@code aud:<slug>} — the audience list is derived from the slug, not
+     * {@code audience}. SPA_PKCE / NATIVE_PKCE mint tokens directly against
+     * their own client, so each entry in {@code audience} becomes a self-aud
+     * mapper on that client. Best-effort: mapper failures are logged, not fatal.
+     */
+    private void applyAudience(AppProfile profile, String realmName, String slug,
+                               String clientUuid, List<String> audience) {
+        if (profile == AppProfile.CONFIDENTIAL_BACKEND || profile == AppProfile.SERVICE_ACCOUNT_ONLY) {
+            try {
+                keycloak.ensureUsermanagementAudienceFor(realmName, slug);
+            } catch (Exception e) {
+                log.warn("Failed to ensure usermanagement audience for {}: {}", slug, e.getMessage());
+                // Don't fail — operator can retry via UI / admin repair endpoint.
+            }
+        } else if (audience != null) {
+            for (String aud : audience) {
+                if (aud == null || aud.isBlank() || aud.equals(slug)) continue;
+                try {
+                    keycloak.ensureAudienceMapper(realmName, clientUuid, aud);
+                } catch (Exception e) {
+                    log.warn("Failed to create audience mapper '{}' on client {}: {}",
+                        aud, slug, e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * Recreates an app's Keycloak client from its persisted {@link App} row and
+     * re-applies its stored profile shape + audience wiring. Shares the
+     * {@link #findOrCreateClientWithRetry}, {@link #applyProfile} and
+     * {@link #applyAudience} code paths with {@link #create}, so a reconciled
+     * client lands in the exact same KC state as one created via the API.
+     *
+     * <p>Intended for the startup reconcile runner, which recovers app clients
+     * lost to a realm rebuild. The caller is responsible for the
+     * create-if-missing guard (only invoke this when the client is absent);
+     * this method itself is idempotent (find-or-create) but will (re)shape the
+     * client, so it must not be called against clients that should be left
+     * untouched.
+     *
+     * <p>Rows with a null/blank or unrecognized {@code profile} are skipped
+     * with a log line (nothing to reconstruct).
+     */
+    public void provisionClient(Tenant tenant, App app) {
+        String stored = app.getProfile();
+        if (stored == null || stored.isBlank()) {
+            log.info("Skipping client reconcile for app '{}' in realm '{}': no stored profile",
+                app.getSlug(), tenant.getRealmName());
+            return;
+        }
+        AppProfile profile;
+        try {
+            profile = AppProfile.valueOf(stored);
+        } catch (IllegalArgumentException e) {
+            log.warn("Skipping client reconcile for app '{}': unrecognized stored profile '{}'",
+                app.getSlug(), stored);
+            return;
+        }
+        String realmName = tenant.getRealmName();
+        String slug = app.getSlug();
+        String clientUuid = findOrCreateClientWithRetry(realmName, slug, app.getDisplayName());
+        applyProfile(profile, tenant, slug, clientUuid, app.getIosBundleId());
+        applyAudience(profile, realmName, slug, clientUuid, parseAudience(app.getAudience()));
+    }
+
+    private static List<String> parseAudience(String csv) {
+        if (csv == null || csv.isBlank()) return List.of();
+        return java.util.Arrays.stream(csv.split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .toList();
     }
 
     @Transactional(readOnly = true)

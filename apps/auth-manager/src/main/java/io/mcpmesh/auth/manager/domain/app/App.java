@@ -47,6 +47,12 @@ public class App {
     @Column(name = "android_cert_sha256")
     private String androidCertSha256;
 
+    /** Comma-separated list of audience client slugs this app's tokens should carry.
+     *  Persisted so a startup reconcile can re-apply audience mappers after a realm
+     *  rebuild. Nullable. */
+    @Column(name = "audience")
+    private String audience;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -81,4 +87,7 @@ public class App {
 
     public String getAndroidCertSha256() { return androidCertSha256; }
     public void setAndroidCertSha256(String androidCertSha256) { this.androidCertSha256 = androidCertSha256; }
+
+    public String getAudience() { return audience; }
+    public void setAudience(String audience) { this.audience = audience; }
 }
