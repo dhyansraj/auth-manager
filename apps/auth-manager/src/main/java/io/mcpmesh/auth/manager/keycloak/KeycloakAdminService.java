@@ -642,6 +642,46 @@ public class KeycloakAdminService {
     }
 
     /**
+     * Replaces a native (NATIVE_PKCE) client's {@code redirectUris} with the
+     * canonical set for iOS/Android (Capacitor) apps:
+     *
+     * <ul>
+     *   <li>{@code https://<host>/auth/callback} — universal / app link at every
+     *       tenant host</li>
+     *   <li>{@code <bundleId>://auth} — custom-scheme fallback (only when
+     *       {@code bundleId} is non-blank)</li>
+     * </ul>
+     *
+     * <p>{@code webOrigins} is set empty: a native app has no browser origin, so
+     * there is no CORS surface to allow.
+     *
+     * <p>Idempotent: the new lists overwrite whatever was there wholesale, so
+     * re-running always converges to the same KC state.
+     */
+    public void setNativeRedirectUris(String realmName, String clientUuid,
+                                      List<String> tenantHostnames, String bundleId) {
+        Set<String> redirectUris = new java.util.LinkedHashSet<>();
+
+        if (tenantHostnames != null) {
+            for (String h : tenantHostnames) {
+                if (h == null || h.isBlank()) continue;
+                redirectUris.add("https://" + h + "/auth/callback");
+            }
+        }
+        if (bundleId != null && !bundleId.isBlank()) {
+            redirectUris.add(bundleId + "://auth");
+        }
+
+        ClientResource clientResource = admin.realm(realmName).clients().get(clientUuid);
+        ClientRepresentation rep = clientResource.toRepresentation();
+        rep.setRedirectUris(new java.util.ArrayList<>(redirectUris));
+        rep.setWebOrigins(new java.util.ArrayList<>());
+        clientResource.update(rep);
+        log.info("setNativeRedirectUris: realm '{}' client {} now trusts {} redirect URIs / 0 web origins",
+            realmName, clientUuid, redirectUris.size());
+    }
+
+    /**
      * Switches a client between confidential and public. For public, the
      * client_secret is removed and clientAuthenticatorType is cleared. Use
      * for UI / SPA clients that should use PKCE flow.

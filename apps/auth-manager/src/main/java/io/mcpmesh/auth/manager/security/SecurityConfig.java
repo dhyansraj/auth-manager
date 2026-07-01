@@ -74,7 +74,13 @@ public class SecurityConfig {
         http
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+            .authorizeHttpRequests(auth -> auth
+                // Association files fetched anonymously by Apple/Google (Universal Links / App Links).
+                .requestMatchers(
+                    "/.well-known/apple-app-site-association",
+                    "/.well-known/assetlinks.json"
+                ).permitAll()
+                .anyRequest().permitAll())
             .oauth2ResourceServer(oauth2 -> oauth2.authenticationManagerResolver(resolver));
         return http.build();
     }

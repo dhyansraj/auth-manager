@@ -75,7 +75,7 @@ public class UsermanagementBootstrap {
                 log.info("usermanagement app row already exists for tenant {}, ensuring KC state…", tenant.getSlug());
             } else {
                 var req = new CreateAppRequest(CLIENT_SLUG, DISPLAY_NAME,
-                    AppProfile.CONFIDENTIAL_BACKEND, null);
+                    AppProfile.CONFIDENTIAL_BACKEND, null, null, null, null, null);
                 var result = appService.create(tenant.getId(), req, actor);
                 app = result.app();
             }

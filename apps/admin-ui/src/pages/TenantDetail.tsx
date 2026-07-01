@@ -188,16 +188,35 @@ function AppsTab({ tenantId }: { tenantId: string }) {
   const [showCreate, setShowCreate] = useState(false);
   const [slug, setSlug] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [profile, setProfile] = useState<import('../api/types').AppProfile>('CONFIDENTIAL_BACKEND');
+  const [iosTeamId, setIosTeamId] = useState('');
+  const [iosBundleId, setIosBundleId] = useState('');
+  const [androidPackage, setAndroidPackage] = useState('');
+  const [androidCertSha256, setAndroidCertSha256] = useState('');
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
   const [saModalApp, setSaModalApp] = useState<import('../api/types').App | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<import('../api/types').App | null>(null);
 
+  const isNative = profile === 'NATIVE_PKCE';
+
   const create = useMutation({
-    mutationFn: () => api.createApp(tenantId, { slug, displayName }),
+    mutationFn: () => api.createApp(tenantId, {
+      slug,
+      displayName,
+      profile,
+      ...(isNative ? {
+        iosTeamId: iosTeamId || undefined,
+        iosBundleId: iosBundleId || undefined,
+        androidPackage: androidPackage || undefined,
+        androidCertSha256: androidCertSha256 || undefined,
+      } : {}),
+    }),
     onSuccess: (app) => {
       qc.invalidateQueries({ queryKey: ['apps', tenantId] });
       setCreatedSecret(app.clientSecret);
       setSlug(''); setDisplayName('');
+      setProfile('CONFIDENTIAL_BACKEND');
+      setIosTeamId(''); setIosBundleId(''); setAndroidPackage(''); setAndroidCertSha256('');
       setShowCreate(false);
     },
   });
@@ -225,6 +244,43 @@ function AppsTab({ tenantId }: { tenantId: string }) {
               className="bg-white border rounded p-3 grid grid-cols-2 gap-3">
           <input placeholder="slug" value={slug} onChange={e => setSlug(e.target.value)} className="border rounded px-2 py-1 text-sm font-mono" required />
           <input placeholder="display name" value={displayName} onChange={e => setDisplayName(e.target.value)} className="border rounded px-2 py-1 text-sm" required />
+          <label className="col-span-2 block">
+            <div className="text-xs text-slate-600 mb-1">Profile</div>
+            <select
+              value={profile}
+              onChange={e => setProfile(e.target.value as import('../api/types').AppProfile)}
+              className="border rounded px-2 py-1 text-sm"
+            >
+              <option value="CONFIDENTIAL_BACKEND">Confidential backend</option>
+              <option value="SPA_PKCE">SPA (PKCE)</option>
+              <option value="SERVICE_ACCOUNT_ONLY">Service account only</option>
+              <option value="NATIVE_PKCE">Native / Mobile (Capacitor)</option>
+            </select>
+          </label>
+          {isNative && (
+            <>
+              <label className="block">
+                <div className="text-xs text-slate-600 mb-1">iOS Team ID</div>
+                <input value={iosTeamId} onChange={e => setIosTeamId(e.target.value)} placeholder="ABCDE12345" className="w-full border rounded px-2 py-1 text-sm font-mono" />
+              </label>
+              <label className="block">
+                <div className="text-xs text-slate-600 mb-1">iOS Bundle ID</div>
+                <input value={iosBundleId} onChange={e => setIosBundleId(e.target.value)} placeholder="com.example.app" className="w-full border rounded px-2 py-1 text-sm font-mono" />
+              </label>
+              <label className="block">
+                <div className="text-xs text-slate-600 mb-1">Android Package</div>
+                <input value={androidPackage} onChange={e => setAndroidPackage(e.target.value)} placeholder="com.example.app" className="w-full border rounded px-2 py-1 text-sm font-mono" />
+              </label>
+              <label className="block">
+                <div className="text-xs text-slate-600 mb-1">Android Cert SHA-256</div>
+                <input value={androidCertSha256} onChange={e => setAndroidCertSha256(e.target.value)} placeholder="AB:CD:EF:…" className="w-full border rounded px-2 py-1 text-sm font-mono" />
+              </label>
+              <div className="col-span-2 text-xs text-slate-500">
+                All optional — the app-link just won't verify until filled. Bundle ID/package
+                also drives the custom-scheme redirect <code className="font-mono">&lt;bundleId&gt;://auth</code>.
+              </div>
+            </>
+          )}
           <button type="submit" className="col-span-2 bg-slate-900 text-white px-3 py-1 rounded text-sm hover:bg-slate-700">Create</button>
         </form>
       )}
@@ -233,6 +289,7 @@ function AppsTab({ tenantId }: { tenantId: string }) {
           <tr>
             <th className="px-3 py-2">Slug</th>
             <th className="px-3 py-2">Display name</th>
+            <th className="px-3 py-2">Profile</th>
             <th className="px-3 py-2">Created</th>
             <th className="px-3 py-2"></th>
           </tr>
@@ -247,6 +304,11 @@ function AppsTab({ tenantId }: { tenantId: string }) {
             >
               <td className="px-3 py-2 font-mono">{a.slug}</td>
               <td className="px-3 py-2">{a.displayName}</td>
+              <td className="px-3 py-2">
+                {a.profile === 'NATIVE_PKCE'
+                  ? <span className="bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs px-2 py-0.5 rounded">Native</span>
+                  : <span className="text-xs text-slate-500">{a.profile ?? '—'}</span>}
+              </td>
               <td className="px-3 py-2 text-slate-500">{new Date(a.createdAt).toLocaleDateString()}</td>
               <td className="px-3 py-2 text-right">
                 <button
@@ -259,7 +321,7 @@ function AppsTab({ tenantId }: { tenantId: string }) {
               </td>
             </tr>
           ))}
-          {(apps.data ?? []).length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500">No apps yet</td></tr>}
+          {(apps.data ?? []).length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-500">No apps yet</td></tr>}
         </tbody>
       </table>
 

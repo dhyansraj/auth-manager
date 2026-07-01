@@ -56,6 +56,16 @@ local function match_platform(path)
     if path == "/.well-known/openid-configuration" then
         return config.platform_kc_target, "PUBLIC", nil
     end
+    -- iOS Universal Links / Android App Links verification files for native
+    -- apps. Generated per-tenant by auth-manager (resolves tenant from the
+    -- forwarded Host header). PUBLIC because Apple/Google fetch them
+    -- anonymously; nil forwards the literal /.well-known/... URI unchanged.
+    if path == "/.well-known/apple-app-site-association" then
+        return config.platform_admin_api_target, "PUBLIC", nil
+    end
+    if path == "/.well-known/assetlinks.json" then
+        return config.platform_admin_api_target, "PUBLIC", nil
+    end
     -- BFF (cookie-based browser auth) endpoints. Underscore prefix so they
     -- cannot collide with tenant routes. Handled entirely in Lua except
     -- /_bff/me which mutates the request and forwards to admin-api.

@@ -23,7 +23,22 @@ public record CreateAppRequest(
 
     /** Other client slugs this app's tokens should carry as audience (oidc-audience-mapper).
      *  Applied AFTER client creation. Empty/null = no mappers. */
-    List<String> audience
+    List<String> audience,
+
+    /** Apple Developer Team ID. Only meaningful for NATIVE_PKCE; nullable otherwise. */
+    String iosTeamId,
+
+    /** iOS bundle identifier, e.g. {@code io.mcpmesh.app}. Doubles as the custom-scheme
+     *  authority for native redirect URIs. Only meaningful for NATIVE_PKCE; nullable. */
+    String iosBundleId,
+
+    /** Android application package, e.g. {@code io.mcpmesh.app}. Only meaningful for
+     *  NATIVE_PKCE; nullable otherwise. */
+    String androidPackage,
+
+    /** Android signing-cert SHA-256 fingerprint (App Links / assetlinks.json). Only
+     *  meaningful for NATIVE_PKCE; nullable otherwise. */
+    String androidCertSha256
 ) {
     public enum AppProfile {
         /** Default. Confidential client with serviceAccountsEnabled=true. Suitable
@@ -34,6 +49,10 @@ public record CreateAppRequest(
          *  registered hostnames; web origins derived likewise. Lightweight tokens
          *  disabled. No service account, no direct grants. */
         SPA_PKCE,
+        /** Public PKCE-S256 client for native iOS/Android (Capacitor) apps. Redirect URIs
+         *  are derived (app-link https://&lt;tenant-host&gt;/auth/callback + custom scheme
+         *  &lt;bundleId&gt;://auth). Direct grants + service accounts off. */
+        NATIVE_PKCE,
         /** Confidential client for machine-to-machine ONLY. Service accounts on,
          *  standardFlow off, directGrants off. Suitable for backend daemons /
          *  cron jobs that mint via client_credentials. */

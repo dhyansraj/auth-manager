@@ -99,8 +99,12 @@ export const api = {
   createApp:     (tenantId: string, body: {
     slug: string;
     displayName: string;
-    profile?: 'CONFIDENTIAL_BACKEND' | 'SPA_PKCE' | 'SERVICE_ACCOUNT_ONLY';
+    profile?: 'CONFIDENTIAL_BACKEND' | 'SPA_PKCE' | 'SERVICE_ACCOUNT_ONLY' | 'NATIVE_PKCE';
     audience?: string[];
+    iosTeamId?: string;
+    iosBundleId?: string;
+    androidPackage?: string;
+    androidCertSha256?: string;
   }) =>
     req<import('./types').App & { clientSecret?: string | null }>(
       `/tenants/${tenantId}/apps`,

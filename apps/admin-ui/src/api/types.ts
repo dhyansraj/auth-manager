@@ -15,6 +15,12 @@ export interface Tenant {
   updatedAt: string;
 }
 
+export type AppProfile =
+  | 'CONFIDENTIAL_BACKEND'
+  | 'SPA_PKCE'
+  | 'SERVICE_ACCOUNT_ONLY'
+  | 'NATIVE_PKCE';
+
 export interface App {
   id: string;
   tenantId: string;
@@ -23,6 +29,12 @@ export interface App {
   clientId: string;
   clientSecret: string | null;
   createdAt: string;
+  profile?: AppProfile;
+  /** Native identifiers (only meaningful for NATIVE_PKCE apps). */
+  iosTeamId?: string;
+  iosBundleId?: string;
+  androidPackage?: string;
+  androidCertSha256?: string;
 }
 
 export type AuditResult = 'SUCCESS' | 'FAILURE';

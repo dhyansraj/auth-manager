@@ -18,15 +18,21 @@ public record AppResponse(
     String displayName,
     String clientId,
     String clientSecret,    // only on create; null otherwise
+    String profile,
+    String iosTeamId,
+    String iosBundleId,
+    String androidPackage,
+    String androidCertSha256,
     Instant createdAt
 ) {
     public static AppResponse from(App a) {
-        return new AppResponse(a.getId(), a.getTenantId(), a.getSlug(), a.getDisplayName(),
-                               a.getClientId(), null, a.getCreatedAt());
+        return from(a, null);
     }
 
     public static AppResponse from(App a, String clientSecret) {
         return new AppResponse(a.getId(), a.getTenantId(), a.getSlug(), a.getDisplayName(),
-                               a.getClientId(), clientSecret, a.getCreatedAt());
+                               a.getClientId(), clientSecret, a.getProfile(),
+                               a.getIosTeamId(), a.getIosBundleId(), a.getAndroidPackage(),
+                               a.getAndroidCertSha256(), a.getCreatedAt());
     }
 }

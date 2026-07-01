@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../api/client';
-import type { Tenant, IdentityProviderDto } from '../api/types';
+import type { Tenant, IdentityProviderDto, AppProfile } from '../api/types';
 import { useToast } from '../components/Toast';
 
 // v2 = added the Email step (step 3). v1 drafts auto-discarded on load.
@@ -25,8 +25,6 @@ type WizardStep = 1 | 2 | 3 | 4 | 5 | 6;
 // Types
 // ---------------------------------------------------------------------------
 
-type AppProfile = 'CONFIDENTIAL_BACKEND' | 'SPA_PKCE' | 'SERVICE_ACCOUNT_ONLY';
-
 interface WizardHostname { host: string; backend: string; }
 
 interface WizardApp {
@@ -35,6 +33,11 @@ interface WizardApp {
   profile: AppProfile;
   audience: string[];
   saPermissions: string[];
+  /** Native identifiers — only used when profile === 'NATIVE_PKCE'. */
+  iosTeamId?: string;
+  iosBundleId?: string;
+  androidPackage?: string;
+  androidCertSha256?: string;
   /** Sentinel: true for apps loaded via resume-mode (already provisioned). */
   _existing?: boolean;
 }
@@ -87,6 +90,7 @@ const APP_PROFILE_LABELS: Record<AppProfile, string> = {
   CONFIDENTIAL_BACKEND: 'Confidential backend',
   SPA_PKCE: 'SPA (PKCE)',
   SERVICE_ACCOUNT_ONLY: 'Service account only',
+  NATIVE_PKCE: 'Native / Mobile (Capacitor)',
 };
 
 const SA_PERMISSION_PRESET = ['USER_LIST', 'USER_INVITE', 'USER_DISABLE', 'AUDIT_VIEW', 'EMAIL_SEND', 'EMAIL_EDIT'];
@@ -448,6 +452,12 @@ export default function TenantWizard() {
           displayName: app.displayName,
           profile: app.profile,
           audience: app.audience,
+          ...(app.profile === 'NATIVE_PKCE' ? {
+            iosTeamId: app.iosTeamId || undefined,
+            iosBundleId: app.iosBundleId || undefined,
+            androidPackage: app.androidPackage || undefined,
+            androidCertSha256: app.androidCertSha256 || undefined,
+          } : {}),
         });
         created.push({
           slug: app.slug,
@@ -1043,7 +1053,7 @@ function Step2Apps({
                 onChange={(e) => {
                   const profile = e.target.value as AppProfile;
                   const next: Partial<WizardApp> = { profile };
-                  if (profile === 'SPA_PKCE') next.saPermissions = [];
+                  if (profile === 'SPA_PKCE' || profile === 'NATIVE_PKCE') next.saPermissions = [];
                   patchApp(i, next);
                 }}
                 className="border rounded px-2 py-1 text-sm"
@@ -1051,8 +1061,54 @@ function Step2Apps({
                 <option value="CONFIDENTIAL_BACKEND">{APP_PROFILE_LABELS.CONFIDENTIAL_BACKEND}</option>
                 <option value="SPA_PKCE">{APP_PROFILE_LABELS.SPA_PKCE}</option>
                 <option value="SERVICE_ACCOUNT_ONLY">{APP_PROFILE_LABELS.SERVICE_ACCOUNT_ONLY}</option>
+                <option value="NATIVE_PKCE">{APP_PROFILE_LABELS.NATIVE_PKCE}</option>
               </select>
             </label>
+
+            {app.profile === 'NATIVE_PKCE' && (
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <div className="text-xs text-slate-600 mb-1">iOS Team ID</div>
+                  <input
+                    value={app.iosTeamId ?? ''}
+                    onChange={(e) => patchApp(i, { iosTeamId: e.target.value })}
+                    placeholder="ABCDE12345"
+                    className="w-full border rounded px-2 py-1 font-mono text-sm"
+                  />
+                </label>
+                <label className="block">
+                  <div className="text-xs text-slate-600 mb-1">iOS Bundle ID</div>
+                  <input
+                    value={app.iosBundleId ?? ''}
+                    onChange={(e) => patchApp(i, { iosBundleId: e.target.value })}
+                    placeholder="com.example.app"
+                    className="w-full border rounded px-2 py-1 font-mono text-sm"
+                  />
+                </label>
+                <label className="block">
+                  <div className="text-xs text-slate-600 mb-1">Android Package</div>
+                  <input
+                    value={app.androidPackage ?? ''}
+                    onChange={(e) => patchApp(i, { androidPackage: e.target.value })}
+                    placeholder="com.example.app"
+                    className="w-full border rounded px-2 py-1 font-mono text-sm"
+                  />
+                </label>
+                <label className="block">
+                  <div className="text-xs text-slate-600 mb-1">Android Cert SHA-256</div>
+                  <input
+                    value={app.androidCertSha256 ?? ''}
+                    onChange={(e) => patchApp(i, { androidCertSha256: e.target.value })}
+                    placeholder="AB:CD:EF:…"
+                    className="w-full border rounded px-2 py-1 font-mono text-sm"
+                  />
+                </label>
+                <div className="col-span-2 text-xs text-slate-500">
+                  All optional — the app-link just won't verify until filled. Bundle ID/package
+                  also drives the custom-scheme redirect <code className="font-mono">&lt;bundleId&gt;://auth</code>.
+                </div>
+              </div>
+            )}
 
             <div>
               <div className="text-xs text-slate-600 mb-1">Audience</div>

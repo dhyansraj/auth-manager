@@ -75,7 +75,7 @@ public class AdminRepairController {
                 row.put("realm", realmName);
                 row.put("client", a.getClientId());
                 try {
-                    AppProfile profile = appService.detectProfile(realmName, a.getClientId());
+                    AppProfile profile = appService.detectProfile(a, realmName);
                     if (profile != AppProfile.CONFIDENTIAL_BACKEND
                         && profile != AppProfile.SERVICE_ACCOUNT_ONLY) {
                         row.put("status", "skipped");

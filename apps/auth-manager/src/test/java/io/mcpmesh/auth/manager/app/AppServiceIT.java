@@ -92,7 +92,7 @@ class AppServiceIT {
     }
 
     private static CreateAppRequest req(String slug, String displayName) {
-        return new CreateAppRequest(slug, displayName, AppProfile.CONFIDENTIAL_BACKEND, null);
+        return new CreateAppRequest(slug, displayName, AppProfile.CONFIDENTIAL_BACKEND, null, null, null, null, null);
     }
 
     @Test
@@ -153,7 +153,7 @@ class AppServiceIT {
 
     @Test
     void create_spaPkce_flipsPublicAndSetsPkceAttrAndDisablesServiceAccount() {
-        var req = new CreateAppRequest("ui", "UI", AppProfile.SPA_PKCE, null);
+        var req = new CreateAppRequest("ui", "UI", AppProfile.SPA_PKCE, null, null, null, null, null);
         var result = apps.create(tenant.getId(), req, "tester");
 
         // Public client -> no client_secret should be returned to caller.
@@ -173,7 +173,7 @@ class AppServiceIT {
 
     @Test
     void create_serviceAccountOnly_disablesStandardFlowAndEnablesServiceAccount() {
-        var req = new CreateAppRequest("daemon", "Daemon", AppProfile.SERVICE_ACCOUNT_ONLY, null);
+        var req = new CreateAppRequest("daemon", "Daemon", AppProfile.SERVICE_ACCOUNT_ONLY, null, null, null, null, null);
         var result = apps.create(tenant.getId(), req, "tester");
 
         assertThat(result.clientSecret()).isEqualTo("test-secret");
@@ -207,7 +207,8 @@ class AppServiceIT {
         when(keycloakAdmin.ensureAudienceMapper(anyString(), anyString(), anyString())).thenReturn(true);
         var req = new CreateAppRequest("orders", "Orders",
             AppProfile.CONFIDENTIAL_BACKEND,
-            List.of("invoices", "billing", "", "orders" /* self -> skipped */));
+            List.of("invoices", "billing", "", "orders" /* self -> skipped */),
+            null, null, null, null);
 
         apps.create(tenant.getId(), req, "tester");
 

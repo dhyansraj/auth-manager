@@ -106,7 +106,7 @@ public class AppService {
         // Profile-specific KC mutations. All idempotent so re-running this
         // method on a recovered app row produces the same KC state.
         try {
-            applyProfile(profile, tenant, slug, clientUuid);
+            applyProfile(profile, tenant, slug, clientUuid, req);
         } catch (Exception e) {
             audit.recordFailure(SYSTEM_ACTOR, SYSTEM_KIND, tenantId,
                 "app.create", "app", null,
@@ -125,6 +125,8 @@ public class AppService {
         // SPA_PKCE: still call the legacy ensureAudienceMapper for req.audience()
         // entries — that's the direct-SPA-to-KC flow which mints via the SPA
         // client and DOES need self-aud mappers on that client.
+        // SPA_PKCE and NATIVE_PKCE mint tokens directly against their own client,
+        // so they need self-aud mappers on that client for each req.audience() entry.
         if (profile == AppProfile.CONFIDENTIAL_BACKEND || profile == AppProfile.SERVICE_ACCOUNT_ONLY) {
             try {
                 keycloak.ensureUsermanagementAudienceFor(realmName, slug);
@@ -144,9 +146,17 @@ public class AppService {
             }
         }
 
-        App app = repo.save(new App(tenantId, slug, displayName, slug));
-        // Public clients (SPA_PKCE) have no secret; KC returns null/empty.
-        String secret = profile == AppProfile.SPA_PKCE
+        App entity = new App(tenantId, slug, displayName, slug);
+        entity.setProfile(profile.name());
+        if (profile == AppProfile.NATIVE_PKCE) {
+            entity.setIosTeamId(req.iosTeamId());
+            entity.setIosBundleId(req.iosBundleId());
+            entity.setAndroidPackage(req.androidPackage());
+            entity.setAndroidCertSha256(req.androidCertSha256());
+        }
+        App app = repo.save(entity);
+        // Public clients (SPA_PKCE, NATIVE_PKCE) have no secret; KC returns null/empty.
+        String secret = (profile == AppProfile.SPA_PKCE || profile == AppProfile.NATIVE_PKCE)
             ? null
             : keycloak.getClientSecret(realmName, clientUuid);
 
@@ -189,7 +199,8 @@ public class AppService {
         }
     }
 
-    private void applyProfile(AppProfile profile, Tenant tenant, String slug, String clientUuid) {
+    private void applyProfile(AppProfile profile, Tenant tenant, String slug, String clientUuid,
+                              CreateAppRequest req) {
         String realmName = tenant.getRealmName();
         switch (profile) {
             case CONFIDENTIAL_BACKEND -> {
@@ -213,6 +224,25 @@ public class AppService {
                 // 3. Disable directGrants + serviceAccounts (SPA doesn't need either).
                 //    setClientPublic above already cleared serviceAccountsEnabled, but
                 //    set explicitly here too so the intent is auditable in one place.
+                keycloak.setClientFlowFlags(realmName, clientUuid,
+                    /* standardFlow */ true,
+                    /* directGrants */ false,
+                    /* serviceAccounts */ false);
+            }
+            case NATIVE_PKCE -> {
+                // 1. Flip to public + PKCE-S256 (same hardening as SPA_PKCE).
+                keycloak.setClientPublic(realmName, slug, true);
+                Map<String, String> attrs = new LinkedHashMap<>();
+                attrs.put("pkce.code.challenge.method", "S256");
+                attrs.put("client.use.lightweight.access.token.enabled", "false");
+                keycloak.setClientAttributes(realmName, clientUuid, attrs);
+                // 2. Native redirect URIs: app-link https://<host>/auth/callback per
+                //    tenant hostname + custom scheme <bundleId>://auth. No web origins.
+                List<String> hostnames = hostnameRepo.findByTenantId(tenant.getId()).stream()
+                    .map(h -> h.getHostname())
+                    .toList();
+                keycloak.setNativeRedirectUris(realmName, clientUuid, hostnames, req.iosBundleId());
+                // 3. Disable directGrants + serviceAccounts (native uses auth-code + PKCE).
                 keycloak.setClientFlowFlags(realmName, clientUuid,
                     /* standardFlow */ true,
                     /* directGrants */ false,
@@ -243,6 +273,26 @@ public class AppService {
      * failure. Exposed for the admin-repair endpoint that needs to filter to
      * backend-shaped apps.
      */
+    /**
+     * Profile for a persisted {@link App}: prefers the stored {@code profile}
+     * column when present (so NATIVE_PKCE apps — which are shape-identical to
+     * SPA_PKCE in KC — report correctly), falling back to KC-derivation for
+     * legacy rows where {@code profile} is null.
+     */
+    @Transactional(readOnly = true)
+    public AppProfile detectProfile(App app, String realmName) {
+        String stored = app.getProfile();
+        if (stored != null && !stored.isBlank()) {
+            try {
+                return AppProfile.valueOf(stored);
+            } catch (IllegalArgumentException e) {
+                log.warn("App {} has unrecognized stored profile '{}' — falling back to KC derivation",
+                    app.getSlug(), stored);
+            }
+        }
+        return detectProfile(realmName, app.getClientId());
+    }
+
     @Transactional(readOnly = true)
     public AppProfile detectProfile(String realmName, String clientId) {
         try {
