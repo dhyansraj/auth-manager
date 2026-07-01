@@ -12,7 +12,9 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.client.RestTemplate;
@@ -41,9 +43,33 @@ public class SecurityConfig {
 
     @Bean
     public JwtDecoder jwtDecoder(AuthLibProperties props) {
-        return NimbusJwtDecoder
-            .withJwkSetUri(props.issuerUri() + "/protocol/openid-connect/certs")
+        // JWKS may be fetched from an internal cluster URL (auth-lib.jwk-set-uri)
+        // to avoid hairpinning key fetches out to the public issuer (e.g. through
+        // Cloudflare); when unset we derive the public certs URL for back-compat.
+        // Either way the `iss` claim is still validated against the PUBLIC
+        // issuer-uri below.
+        String jwkSetUri = (props.jwkSetUri() != null && !props.jwkSetUri().isBlank())
+            ? props.jwkSetUri()
+            : props.issuerUri() + "/protocol/openid-connect/certs";
+
+        // Explicit connect+read timeout on the JWKS fetch so a slow/hairpinned
+        // JWKS endpoint fails fast instead of hanging the request thread.
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(props.httpTimeout());
+        requestFactory.setReadTimeout(props.httpTimeout());
+        RestTemplate jwkRestTemplate = new RestTemplate(requestFactory);
+
+        NimbusJwtDecoder decoder = NimbusJwtDecoder
+            .withJwkSetUri(jwkSetUri)
+            .restOperations(jwkRestTemplate)
             .build();
+
+        // Validate iss == public issuer-uri PLUS the default timestamp validators.
+        // (withJwkSetUri(...).build() only checks signature+exp otherwise.)
+        // Nimbus caches the fetched JWK set by default; auth-lib.jwks-cache-ttl is
+        // exposed for future wiring should an explicit TTL knob be needed.
+        decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(props.issuerUri()));
+        return decoder;
     }
 
     @Bean

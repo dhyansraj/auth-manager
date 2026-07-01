@@ -28,6 +28,10 @@ class AuthLibSettings(BaseSettings):
       * ``AUTH_LIB_AUDIENCES``  JSON list or comma-separated list of additional
         resource-server clientIds to aggregate UMA permissions across. Defaults
         to ``[client_id]``.
+      * ``AUTH_LIB_JWK_SET_URI``  optional; when set, JWKS is fetched from this
+        URL (e.g. the in-cluster KC certs URL) instead of deriving it from
+        issuer_uri — lets in-cluster backends avoid a public-DNS hairpin while
+        iss is still validated against the public issuer_uri.
       * ``AUTH_LIB_JWKS_CACHE_TTL_SECONDS``  default 3600
       * ``AUTH_LIB_PERMISSION_CACHE_TTL_SECONDS``  default 60
       * ``AUTH_LIB_REDIS_URL``  e.g. ``redis://redis:6379/0``. If unset, an
@@ -53,6 +57,11 @@ class AuthLibSettings(BaseSettings):
     client_id: str
     client_secret: Optional[str] = None
     audiences: Optional[List[str]] = None
+    # Optional JWKS URL override. When set, JWKS is fetched from this URL (e.g.
+    # the in-cluster KC certs URL) instead of deriving it from issuer_uri —
+    # lets in-cluster backends avoid a public-DNS hairpin while iss is still
+    # validated against the public issuer_uri.
+    jwk_set_uri: Optional[str] = None
     jwks_cache_ttl_seconds: int = 3600
     permission_cache_ttl_seconds: int = 60
     redis_url: Optional[str] = None

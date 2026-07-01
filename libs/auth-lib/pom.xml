@@ -18,7 +18,7 @@
 
     <groupId>io.mcp-mesh</groupId>
     <artifactId>mcp-mesh-auth-lib</artifactId>
-    <version>0.3.3</version>
+    <version>0.4.0</version>
     <name>mcp-mesh-auth-lib</name>
     <description>Reusable Spring Boot library: JWT validation + permission enforcement against Keycloak for the mcp-mesh auth platform</description>
     <url>https://github.com/dhyansraj/auth-manager</url>

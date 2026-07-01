@@ -51,6 +51,9 @@ class PermissionsTest {
             "orders",
             "secret",
             List.of("orders", "invoices"),
+            null,
+            null,
+            null,
             null
         );
         jwt = Jwt.withTokenValue("token")
@@ -217,7 +220,10 @@ class PermissionsTest {
             "orders",
             "secret",
             List.of("orders", "invoices"),
-            new AuthLibProperties.Cache(false, Duration.ofMinutes(5))
+            new AuthLibProperties.Cache(false, Duration.ofMinutes(5)),
+            null,
+            null,
+            null
         );
         when(rest.postForObject(any(String.class), any(HttpEntity.class), eq(List.class)))
             .thenReturn(List.of(Map.of("rsname", "order", "scopes", List.of("view"))));

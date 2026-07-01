@@ -144,7 +144,7 @@ public class OnboardingBundleService {
             writeEntry(zip, "README.md", renderReadme(tenant, realmName, issuer, slug, userApps, bffMode,
                                                      anySpa, anyBackend, anyServiceAccount,
                                                      enabledIdps, filesGenerated));
-            writeEntry(zip, ".env.example", renderEnv(tenant, issuer, slug, userApps, bffMode, dbProvisioned));
+            writeEntry(zip, ".env.example", renderEnv(tenant, realmName, issuer, slug, userApps, bffMode, dbProvisioned));
             writeEntry(zip, "helm-values-snippet.yaml", renderHelm(issuer, slug, userApps, bffMode));
             writeEntry(zip, "tenant-manifest.yaml", renderTenantManifest(tenant, userApps));
             if (!enabledIdps.isEmpty()) {
@@ -510,11 +510,18 @@ public class OnboardingBundleService {
         return "\n## Configured for you\n\n" + sb.toString().stripTrailing() + "\n";
     }
 
-    private String renderEnv(Tenant t, String issuer, String slug, List<AppInfo> apps,
+    private String renderEnv(Tenant t, String realmName, String issuer, String slug, List<AppInfo> apps,
                               boolean bffMode, boolean dbProvisioned) {
         String dbBlock = renderDbBlock(slug, dbProvisioned);
         String upperSlug = slug.toUpperCase(java.util.Locale.ROOT).replace('-', '_');
         String tenantId = t.getId() == null ? "<tenant-uuid>" : t.getId().toString();
+        // In-cluster KC certs URL: backends running inside the cluster set
+        // AUTH_LIB_JWK_SET_URI to this so JWKS fetches stay in-cluster (~5ms)
+        // instead of hairpinning to the public issuer through Cloudflare. iss is
+        // still validated against the public AUTH_LIB_ISSUER_URI. Note: no /auth/
+        // prefix in-cluster (KC_HTTP_RELATIVE_PATH=/).
+        String kcInClusterCerts = "http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/"
+            + realmName + "/protocol/openid-connect/certs";
         if (bffMode) {
             String backendClientId = firstBackendClientId(apps);
             StringBuilder backendClientsBlock = new StringBuilder();
@@ -557,6 +564,11 @@ public class OnboardingBundleService {
 
                 # Backend services (validate Bearer tokens received from platform-edge)
                 AUTH_LIB_ISSUER_URI={{issuer}}
+                # Backend runs IN the cluster → also point JWKS at the in-cluster KC
+                # certs URL so key fetches stay in-cluster (~5ms) instead of
+                # hairpinning to the public issuer via Cloudflare. iss is still
+                # validated against the public AUTH_LIB_ISSUER_URI above.
+                #   AUTH_LIB_JWK_SET_URI={{kcInClusterCerts}}
                 AUTH_LIB_CLIENT_ID={{clientId}}
                 AUTH_LIB_CLIENT_SECRET=<provided out-of-band — auth-manager UI → Apps → {{clientId}} → Reveal>
                 AUTH_LIB_PERMISSIONS_SOURCE=claims
@@ -583,6 +595,7 @@ public class OnboardingBundleService {
                 .replace("{{tenantName}}", t.getDisplayName())
                 .replace("{{timestamp}}", Instant.now().toString())
                 .replace("{{issuer}}", issuer)
+                .replace("{{kcInClusterCerts}}", kcInClusterCerts)
                 .replace("{{clientId}}", backendClientId)
                 .replace("{{backendClientsBlock}}", backendClients)
                 .replace("{{serviceAccountBlock}}", sa)
@@ -636,6 +649,11 @@ public class OnboardingBundleService {
             # Generated {{timestamp}} from auth-manager onboarding bundle.
 
             AUTH_LIB_ISSUER_URI={{issuer}}
+            # Backend runs IN the cluster → also point JWKS at the in-cluster KC
+            # certs URL so key fetches stay in-cluster (~5ms) instead of
+            # hairpinning to the public issuer via Cloudflare. iss is still
+            # validated against the public AUTH_LIB_ISSUER_URI above.
+            #   AUTH_LIB_JWK_SET_URI={{kcInClusterCerts}}
             AUTH_LIB_PERMISSIONS_SOURCE=claims
             KC_BASE={{kcBase}}
 
@@ -661,6 +679,7 @@ public class OnboardingBundleService {
             .replace("{{tenantName}}", t.getDisplayName())
             .replace("{{timestamp}}", Instant.now().toString())
             .replace("{{issuer}}", issuer)
+            .replace("{{kcInClusterCerts}}", kcInClusterCerts)
             .replace("{{kcBase}}", kcBase)
             .replace("{{spaBlock}}", spa)
             .replace("{{backendBlock}}", backend)
@@ -1032,6 +1051,11 @@ public class OnboardingBundleService {
             ```yaml
             auth-lib:
               issuer-uri: ${AUTH_LIB_ISSUER_URI}
+              # In-cluster backends: set AUTH_LIB_JWK_SET_URI to the internal KC
+              # certs URL so JWKS fetches stay in-cluster instead of hairpinning
+              # to the public issuer. iss is still validated against issuer-uri
+              # (public). Leave unset and JWKS is derived from issuer-uri.
+              jwk-set-uri: ${AUTH_LIB_JWK_SET_URI:}
               client-id: ${AUTH_LIB_CLIENT_ID:{{firstBackend}}}
               client-secret: ${AUTH_LIB_CLIENT_SECRET}
               cache:
@@ -1293,6 +1317,10 @@ public class OnboardingBundleService {
 
             ```bash
             AUTH_LIB_ISSUER_URI={{issuer}}
+            # In-cluster backends: set AUTH_LIB_JWK_SET_URI to the internal KC
+            # certs URL so JWKS fetches stay in-cluster instead of hairpinning to
+            # the public issuer. iss is still validated against AUTH_LIB_ISSUER_URI.
+            # AUTH_LIB_JWK_SET_URI=http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/certs
             AUTH_LIB_CLIENT_ID={{firstBackend}}
             AUTH_LIB_CLIENT_SECRET=<from auth-manager UI → Apps → {{firstBackend}} → Reveal>
             # Optional: comma-separated extra audiences if you serve multiple backends
@@ -1739,7 +1767,8 @@ public class OnboardingBundleService {
 
             | URL purpose | Env var | In-cluster value | Public value | Use which? |
             |---|---|---|---|---|
-            | JWT issuer (JWKS + UMA) | `AUTH_LIB_ISSUER_URI` | n/a | `{{kcBase}}/realms/{{realmName}}` | **Public only** |
+            | JWT issuer (iss match + UMA) | `AUTH_LIB_ISSUER_URI` | n/a | `{{kcBase}}/realms/{{realmName}}` | **Public only** (must equal the token `iss`) |
+            | JWKS (signing-key fetch) | `AUTH_LIB_JWK_SET_URI` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/certs` | (unset — derived from `AUTH_LIB_ISSUER_URI`) | In-cluster if backend is in-cluster; otherwise leave unset |
             | KC token endpoint | `KC_TOKEN_ENDPOINT` or `KC_BASE` | `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/token` | `{{kcBase}}/realms/{{realmName}}/protocol/openid-connect/token` | In-cluster if backend is in-cluster; public otherwise |
             | Platform admin API | `AUTH_MGR_BASE` | `{{authMgrBase}}` | `{{authMgrPublicBase}}` | In-cluster if backend is in-cluster; public otherwise |
 
@@ -1749,9 +1778,9 @@ public class OnboardingBundleService {
             `{{kcBase}}/realms/{{realmName}}` — NOT the in-cluster
             `http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}`.
 
-            auth-lib uses this URL both for JWKS fetch and for UMA permission
-            lookups, and the URL **must match the JWT's `iss` claim exactly** —
-            otherwise signature validation fails with:
+            auth-lib validates the JWT's `iss` claim against this URL and also
+            uses it for UMA permission lookups, so it **must match the token's
+            `iss` claim exactly** — otherwise validation fails with:
 
             ```
             Rejecting JWT with unknown issuer
@@ -1762,14 +1791,31 @@ public class OnboardingBundleService {
             "trusted-issuer prefix must match KC_HOSTNAME exactly" gotcha in the
             auth-platform repo.
 
-            ## JWKS fetching goes over public DNS — that's fine
+            ## JWKS fetch — split from the issuer via `AUTH_LIB_JWK_SET_URI`
 
-            Since the issuer URL is public, the JWKS fetch auth-lib does (to
-            verify JWT signatures) WILL traverse Cloudflare. Don't try to "fix"
-            this with a /etc/hosts override or an in-cluster rewrite — JWKS is
-            fetched rarely and aggressively cached (default ~10 minutes), so the
-            perf cost is negligible. Forcing it through an in-cluster URL just
-            breaks issuer matching for no real gain.
+            The issuer stays public (for `iss` matching, above), but the JWKS
+            *fetch* (downloading Keycloak's signing keys) does NOT need to go to
+            the same host. By default auth-lib derives the JWKS URL from
+            `AUTH_LIB_ISSUER_URI`, which means an in-cluster backend hairpins the
+            key fetch out to Cloudflare — measured at 0.3–4.5s, occasionally
+            timing out and failing to cache, which surfaces as intermittent 500s
+            on write paths.
+
+            If your backend runs IN the cluster, set `AUTH_LIB_JWK_SET_URI` to the
+            in-cluster KC certs URL so key fetches stay inside the pod network
+            (~5ms) and never touch the tunnel:
+
+            ```
+            AUTH_LIB_JWK_SET_URI=http://platform-kc-keycloak.auth-platform.svc.cluster.local:80/realms/{{realmName}}/protocol/openid-connect/certs
+            ```
+
+            (No `/auth/` prefix in-cluster — see the gotcha below.) This is safe
+            precisely because JWKS carries no issuer semantics: auth-lib still
+            validates `iss` against the public `AUTH_LIB_ISSUER_URI`, so pointing
+            the key fetch in-cluster changes nothing about issuer matching. If
+            your backend runs outside the cluster (local dev), leave
+            `AUTH_LIB_JWK_SET_URI` unset — the derived public URL is correct and
+            the `svc.cluster.local` host won't resolve from your machine.
 
             ## KC token endpoint — depends on where the backend runs
 

@@ -144,8 +144,12 @@ class JwtValidator:
             if force and (now - self._last_refresh) < 5.0 and self._jwks is not None:
                 # Rate-limit forced refreshes to one per 5s.
                 return self._jwks
+            # Prefer the explicit jwk_set_uri override when set (e.g. the
+            # in-cluster KC certs URL) so in-cluster backends avoid a public-DNS
+            # hairpin; iss is still validated against the public issuer_uri.
+            jwks_url = self._settings.jwk_set_uri or self._settings.jwks_uri
             try:
-                resp = self._http.get(self._settings.jwks_uri)
+                resp = self._http.get(jwks_url)
                 resp.raise_for_status()
                 data = resp.json()
             except Exception as e:
