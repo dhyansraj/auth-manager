@@ -347,34 +347,34 @@ re-verified against the codebase on 2026-06-10.
 ** [#B] mobile-native — native iOS/Android auth for App Store / Play Store (epic)
    :PROPERTIES:
    :TASK: mobile-native
-   :STATUS: in progress — Apple IdP v1 shipped; 3 gaps remain
+   :STATUS: in progress — Apple SPI + native OIDC/app-links DONE; account-deletion + offline-session realm-config + prod remain
    :END:
 
-   The core native OIDC flow already works: a public PKCE client type
-   (=SPA_PKCE=) and an edge that accepts a native-supplied Bearer on =/api/*=
-   without cookie/CSRF (confirmed in =router.lua= / =bff.lua=). Native apps
-   are a parallel path to the web BFF — the app is a public OIDC client, holds
-   its own tokens, and sends the Bearer to =/api/*=. Four work items:
+   The core native OIDC flow works via a dedicated public client type
+   (=NATIVE_PKCE=, see item 2) plus an edge that accepts a native-supplied
+   Bearer on =/api/*= without cookie/CSRF (=router.lua= / =bff.lua=). Native
+   apps are a parallel path to the web BFF — the app is a public OIDC client,
+   holds its own tokens, and sends the Bearer to =/api/*=. Work items:
 
-   *1. Apple Sign-in (brokered IdP) — DONE v1 (auth-manager 0.1.82,
-   platform-shared).* App Store Guideline 4.8 requires offering Sign in with
-   Apple whenever you offer any other social login (we broker Google).
-   Implemented as a generic KC =oidc= IdP (KC has no built-in Apple template):
-   auth-manager mints the ES256 client-secret JWT from the platform .p8
-   (=AppleClientSecretSigner=, Nimbus, 150-day exp) and re-mints on bootstrap
-   plus a monthly =@Scheduled= refresh (the "secret" is a JWT that expires
-   ≤6mo). Shared platform creds live in the =platform-oauth-providers= secret
-   (=apple.services-id/team-id/key-id/private-key=), same model as Google.
-   Apple has NO userinfo endpoint — claims come from the id_token via jwks.
-   *Operator prereq:* create an Apple Services ID + Sign-in key (.p8) and
-   register each tenant realm's =/broker/apple/endpoint= as a Return URL (no
-   wildcards — the same per-tenant chore as Google).
+   *1. Apple Sign-in (brokered IdP) — DONE (klausbetz Apple SPI).* App Store
+   Guideline 4.8 requires offering Sign in with Apple whenever you offer any
+   other social login (we broker Google). Reworked from the original generic
+   KC =oidc= IdP to the klausbetz Apple Identity Provider SPI
+   (=providerId="apple"=, JAR baked into a custom KC image, =dev/keycloak/=):
+   Apple requires =response_mode=form_post= for the name/email scope (Apple
+   POSTs the code back) and KC's stock generic-OIDC broker has no @POST handler
+   (405) — the SPI adds it, mints the ES256 client-secret JWT internally from
+   the raw .p8, and maps email+name. So scope =name email= now works (the old
+   =TODO(apple-name)= is DONE). =AppleClientSecretSigner= was removed (the SPI
+   mints its own JWT). Shared platform creds live in =platform-oauth-providers=
+   (=apple.services-id/team-id/key-id/private-key=). Deployed to prod but
+   DORMANT (prod secret has no apple creds → no apple IdP on any tenant); enable
+   later by adding prod creds + the prod Return URL to the Services ID + tenant
+   toggle. See [[project-authz-model]] / commit acf8684-era + prod promotion.
+   *Operator prereq:* Apple Services ID + Sign-in key (.p8); register each
+   tenant realm's =/broker/apple/endpoint= as a Return URL (no wildcards).
 
    *Phase-2 follow-ups (deferred):*
-   - (a) *name scope* — currently =openid email= only; the =name= scope forces
-     =response_mode=form_post= and the name arrives only in the first POST
-     callback, not the id_token → needs form_post handling (=TODO(apple-name)=
-     in code).
    - (b) *Return-URL centralization* — broker Apple once at a single platform
      realm and federate tenant realms, so the Apple portal stays static as
      tenants self-onboard (Apple is stricter than Google about this).
@@ -383,13 +383,26 @@ re-verified against the codebase on 2026-06-10.
    - (d) *Apple private-relay email* — register SendGrid sending domains under
      Apple "Email Sources" (per-tenant if BYO domains).
 
-   *2. Custom redirect URIs — [#B], NOT DONE (the technical blocker).* Today
-   redirect URIs are hardcoded to web paths (=/_bff/callback=, =/admin/*=,
-   localhost) in =KeycloakAdminService=. Native apps must register their OWN
-   redirect: a custom scheme (=com.tenant.app://callback=) or a claimed-HTTPS
-   App Link / Universal Link. Without per-app custom redirect URIs you can't
-   complete the flow on device. Add a redirect-URI field to the app/Apps-tab
-   and thread it into KC client creation.
+   *2. Native client + custom redirect URIs — DONE (=NATIVE_PKCE=, 2026-07,
+   commits 4e0931b + 01f30f9).* New =AppProfile.NATIVE_PKCE=: hardened public
+   client (PKCE-S256 enforced, direct-grants + service-accounts OFF, lightweight
+   off), redirects derived — app-link =https://<tenant-host>/auth/callback= +
+   custom scheme =<bundleId>://auth=. =aud:backend= via the client-level
+   audience mapper (no backend =AUTH_LIB_AUDIENCES= change). App-links verify
+   automatically: =WellKnownController= serves
+   =/.well-known/apple-app-site-association= (iOS Universal Links) +
+   =/.well-known/assetlinks.json= (Android App Links) per tenant (resolved by
+   Host header), routed cross-cutting by the edge (=router.lua=
+   =match_platform=). Native identifiers (team/bundle/package/cert) persist on
+   the =apps= table (V8/V9); =AppClientReconcileBootstrap= recreates app clients
+   on realm rebuild (create-if-missing). admin-ui Apps tab has a "Native /
+   Mobile (Capacitor)" type. Provisioned =chaptertwo-native= on
+   =t-chaptertwo-pilot=. Full detail: [[project-native-app-auth]].
+   *Open:* (i) Android release cert SHA-256 from CT → enter via admin-ui, then
+   =assetlinks.json= serves (iOS AASA already 200). (ii) Prod: deploy the
+   feature code + provision prod =chaptertwo-native= on =t-chaptertwo= when CT
+   ships to the store (dormant until then). (iii) =t-chaptertwo-dev= client not
+   yet created (only pilot).
 
    *3. Self-service account deletion — [#B], NOT DONE (store gate).* Apple
    (5.1.1(v)) and Google Play both require in-app account deletion for apps
@@ -398,11 +411,12 @@ re-verified against the codebase on 2026-06-10.
    (confirmation + audit + KC user delete + tenant-data cleanup). Hard gate on
    both stores.
 
-   *4. Offline tokens (stay-logged-in) — [#C], NOT DONE (UX).* =createRealm=
-   sets web lifespans (15m/4h/24h) and never configures
-   =offlineSessionIdleTimeout= / =offlineSessionMaxLifespan= or grants
-   =offline_access= on the public client. Mobile expects weeks-long sessions.
-   Add offline-session realm config + scope.
+   *4. Offline tokens (stay-logged-in) — [#C], PARTIAL (UX).* The =NATIVE_PKCE=
+   client already carries =offline_access= as an optional scope, so native apps
+   can request refresh tokens today. STILL NOT DONE: =createRealm= sets only web
+   lifespans (15m/4h/24h) and never configures =offlineSessionIdleTimeout= /
+   =offlineSessionMaxLifespan=, so offline sessions use KC defaults. Mobile
+   expects weeks-long sessions → add offline-session realm config.
 
    *BYO-Apple (and BYO-IdP generally) — [#C], deferred.* All IdP creds are
    platform-shared today; there's no per-tenant IdP credential storage. The
@@ -412,8 +426,10 @@ re-verified against the codebase on 2026-06-10.
    — needs per-tenant IdP-cred storage, like the deferred [[email-byo-sendgrid]]
    pattern). Build when a tenant wants their own App Store presence.
 
-   *Recommended sequencing:* custom redirect URIs (unblocks native at all) →
-   account deletion (Apple is already done) → offline tokens.
+   *Recommended sequencing:* Apple + native client/app-links are DONE and
+   unblock CT now → next: Android cert + prod deploy (finish item 2) →
+   self-service account deletion (item 3, store gate) → offline-session realm
+   config (item 4).
 
 * DEV-ENV POLISH
 ** [#B] #113 — =deploy-beelink-dev.sh=: auto-handle CNPG enableSuperuserAccess + seed chart secret
