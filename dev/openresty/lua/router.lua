@@ -206,6 +206,19 @@ local function load_routes(tenant)
 end
 
 local function enforce_auth(auth_mode, tenant, rule_opts)
+    -- CORS preflight is unauthenticated BY SPEC: the browser sends an OPTIONS
+    -- with Access-Control-Request-Method and never attaches credentials, so a
+    -- REQUIRED 401 here would block every header-authenticated cross-origin
+    -- request (e.g. fetch-based SSE from capacitor://localhost with an
+    -- Authorization: Bearer). Let the preflight pass through unauthenticated so
+    -- the backend's CORS layer answers it (204 + Access-Control-* headers); the
+    -- actual method that follows still carries the Bearer and is gated normally
+    -- by the branches below. Auth-neutral: a preflight grants nothing.
+    if ngx.req.get_method() == "OPTIONS"
+        and ngx.var.http_access_control_request_method ~= nil then
+        ngx.req.clear_header("Authorization")  -- preflight carries none anyway
+        return
+    end
     -- BFF_BEARER_INJECTED: caller (match_platform for /_bff/me) has already
     -- proven the session and set Authorization: do nothing here, in
     -- particular do NOT strip the header.
