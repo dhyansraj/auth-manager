@@ -173,6 +173,38 @@
     #kc-social-providers #social-apple .fa-apple {
       margin: auto;
     }
+    /* ===== Input legibility — foreground follows the theme =============
+     * PatternFly wraps inputs in a .pf-v5-c-form-control span that resets
+     * text color to PF's light-theme default (#151515), which is invisible on
+     * a tenant's dark input. The themed text color lives on .mcp-slot-form-area
+     * (this template's form container). Force BOTH the PF span AND the input to
+     * `color: inherit` so the chain flows from .mcp-slot-form-area down — text
+     * then follows the theme automatically (dark theme → light text, light
+     * theme → dark text) with no dependency on which token a tenant set.
+     * Verified against the live rendered login (computed color 245,240,242).
+     * Inlined here so it survives the child `styles=` override, like the rules
+     * above. */
+    .mcp-slot-form-area .pf-v5-c-form-control,
+    .mcp-slot-form-area .pf-v5-c-form-control > input,
+    .mcp-slot-form-area input {
+      color: inherit !important;
+    }
+    .mcp-slot-form-area input::placeholder {
+      color: inherit !important;
+      opacity: 0.6;
+    }
+    /* Browser autofill forces its own light bg + dark text, ignoring the theme.
+     * Suppress the autofill background repaint with the long transition (so the
+     * input keeps its themed/transparent background) and fill the autofilled
+     * text with the input's now-inherited color. */
+    .mcp-slot-form-area input:-webkit-autofill,
+    .mcp-slot-form-area input:-webkit-autofill:hover,
+    .mcp-slot-form-area input:-webkit-autofill:focus,
+    .mcp-slot-form-area input:-webkit-autofill:active {
+      -webkit-text-fill-color: currentColor !important;
+      caret-color: currentColor;
+      transition: background-color 600000s 0s, color 600000s 0s;
+    }
   </style>
 </head>
 <#-- Read the per-realm password-login flag set by auth-manager's
